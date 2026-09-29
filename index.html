@@ -1,0 +1,753 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0b10">
+  <meta name="description" content="A home for your browser bookmarks and Telegram Saved Messages. Organize, search, and rediscover your links with Super Bookmark Manager for Windows.">
+  <title>Super Bookmark Manager — Saved for a reason.</title>
+
+  <!--
+    MagicPath canvas: https://www.magicpath.ai/files/455678990334713856
+    Design preview: https://designs.magicpath.ai/v1/gladly-minute-7232
+
+    Official Play CDN included as requested.
+    Tailwind recommends compiled CSS for production.
+    The inline stylesheet also provides the page's complete presentation.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 100px; }
+    body {
+      margin: 0;
+      background: #0b0b10;
+      color: #f5f4f8;
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+    button, summary { font: inherit; }
+    button { cursor: pointer; }
+    svg { display: block; flex-shrink: 0; }
+    :focus-visible { outline: 2px solid #c4b5fd; outline-offset: 5px; }
+    ::selection { background: #62429c; color: #fff; }
+    [hidden] { display: none !important; }
+
+    .wrap { width: min(1100px, calc(100% - 48px)); margin: auto; }
+    .icon {
+      width: 20px; height: 20px; fill: none; stroke: currentColor;
+      stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+    }
+    .skip {
+      position: fixed; top: 12px; left: 12px; z-index: 100;
+      padding: 12px; background: #fff; color: #111;
+      transform: translateY(-160%);
+    }
+    .skip:focus { transform: none; }
+
+    .header {
+      position: sticky; top: 0; z-index: 20;
+      background: #0b0b10ed; border-bottom: 1px solid #ffffff0d;
+      backdrop-filter: blur(18px);
+    }
+    .nav {
+      min-height: 80px; display: flex; align-items: center;
+      justify-content: space-between; gap: 20px;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 13px; font-weight: 650; line-height: 1.3;
+      letter-spacing: -.025em;
+    }
+    .brand > svg { width: 44px; height: 44px; }
+    .brand span { max-width: 160px; }
+    .desktop { display: flex; align-items: center; gap: 30px; font-size: 12px; }
+    .desktop > a:not(.btn) { color: #b1aabc; padding: 15px 0; }
+    .desktop > a:hover { color: #fff; }
+
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 10px; min-height: 48px; padding: 12px 20px;
+      border: 1px solid #ffffff20; border-radius: 8px;
+      font-size: 13px; font-weight: 600; line-height: 1.5;
+      transition: background .2s, border-color .2s, transform .2s;
+    }
+    .btn:hover {
+      transform: translateY(-2px);
+      background: #22202a; border-color: #ffffff45;
+    }
+    .primary {
+      background: #8653e8; border-color: #b18bf4;
+      box-shadow: 0 0 0 4px #9a65ed0b, 0 8px 35px #7c3aed25;
+    }
+    .primary:hover { background: #9766ef; border-color: #d4baff; }
+    .small { min-height: 42px; padding: 9px 14px; font-size: 11px; }
+
+    .mobile { display: none; position: relative; }
+    .mobile summary {
+      display: flex; align-items: center; justify-content: center;
+      min-width: 44px; min-height: 44px; list-style: none;
+      cursor: pointer; border: 1px solid #ffffff20; border-radius: 8px;
+    }
+    .mobile summary::-webkit-details-marker { display: none; }
+    .mobile nav {
+      position: absolute; right: 0; top: 54px; width: 210px;
+      padding: 8px; background: #19161f; border: 1px solid #ffffff20;
+      border-radius: 12px; box-shadow: 0 20px 40px #0008;
+    }
+    .mobile nav a {
+      display: block; padding: 14px; border-radius: 6px; font-size: 13px;
+    }
+    .mobile nav a:hover { background: #ffffff0a; }
+
+    .hero {
+      position: relative; isolation: isolate;
+      padding: 80px 0 0; text-align: center;
+    }
+    .hero::before {
+      content: ""; position: absolute; z-index: -1;
+      inset: 0 0 auto; height: 760px; pointer-events: none;
+      background: radial-gradient(ellipse at 50% 35%, #7443b920, transparent 66%);
+    }
+    .pill {
+      display: inline-flex; align-items: center; gap: 10px;
+      padding: 8px 12px; border: 1px solid #ab84ef40;
+      border-radius: 99px; color: #c9b8e4; background: #a879ed08;
+      font-size: 10px; letter-spacing: .03em;
+    }
+    .dot {
+      height: 5px; width: 5px; border-radius: 50%;
+      background: #bda0f5; box-shadow: 0 0 12px #bda0f5;
+    }
+    .pill .icon { width: 13px; height: 13px; }
+    .hero h1 {
+      margin: 27px auto 22px;
+      font-size: clamp(44px, 7.6vw, 86px); font-weight: 600;
+      line-height: 1.04; letter-spacing: -.065em; text-wrap: balance;
+    }
+    .hero h1 span {
+      color: #b49bd9;
+      background: linear-gradient(110deg, #e5dcf8, #ac88da 70%, #91afd6);
+      background-clip: text; -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .intro {
+      max-width: 575px; margin: 0 auto;
+      color: #aaa3b8; font-size: 16px; line-height: 1.8; text-wrap: pretty;
+    }
+    .actions {
+      display: flex; flex-wrap: wrap; justify-content: center;
+      gap: 12px; margin: 28px 0 18px;
+    }
+    .proof {
+      display: flex; justify-content: center; flex-wrap: wrap;
+      gap: 8px 20px; margin: 0; padding: 0;
+      list-style: none; color: #a49caf; font-size: 10px;
+    }
+    .proof li { display: flex; align-items: center; gap: 5px; }
+    .proof .icon { width: 13px; height: 13px; color: #bba7d6; }
+
+    .preview {
+      position: relative; isolation: isolate;
+      margin: 52px auto 0; max-width: 960px; padding: 24px;
+      border: 1px solid #ac87df35; border-radius: 16px;
+      background: linear-gradient(120deg, #1c1726, #101016 55%, #121822);
+      box-shadow: 0 30px 100px #0005;
+    }
+    .preview-top {
+      display: flex; justify-content: space-between; gap: 12px;
+      text-align: left; font-size: 10px; letter-spacing: .02em;
+      color: #9c90ae; margin-bottom: 20px;
+    }
+    .preview-top strong { font-weight: 500; color: #d3c7e1; }
+    .screenshot {
+      width: 100%; min-width: 0; display: grid; place-items: center;
+      min-height: 290px; aspect-ratio: 16 / 7.5; padding: 24px;
+      border: 1px dashed #a68cc332; border-radius: 9px;
+      background:
+        radial-gradient(ellipse at 50% 50%, #8b5cf611, transparent 65%),
+        linear-gradient(#ffffff03 1px, transparent 1px),
+        linear-gradient(90deg, #ffffff03 1px, transparent 1px);
+      background-size: auto, 32px 32px, 32px 32px;
+    }
+    .screenshot-icon {
+      display: grid; place-items: center; width: 62px; height: 62px;
+      margin: 0 auto 18px; border: 1px solid #b294ea30;
+      border-radius: 18px; color: #c2a5e8;
+      background: linear-gradient(140deg, #b294ea15, #b294ea03);
+    }
+    .screenshot-icon .icon { width: 27px; height: 27px; }
+    .screenshot strong { font-size: 17px; font-weight: 500; letter-spacing: -.02em; }
+    .screenshot p { color: #998ca9; font-size: 11px; line-height: 1.8; margin: 10px 0 0; }
+    .preview-note { margin: 16px 0 0; color: #908699; font-size: 10px; line-height: 1.7; }
+
+    .section { padding: 94px 0; }
+    .eyebrow {
+      margin: 0 0 14px; color: #b392db; font-size: 10px;
+      letter-spacing: .17em; font-weight: 600; text-transform: uppercase;
+    }
+    h2 {
+      font-size: clamp(30px, 4vw, 42px); font-weight: 550;
+      letter-spacing: -.045em; line-height: 1.16; margin: 0; text-wrap: balance;
+    }
+    .section-intro {
+      color: #a69daf; font-size: 14px; line-height: 1.85;
+      max-width: 540px; margin: 16px 0 0;
+    }
+    .feature-heading {
+      display: flex; justify-content: space-between;
+      align-items: end; gap: 45px; margin-bottom: 34px;
+    }
+    .feature-heading .section-intro { max-width: 335px; margin: 0; }
+    .feature-grid {
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px;
+    }
+    .card {
+      padding: 28px; background: linear-gradient(130deg, #17141d, #111016);
+      border: 1px solid #ffffff10; border-radius: 14px;
+      transition: border-color .2s;
+    }
+    .card:hover { border-color: #b28bd740; }
+    .card-top {
+      display: flex; align-items: center; justify-content: space-between;
+      color: #756a85; font-size: 10px; letter-spacing: .08em; margin-bottom: 36px;
+    }
+    .feature-icon {
+      display: grid; place-items: center; width: 42px; height: 42px;
+      border: 1px solid #b795e41c; border-radius: 10px;
+      background: #b795e408; color: #bf9fe7;
+    }
+    .card h3 { font-size: 17px; font-weight: 550; letter-spacing: -.025em; margin: 0 0 12px; }
+    .card p { font-size: 12px; line-height: 1.9; color: #a99eb5; margin: 0; }
+    .privacy { color: #94889e; font-size: 11px; line-height: 1.8; margin: 20px 0 0; }
+    .text-link {
+      color: #c6ace9; text-decoration: underline;
+      text-underline-offset: 4px; text-decoration-color: #c6ace945;
+    }
+    .text-link:hover { text-decoration-color: currentColor; }
+
+    .install { border-top: 1px solid #ffffff0c; }
+    .install-grid {
+      display: grid; grid-template-columns: .9fr 1.1fr; gap: 62px; align-items: start;
+    }
+    .steps { margin: 28px 0; padding: 0; list-style: none; }
+    .steps li { display: flex; gap: 14px; margin: 20px 0; }
+    .number {
+      display: grid; place-items: center; flex-shrink: 0;
+      width: 27px; height: 27px; background: #a879ed08; color: #c1a3e5;
+      border: 1px solid #a879ed22; border-radius: 50%; font-size: 10px;
+    }
+    .steps strong { font-size: 13px; font-weight: 550; display: block; padding-top: 3px; }
+    .steps p { font-size: 12px; color: #a69daf; line-height: 1.8; margin: 5px 0 0; }
+    .notice {
+      font-size: 10px; line-height: 1.85; color: #978b9f;
+      margin: 18px 0 0; max-width: 410px;
+    }
+
+    .terminal {
+      min-width: 0; background: #101015; border: 1px solid #393040;
+      border-radius: 12px; overflow: hidden;
+    }
+    .terminal-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; padding: 12px 16px; background: #1a151f;
+      border-bottom: 1px solid #ffffff0b; font-size: 10px; color: #baaac9;
+    }
+    .terminal-head span { display: flex; align-items: center; gap: 8px; }
+    .terminal-head .icon { width: 15px; height: 15px; }
+    .copy {
+      display: flex; align-items: center; gap: 6px; min-height: 44px;
+      background: #ffffff04; border: 1px solid #ffffff17; border-radius: 6px;
+      color: #cfbfdc; padding: 8px 10px; font-size: 10px;
+    }
+    .copy:hover { background: #ffffff0d; }
+    .terminal pre {
+      padding: 23px 20px; margin: 0; overflow: auto;
+      font-size: 10px; line-height: 2.1; color: #d7cce1;
+      scrollbar-width: thin; scrollbar-color: #554061 #101015;
+    }
+    .terminal code { font-family: "Cascadia Code", Consolas, monospace; }
+    .terminal-foot {
+      padding: 14px 20px; font-size: 10px; line-height: 1.8;
+      color: #a694b7; border-top: 1px solid #ffffff0c;
+    }
+    .source-note { font-size: 10px; line-height: 1.9; color: #97879f; margin: 14px 0 0; }
+    .status { min-height: 18px; font-size: 11px; color: #c6ace9; margin: 8px 0 0; }
+
+    .closing {
+      display: flex; align-items: center; justify-content: space-between; gap: 26px;
+      padding: 38px; margin-bottom: 66px; border: 1px solid #a982d430;
+      border-radius: 14px;
+      background: radial-gradient(ellipse at right bottom, #8b5cf61a, transparent 70%), #141017;
+    }
+    .closing h2 { font-size: 27px; }
+    .closing p { font-size: 12px; line-height: 1.8; color: #a69aaf; margin: 10px 0 0; }
+    .closing .btn { flex-shrink: 0; }
+    .footer { border-top: 1px solid #ffffff0c; padding: 26px 0; }
+    .footer-inner {
+      display: flex; justify-content: space-between; align-items: center; gap: 24px;
+    }
+    .copyright { font-size: 10px; line-height: 1.9; color: #918398; margin: 0; }
+    .footer nav { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+    .footer nav a { padding: 12px 0; font-size: 10px; color: #b5a4bd; }
+    .footer nav a:hover { color: white; }
+
+    @media (max-width: 900px) {
+      .install-grid { grid-template-columns: 1fr; gap: 36px; }
+      .feature-heading { display: block; }
+      .feature-heading .section-intro { max-width: 540px; margin-top: 16px; }
+      .card { padding: 23px; }
+    }
+    @media (max-width: 700px) {
+      .wrap { width: calc(100% - 36px); }
+      .nav { min-height: 72px; }
+      .desktop { display: none; }
+      .mobile { display: block; }
+      .hero { padding-top: 48px; }
+      .intro { font-size: 14px; }
+      .hero h1 { font-size: clamp(42px, 9vw, 62px); }
+      .preview { padding: 15px; margin-top: 36px; }
+      .preview-top span { display: none; }
+      .screenshot { min-height: 255px; padding: 20px; }
+      .feature-grid { grid-template-columns: 1fr; }
+      .card { padding: 26px; }
+      .card-top { margin-bottom: 22px; }
+      .section { padding: 66px 0; }
+      .closing {
+        flex-direction: column; align-items: flex-start;
+        padding: 27px; margin-bottom: 46px;
+      }
+      .footer-inner { flex-direction: column; align-items: flex-start; gap: 10px; }
+    }
+    @media (max-width: 380px) {
+      .brand { font-size: 12px; gap: 5px; }
+      .brand > svg { width: 38px; height: 38px; }
+      .actions { flex-direction: column; }
+      .actions .btn { width: 100%; }
+      .proof { gap: 8px 12px; }
+      .terminal-head { padding-inline: 10px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      * { transition: none !important; }
+      .btn:hover { transform: none; }
+    }
+  </style>
+</head>
+
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <!-- Embedded SVG icons: no external icon library. -->
+  <svg width="0" height="0" aria-hidden="true"
+       style="position:absolute;overflow:hidden" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-arrow" viewBox="0 0 24 24">
+      <path d="M5 12h14m-6-6 6 6-6 6"/>
+    </symbol>
+    <symbol id="i-download" viewBox="0 0 24 24">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24">
+      <path d="m5 12 4 4L19 6"/>
+    </symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24">
+      <path d="M4 6h16M4 12h16M4 18h16"/>
+    </symbol>
+    <symbol id="i-search" viewBox="0 0 24 24">
+      <circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>
+    </symbol>
+    <symbol id="i-library" viewBox="0 0 24 24">
+      <path d="M4 6v14M8 4v16M12 8v12m4-17 5 16"/>
+    </symbol>
+    <symbol id="i-desktop" viewBox="0 0 24 24">
+      <rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/>
+    </symbol>
+    <symbol id="i-image" viewBox="0 0 24 24">
+      <rect x="3" y="3" width="18" height="18" rx="3"/>
+      <circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>
+    </symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24">
+      <path d="m4 5 6 7-6 7m9 0h7"/>
+    </symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24">
+      <rect x="8" y="8" width="12" height="12" rx="2"/>
+      <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>
+    </symbol>
+  </svg>
+
+  <header class="header">
+    <div class="wrap nav">
+      <a href="#main" class="brand" aria-label="Super Bookmark Manager home">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"
+             role="img" aria-label="Super Bookmark Manager logo">
+          <defs>
+            <linearGradient id="brand-gradient" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#38bdf8"/>
+              <stop offset="1" stop-color="#8b5cf6"/>
+            </linearGradient>
+          </defs>
+          <path d="M154 118H358Q384 118 384 144V164Q384 170 378 170H134Q128 170 128 164V144Q128 118 154 118Z" fill="#f2f2f4"/>
+          <g fill="#0b0b10">
+            <circle cx="163" cy="144" r="11"/>
+            <circle cx="199" cy="144" r="11"/>
+            <circle cx="235" cy="144" r="11"/>
+          </g>
+          <g fill="url(#brand-gradient)">
+            <path d="M126 196V330L250 404L160 330V296C160 286 146 282 146 272C146 262 160 258 160 248V192C160 182 154 178 146 178H144C132 178 126 184 126 196Z"/>
+            <path d="M386 196V330L262 404L352 330V296C352 286 366 282 366 272C366 262 352 258 352 248V192C352 182 358 178 366 178H368C380 178 386 184 386 196Z"/>
+          </g>
+          <path d="M256 212L320 249V323L256 360L192 323V249Z M256 286V212 M256 286L320 249 M256 286L320 323 M256 286V360 M256 286L192 323 M256 286L192 249"
+                fill="none" stroke="url(#brand-gradient)" stroke-width="5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+          <g fill="url(#brand-gradient)">
+            <circle cx="256" cy="286" r="17"/>
+            <circle cx="256" cy="212" r="15"/>
+            <circle cx="320" cy="249" r="15"/>
+            <circle cx="320" cy="323" r="15"/>
+            <circle cx="256" cy="360" r="15"/>
+            <circle cx="192" cy="323" r="15"/>
+            <circle cx="192" cy="249" r="15"/>
+          </g>
+        </svg>
+        <span>Super Bookmark<br>Manager</span>
+      </a>
+
+      <nav class="desktop" aria-label="Main navigation">
+        <a href="#features">Features</a>
+        <a href="#installation">Installation</a>
+        <a class="btn small" href="https://github.com/browser-b0X/super-bookmark-manager">
+          View on GitHub
+          <svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg>
+        </a>
+      </nav>
+
+      <details class="mobile" id="mobile-menu">
+        <summary aria-label="Navigation menu">
+          <svg class="icon" aria-hidden="true"><use href="#i-menu"/></svg>
+        </summary>
+        <nav aria-label="Mobile navigation">
+          <a href="#features">Features</a>
+          <a href="#installation">Installation</a>
+          <a href="https://github.com/browser-b0X/super-bookmark-manager">View on GitHub ↗</a>
+        </nav>
+      </details>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="wrap">
+        <a class="pill" href="https://github.com/browser-b0X/super-bookmark-manager/releases/tag/v0.1.0">
+          <span class="dot" aria-hidden="true"></span>
+          v0.1.0 is here
+          <span aria-hidden="true">/</span>
+          Made for Windows
+          <svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg>
+        </a>
+
+        <h1 id="hero-title">
+          Saved for a reason.<br>
+          <span>Found when it matters.</span>
+        </h1>
+
+        <p class="intro">
+          Bring browser bookmarks and Telegram Saved Messages into one searchable
+          library on your machine. Turn scattered links into a collection you can
+          organize, rediscover, and actually use.
+        </p>
+
+        <div class="actions">
+          <a class="btn primary"
+             href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest/download/SuperBookmarkManager-Setup.exe">
+            <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+            Download for Windows
+          </a>
+          <a class="btn" href="#features">
+            Take a closer look
+            <svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg>
+          </a>
+        </div>
+
+        <ul class="proof">
+          <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Free &amp; open source</li>
+          <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>No AI keys required</li>
+          <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Local SQLite storage</li>
+        </ul>
+
+        <figure class="preview">
+          <figcaption class="preview-top">
+            <strong>A little less searching. A lot more finding.</strong>
+            <span>YOUR LIBRARY, TOGETHER</span>
+          </figcaption>
+
+          <!--
+            Replace this placeholder with an app screenshot.
+            Embed the image as a data URL to keep this file self-contained.
+            Suggested size: 1600 × 750.
+          -->
+          <div class="screenshot">
+            <div>
+              <div class="screenshot-icon">
+                <svg class="icon" aria-hidden="true"><use href="#i-image"/></svg>
+              </div>
+              <strong>Your library, in focus.</strong>
+              <p>App screenshot goes here.<br>Suggested image: 1600 × 750.</p>
+            </div>
+          </div>
+        </figure>
+
+        <p class="preview-note">Runs locally on Windows. Opens in your familiar browser.</p>
+      </div>
+    </section>
+
+    <section class="section" id="features" aria-labelledby="features-title">
+      <div class="wrap">
+        <div class="feature-heading">
+          <div>
+            <p class="eyebrow">From saved to useful</p>
+            <h2 id="features-title">Good links deserve<br>a better home.</h2>
+          </div>
+          <p class="section-intro">
+            Keep the things you want to come back to.<br>
+            Give them the context that makes them yours.
+          </p>
+        </div>
+
+        <div class="feature-grid">
+          <article class="card">
+            <div class="card-top">
+              <div class="feature-icon">
+                <svg class="icon" aria-hidden="true"><use href="#i-library"/></svg>
+              </div>
+              <span>01 / COLLECT</span>
+            </div>
+            <h3>One place for your saves</h3>
+            <p>
+              Bring browser bookmarks and Telegram saved links together.
+              Built-in categorization gives new imports a home without an
+              AI account or API key.
+            </p>
+          </article>
+
+          <article class="card">
+            <div class="card-top">
+              <div class="feature-icon">
+                <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+              </div>
+              <span>02 / REDISCOVER</span>
+            </div>
+            <h3>Find more than a title</h3>
+            <p>
+              Search titles, URLs, tags, and your own notes. Filter your library,
+              save useful views, and catch up on links you still want to read.
+            </p>
+          </article>
+
+          <article class="card">
+            <div class="card-top">
+              <div class="feature-icon">
+                <svg class="icon" aria-hidden="true"><use href="#i-desktop"/></svg>
+              </div>
+              <span>03 / KEEP</span>
+            </div>
+            <h3>Your library lives with you</h3>
+            <p>
+              Store your library in local SQLite, add your own context, and
+              export library backups. No central Super Bookmark Manager
+              account required.
+            </p>
+          </article>
+        </div>
+
+        <p class="privacy">
+          Local-first, with useful connections: previews can contact saved
+          websites, and connected Telegram actions contact Telegram.
+          <a class="text-link"
+             href="https://github.com/browser-b0X/super-bookmark-manager#local-data-and-privacy">
+            Privacy details ↗
+          </a>
+        </p>
+      </div>
+    </section>
+
+    <section class="section install" id="installation" aria-labelledby="install-title">
+      <div class="wrap install-grid">
+        <div>
+          <p class="eyebrow">Ready when you are</p>
+          <h2 id="install-title">A new home for<br>your next great find.</h2>
+          <p class="section-intro">
+            Use the Windows installer for everyday use.<br>
+            Prefer to build it yourself? The source is open.
+          </p>
+
+          <ol class="steps">
+            <li>
+              <span class="number" aria-hidden="true">01</span>
+              <div>
+                <strong>Download the latest release</strong>
+                <p>Get the Windows installer and its checksum from GitHub.</p>
+              </div>
+            </li>
+            <li>
+              <span class="number" aria-hidden="true">02</span>
+              <div>
+                <strong>Install and launch</strong>
+                <p>
+                  Open it from the Start Menu. No separate Python or Node
+                  installation is needed.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span class="number" aria-hidden="true">03</span>
+              <div>
+                <strong>Bring your bookmarks</strong>
+                <p>
+                  Import a browser export in Settings, or connect Telegram
+                  using your own Telegram credentials.
+                </p>
+              </div>
+            </li>
+          </ol>
+
+          <a class="btn primary"
+             href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest">
+            Download latest release
+            <svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg>
+          </a>
+
+          <p class="notice">
+            The installer is unsigned and may trigger Windows SmartScreen.
+            Verify its SHA-256 against the published checksum before running it.
+          </p>
+        </div>
+
+        <div style="min-width:0">
+          <div class="terminal">
+            <div class="terminal-head">
+              <span>
+                <svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg>
+                Source setup · PowerShell
+              </span>
+              <button class="copy" id="copy" type="button" hidden>
+                <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+                Copy
+              </button>
+            </div>
+
+            <pre tabindex="0" role="region" aria-label="Windows PowerShell setup commands"><code id="commands"># Get the source
+git clone https://github.com/browser-b0X/super-bookmark-manager.git
+cd super-bookmark-manager
+
+# Install dependencies
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r packaging/requirements-build.txt
+npm.cmd --prefix frontend ci
+
+# Build and run locally
+npm.cmd --prefix frontend run build
+.\.venv\Scripts\python.exe run.py --serve-only</code></pre>
+
+            <div class="terminal-foot">
+              Open <code>http://127.0.0.1:5001</code> in your browser.<br>
+              Keep the local server running while using the app.
+            </div>
+          </div>
+
+          <p class="status" id="copy-status" role="status" aria-live="polite"></p>
+          <p class="source-note">
+            Source setup requires Git, Python 3.12, and Node/npm.
+            Verified with Python 3.12.10 and Node 24.19.0.
+            <a class="text-link"
+               href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/BUILDING.md">
+              Full build instructions ↗
+            </a>
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap closing" aria-labelledby="closing-title">
+      <div>
+        <h2 id="closing-title">Make “I saved that somewhere” history.</h2>
+        <p>Your bookmarks. Your notes. A place to come back to.</p>
+      </div>
+      <a class="btn"
+         href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest">
+        Get Super Bookmark Manager
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg>
+      </a>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <p class="copyright">
+        © 2026 browser-b0X · Super Bookmark Manager<br>
+        Open source under the MIT license.
+      </p>
+      <nav aria-label="Footer navigation">
+        <a href="https://github.com/browser-b0X/super-bookmark-manager">GitHub</a>
+        <a href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/LICENSE">License</a>
+        <a href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/SECURITY.md">Security</a>
+        <a href="https://github.com/browser-b0X">Meet the maker ↗</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const menu = document.getElementById("mobile-menu");
+      const closeMenu = () => {
+        menu.open = false;
+      };
+
+      menu.querySelectorAll("a").forEach((link) => {
+        link.addEventListener("click", closeMenu);
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && menu.open) {
+          closeMenu();
+          menu.querySelector("summary").focus();
+        }
+      });
+
+      const button = document.getElementById("copy");
+      const code = document.getElementById("commands");
+      const status = document.getElementById("copy-status");
+
+      button.hidden = false;
+
+      button.addEventListener("click", async () => {
+        try {
+          if (!window.isSecureContext || !navigator.clipboard) {
+            throw new Error("Clipboard unavailable");
+          }
+
+          await navigator.clipboard.writeText(code.textContent.trim());
+          status.textContent = "Commands copied. Paste them into PowerShell.";
+        } catch {
+          const selection = window.getSelection();
+
+          if (selection) {
+            const range = document.createRange();
+            range.selectNodeContents(code);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            status.textContent =
+              "Commands selected. Press Ctrl+C or use your device’s Copy action.";
+          } else {
+            status.textContent = "Select and copy the commands above.";
+          }
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
