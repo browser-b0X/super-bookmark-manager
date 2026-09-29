@@ -4,6 +4,7 @@
 
 **A local-first bookmark manager for organizing browser bookmarks and Telegram Saved Messages on Windows.**
 
+
 ## Features
 
 - Import browser bookmarks and Telegram Saved Messages into one library.
@@ -113,6 +114,30 @@ verified packaged-release platform.
 ## Security
 
 See [SECURITY.md](SECURITY.md) before sharing logs, screenshots or bug reports.
+
+## Feedback & Suggestions
+
+Help make **browser-b0X** better.
+
+-🐛 **Found a bug?** Submit a structured [Bug Report](https://github.com/browser-b0x/super-bookmark-manager/issues/new/choose)
+-💡 **Have an idea or question?** Start a discussion in [GitHub Discussions](https://github.com/browser-b0x/super-bookmark-manager/discussions)
+-🤝 **Want to contribute?** Pull requests and improvements are always welcome.
+
+
+##  Support the project
+
+<p align="center">
+  <a href="https://ko-fi.com/browserb0x">
+    <img src="https://img.shields.io/badge/☕_Support_on_Ko--fi-29C6E8?style=for-the-badge&logo=kofi&logoColor=white" alt="Support browser-b0X on Ko-fi">
+  </a>
+  &nbsp;
+  <a href="https://buymeacoffee.com/browserbox">
+    <img src="https://img.shields.io/badge/☕_Buy_Me_a_Coffee-875CFF?style=for-the-badge&logo=buymeacoffee&logoColor=white" alt="Support browser-b0X on Buy Me a Coffee">
+  </a>
+</p>
+
+> Every contribution is appreciated, but never expected.  
+> Using the project, reporting bugs, and sharing it with others helps too.
 
 ## License
 
