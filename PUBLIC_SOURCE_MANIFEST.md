@@ -1,6 +1,6 @@
 # Super Bookmark Manager — public source manifest
 
-Exact curated source set: **158 files**, extended from the reviewed142-file
+Exact curated source set: **159 files**, extended from the reviewed142-file
 hygiene baseline with license, public documentation, pinned build requirements and
 upstream notices. The legacy BAT is renamed. Only these files may enter the future
 fresh public initial history; this is not permission to commit or publish.
@@ -143,6 +143,7 @@ documented Python/Playwright overrides. See BUILDING.md.
 - `frontend/tsconfig.json`
 - `frontend/tsconfig.node.json`
 - `frontend/vite.config.ts`
+- `index.html`
 - `library_backup.py`
 - `litellm/.env.example`
 - `litellm/config.yaml`
