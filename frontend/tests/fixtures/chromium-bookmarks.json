@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "checksum": "synthetic-only",
+  "roots": {
+    "bookmark_bar": {
+      "type": "folder", "name": "Bookmarks bar", "children": [
+        {"type": "url", "name": "Replacement title must not win", "url": "https://example.invalid/programming#typescript", "date_added": "0"},
+        {"type": "folder", "name": "Nested", "children": [
+          {"type": "folder", "name": "Deeper", "children": [
+            {"type": "url", "name": "Programming JavaScript tutorial — supplied", "url": "https://native.example.invalid/programming?lesson=1&lesson=2#code", "guid": "synthetic"},
+            {"type": "url", "name": "Cooking recipe kitchen — supplied", "url": "https://native.example.invalid/cooking"}
+          ]},
+          {"type": "url", "name": "Duplicate must not win", "url": "https://native.example.invalid/programming?lesson=1&lesson=2#code"},
+          {"type": "url", "name": "Unsupported local file", "url": "file:///synthetic/bookmark"}
+        ]}
+      ]
+    },
+    "other": {"type": "folder", "name": "Other bookmarks", "children": []},
+    "synced": {"name": "Mobile bookmarks", "children": []}
+  },
+  "irrelevant_metadata": {"ignored": true}
+}

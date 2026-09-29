@@ -1,0 +1,205 @@
+[
+  {
+    "canonicalUrl": "https://example.invalid/text-1?b=1&c=2#frag",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-21T12:07:00.000Z",
+    "domain": "example.invalid",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvdGV4dC0xP2I9MSZjPTIjZnJhZw",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [
+      "Readability"
+    ],
+    "title": "Research &amp; Development",
+    "updatedAt": "2026-09-21T12:10:00.000Z",
+    "url": "https://example.invalid/text-1?b=1&c=2#frag",
+    "description": "Plan&nbsp; &amp; build",
+    "notes": "Synthetic note 1",
+    "thumbnailUrl": "/__fixture/preview.svg",
+    "aiSummary": "lower priority",
+    "excerpt": "lowest priority"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/text-2?b=1&c=2#frag",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-21T12:06:00.000Z",
+    "domain": "example.invalid",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvdGV4dC0yP2I9MSZjPTIjZnJhZw",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "status": "inbox",
+    "tags": [
+      "Readability"
+    ],
+    "title": "It&#39;s useful &quot;today&quot;",
+    "updatedAt": "2026-09-21T12:10:00.000Z",
+    "url": "https://example.invalid/text-2?b=1&c=2#frag",
+    "aiSummary": "&#8220;Read&#8221; &mdash; then save",
+    "notes": "Synthetic note 2"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/text-3?b=1&c=2#frag",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-21T12:05:00.000Z",
+    "domain": "example.invalid",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvdGV4dC0zP2I9MSZjPTIjZnJhZw",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [
+      "Readability"
+    ],
+    "title": "<strong>Launch</strong> notes",
+    "updatedAt": "2026-09-21T12:10:00.000Z",
+    "url": "https://example.invalid/text-3?b=1&c=2#frag",
+    "excerpt": "<em>Read</em> <code>code</code><br><a href=\"https://example.invalid/x?x=1&y=2\">details</a>",
+    "notes": "Synthetic note 3"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/text-4?b=1&c=2#frag",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-21T12:04:00.000Z",
+    "domain": "example.invalid",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvdGV4dC00P2I9MSZjPTIjZnJhZw",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "status": "inbox",
+    "tags": [
+      "Readability"
+    ],
+    "title": "  Line   one\n\n line two\ttab  ",
+    "updatedAt": "2026-09-21T12:10:00.000Z",
+    "url": "https://example.invalid/text-4?b=1&c=2#frag",
+    "description": "A\u0001BC﻿  next\r\nline",
+    "notes": "Synthetic note 4"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/text-5?b=1&c=2#frag",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-21T12:03:00.000Z",
+    "domain": "example.invalid",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvdGV4dC01P2I9MSZjPTIjZnJhZw",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [
+      "Readability"
+    ],
+    "title": "Wait — really? Yes: 100% (see §2), \"quoted\" & 'single'",
+    "updatedAt": "2026-09-21T12:10:00.000Z",
+    "url": "https://example.invalid/text-5?b=1&c=2#frag",
+    "excerpt": "C++ / C# · **literal stars** · a_b · [link](target) · 2 < 3 > 1",
+    "notes": "Synthetic note 5"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/text-6?b=1&c=2#frag",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-21T12:02:00.000Z",
+    "domain": "example.invalid",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvdGV4dC02P2I9MSZjPTIjZnJhZw",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "status": "inbox",
+    "tags": [
+      "Readability"
+    ],
+    "title": "Café naïve · 日本語 · 🎉👩🏽‍🚀",
+    "updatedAt": "2026-09-21T12:10:00.000Z",
+    "url": "https://example.invalid/text-6?b=1&c=2#frag",
+    "excerpt": "Привет · العربية · é · ❤️ · ‏שלום",
+    "notes": "Synthetic note 6"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/text-7?b=1&c=2#frag",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-21T12:01:00.000Z",
+    "domain": "example.invalid",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvdGV4dC03P2I9MSZjPTIjZnJhZw",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [
+      "Readability"
+    ],
+    "title": "",
+    "updatedAt": "2026-09-21T12:10:00.000Z",
+    "url": "https://example.invalid/text-7?b=1&c=2#frag",
+    "excerpt": "URL stays exact: https://example.invalid/raw?x=1&amp;y=2#frag",
+    "notes": "Synthetic note 7"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/text-8?b=1&c=2#frag",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-21T12:00:00.000Z",
+    "domain": "example.invalid",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvdGV4dC04P2I9MSZjPTIjZnJhZw",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "status": "inbox",
+    "tags": [
+      "Readability"
+    ],
+    "title": "Research &amp;amp; Development",
+    "updatedAt": "2026-09-21T12:10:00.000Z",
+    "url": "https://example.invalid/text-8?b=1&c=2#frag",
+    "excerpt": "Use &lt;div&gt; &amp; literal \\u2014 text",
+    "notes": "Synthetic note 8"
+  }
+]

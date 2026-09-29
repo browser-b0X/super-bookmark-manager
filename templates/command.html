@@ -1,0 +1,1269 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Super Bookmark Manager</title>
+<style>
+  :root {
+    --bg: #101014; --surface: #17171d; --surface2: #1e1e27; --elev: #232330;
+    --border: rgba(255,255,255,.08); --border-hi: rgba(255,255,255,.14);
+    --text: #e7e7ee; --dim: #8f8f9d; --faint: #63636f;
+    --accent: #6c8cff; --accent-bg: rgba(108,140,255,.12);
+    --teal: #3ddad7; --amber: #ffb454; --red: #ff5f56; --green: #4ade80; --violet: #a78bfa;
+    --radius: 12px; --radius-s: 8px;
+    --sidebar-w: 232px; --topbar-h: 56px;
+    --ease: cubic-bezier(.4,0,.2,1);
+    --shadow: 0 8px 24px rgba(0,0,0,.35);
+  }
+  [data-theme="light"] {
+    --bg: #f4f4f7; --surface: #fff; --surface2: #f0f0f4; --elev: #fff;
+    --border: rgba(0,0,0,.08); --border-hi: rgba(0,0,0,.16);
+    --text: #1a1a22; --dim: #5c5c68; --faint: #9a9aa5;
+    --accent-bg: rgba(108,140,255,.1);
+    --shadow: 0 8px 24px rgba(20,20,40,.1);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+    font-size: 14px; line-height: 1.45; overflow: hidden;
+    font-variant-numeric: tabular-nums;
+  }
+  button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+  input, textarea, select { font: inherit; color: var(--text); }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 4px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+
+  /* ── Sidebar ─────────────────────────────────────────── */
+  #sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; width: var(--sidebar-w);
+    background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; z-index: 40;
+    transition: width .2s var(--ease);
+  }
+  body.sb-collapsed #sidebar { width: 56px; }
+  .sb-head { display: flex; align-items: center; gap: 10px; padding: 14px 14px 10px; min-height: 52px; }
+  .sb-logo {
+    width: 28px; height: 28px; flex-shrink: 0; border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), var(--violet));
+    display: flex; align-items: center; justify-content: center; color: #fff;
+  }
+  .sb-title { font-weight: 650; font-size: .9rem; letter-spacing: .2px; white-space: nowrap; overflow: hidden; }
+  body.sb-collapsed .sb-title, body.sb-collapsed .sb-label, body.sb-collapsed .sb-sec-title,
+  body.sb-collapsed .sb-count, body.sb-collapsed .sb-foot-text { display: none; }
+  .sb-scroll { flex: 1; overflow-y: auto; padding: 4px 8px; }
+  .sb-sec-title {
+    font-size: .64rem; text-transform: uppercase; letter-spacing: 1.2px;
+    color: var(--faint); padding: 14px 8px 4px; font-weight: 600;
+  }
+  .sb-item {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 7px 8px; border-radius: var(--radius-s); color: var(--dim);
+    font-size: .84rem; text-decoration: none; transition: background .15s, color .15s;
+    position: relative; text-align: left;
+  }
+  .sb-item:hover { background: var(--surface2); color: var(--text); }
+  .sb-item.active { background: var(--accent-bg); color: var(--accent); }
+  .sb-item .icon { flex-shrink: 0; }
+  .sb-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sb-count { font-size: .68rem; color: var(--faint); background: var(--surface2); border-radius: 8px; padding: 0 7px; }
+  body.sb-collapsed .sb-item { justify-content: center; padding: 9px 0; }
+  body.sb-collapsed .sb-head { justify-content: center; padding: 14px 0 10px; }
+  .sb-foot { padding: 8px; border-top: 1px solid var(--border); display: flex; gap: 4px; }
+  .sb-foot .sb-item { flex: 1; }
+
+  /* ── Topbar ──────────────────────────────────────────── */
+  #topbar {
+    position: fixed; top: 0; left: var(--sidebar-w); right: 0; height: var(--topbar-h);
+    background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border); display: flex; align-items: center;
+    gap: 12px; padding: 0 20px; z-index: 30; transition: left .2s var(--ease);
+  }
+  body.sb-collapsed #topbar { left: 56px; }
+  .crumb { font-size: .9rem; font-weight: 600; }
+  .crumb-sub { color: var(--faint); font-size: .78rem; }
+  .tb-spacer { flex: 1; }
+  .tb-search {
+    display: flex; align-items: center; gap: 8px; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: var(--radius-s);
+    padding: 6px 12px; color: var(--dim); font-size: .8rem; min-width: 220px;
+    transition: border-color .15s;
+  }
+  .tb-search:hover { border-color: var(--border-hi); color: var(--text); }
+  kbd {
+    font-family: inherit; font-size: .66rem; background: var(--surface);
+    border: 1px solid var(--border-hi); border-radius: 4px; padding: 1px 5px; color: var(--faint);
+    margin-left: auto;
+  }
+  #clock { color: var(--dim); font-size: .8rem; min-width: 108px; text-align: right; }
+  .icon-btn {
+    width: 32px; height: 32px; border-radius: var(--radius-s); display: flex;
+    align-items: center; justify-content: center; color: var(--dim);
+    transition: background .15s, color .15s; border: 1px solid transparent;
+  }
+  .icon-btn:hover { background: var(--surface2); color: var(--text); }
+  .icon-btn.on { color: var(--accent); background: var(--accent-bg); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .btn-primary {
+    display: flex; align-items: center; gap: 7px; background: var(--accent); color: #fff;
+    padding: 7px 14px; border-radius: var(--radius-s); font-size: .82rem; font-weight: 600;
+    transition: filter .15s, transform .15s;
+  }
+  .btn-primary:hover { filter: brightness(1.12); }
+  .btn-primary:active { transform: scale(.97); }
+  .sync-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); display: inline-block; }
+
+  /* ── Canvas & cells ──────────────────────────────────── */
+  #canvas-wrap {
+    position: absolute; top: var(--topbar-h); left: var(--sidebar-w); right: 0; bottom: 0;
+    overflow-y: auto; padding: 20px; transition: left .2s var(--ease);
+  }
+  body.sb-collapsed #canvas-wrap { left: 56px; }
+  #canvas {
+    display: grid; grid-template-columns: repeat(12, 1fr); grid-auto-rows: 76px;
+    gap: 14px; max-width: 1440px; margin: 0 auto;
+  }
+  .cell {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    display: flex; flex-direction: column; overflow: hidden; position: relative;
+    transition: border-color .15s, box-shadow .2s var(--ease), opacity .2s, transform .2s var(--ease);
+    min-width: 0; min-height: 0;
+  }
+  .cell:hover { border-color: var(--border-hi); }
+  .cell.dragging { opacity: .45; transform: scale(.98); }
+  .cell.pinned::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, var(--accent), transparent);
+  }
+  .cell-head {
+    display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px; flex-shrink: 0;
+  }
+  .drag-handle { display: none; color: var(--faint); cursor: grab; padding: 2px; }
+  body.customizing .drag-handle { display: flex; }
+  .drag-handle:active { cursor: grabbing; }
+  .cell-icon { color: var(--accent); display: flex; flex-shrink: 0; }
+  .cell-title {
+    font-size: .82rem; font-weight: 650; letter-spacing: .2px; flex: 1;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .cell-title input {
+    width: 100%; background: var(--surface2); border: 1px solid var(--accent);
+    border-radius: 4px; padding: 1px 6px; font-size: .82rem; outline: none;
+  }
+  .cell-cat {
+    font-size: .62rem; color: var(--dim); background: var(--surface2);
+    padding: 1px 7px; border-radius: 8px; text-transform: uppercase; letter-spacing: .5px; flex-shrink: 0;
+  }
+  .cell-menu-btn { opacity: 0; color: var(--faint); width: 22px; height: 22px; border-radius: 5px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .cell:hover .cell-menu-btn, body.customizing .cell-menu-btn { opacity: 1; }
+  .cell-menu-btn:hover { background: var(--surface2); color: var(--text); }
+  .cell-body { flex: 1; overflow-y: auto; padding: 4px 12px 12px; min-height: 0; }
+  .resize-handle {
+    display: none; position: absolute; right: 2px; bottom: 2px; width: 18px; height: 18px;
+    cursor: nwse-resize; color: var(--faint); align-items: flex-end; justify-content: flex-end;
+    padding: 3px; border-radius: 4px;
+  }
+  body.customizing .resize-handle { display: flex; }
+  body.customizing .cell { border-style: dashed; }
+  body.customizing .cell:hover { border-color: var(--accent); }
+
+  /* ── Widget content primitives ───────────────────────── */
+  .w-empty { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100%; gap: 8px; color: var(--faint); text-align: center; padding: 12px; }
+  .w-empty .cta { color: var(--accent); font-size: .78rem; font-weight: 600; margin-top: 4px;
+    padding: 4px 10px; border: 1px solid var(--border-hi); border-radius: 6px; }
+  .w-empty .cta:hover { background: var(--accent-bg); }
+  .skeleton { background: linear-gradient(90deg, var(--surface2) 25%, var(--elev) 50%, var(--surface2) 75%);
+    background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: 6px; height: 14px; margin: 6px 0; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .muted { color: var(--dim); font-size: .76rem; }
+  .tiny { color: var(--faint); font-size: .68rem; }
+  .bar { height: 5px; background: var(--surface2); border-radius: 3px; overflow: hidden; flex: 1; }
+  .bar > div { height: 100%; border-radius: 3px; background: var(--accent); transition: width .4s var(--ease); }
+  .pill-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .st-ok { color: var(--green); } .st-warn { color: var(--amber); } .st-off { color: var(--red); }
+
+  /* tasks widget */
+  .task-row { display: flex; align-items: center; gap: 9px; padding: 5px 2px; border-radius: 6px; }
+  .task-row:hover { background: var(--surface2); }
+  .task-check { width: 16px; height: 16px; border-radius: 5px; border: 1.5px solid var(--border-hi);
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: transparent;
+    transition: all .15s; }
+  .task-check:hover { border-color: var(--accent); }
+  .task-row.done .task-check { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .task-title { flex: 1; font-size: .82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .task-row.done .task-title { text-decoration: line-through; color: var(--faint); }
+  .prio { font-size: .6rem; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; flex-shrink: 0; }
+  .prio-high { color: var(--amber); } .prio-normal { color: var(--faint); }
+  .task-x { opacity: 0; color: var(--faint); width: 18px; height: 18px; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .task-row:hover .task-x { opacity: 1; }
+  .task-x:hover { color: var(--red); background: rgba(255,95,86,.1); }
+  .inline-add { display: flex; gap: 6px; margin-top: 6px; }
+  .inline-add input { flex: 1; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: .8rem; outline: none; }
+  .inline-add input:focus { border-color: var(--accent); }
+  .inline-add select { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 0 6px; font-size: .72rem; outline: none; }
+
+  /* capture widget */
+  .cap-types { display: flex; gap: 4px; margin-bottom: 6px; flex-wrap: wrap; }
+  .cap-type { font-size: .66rem; padding: 2px 9px; border-radius: 10px; border: 1px solid var(--border);
+    color: var(--dim); transition: all .15s; }
+  .cap-type.on { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
+  .cap-item { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--border); }
+  .cap-badge { font-size: .6rem; color: var(--violet); text-transform: uppercase; letter-spacing: .5px; flex-shrink: 0; width: 46px; }
+
+  /* knowledge / timeline lists */
+  .list-item { display: flex; gap: 9px; padding: 5px 0; border-top: 1px solid var(--border); align-items: baseline; }
+  .list-item:first-child { border-top: none; }
+  .src-badge { font-size: .6rem; text-transform: uppercase; letter-spacing: .5px; flex-shrink: 0; width: 52px; }
+  .src-instagram { color: #e1306c; } .src-x-com { color: #7ec8ff; } .src-youtube { color: #ff6b6b; }
+  .src-reddit { color: #ff8f50; } .src-tiktok { color: var(--teal); } .src-other, .src-text { color: var(--faint); }
+  .li-text { flex: 1; font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .li-text a { color: var(--text); text-decoration: none; }
+  .li-text a:hover { color: var(--accent); }
+  .tl-time { color: var(--faint); font-size: .66rem; flex-shrink: 0; }
+
+  /* today widget */
+  .today-date { font-size: 1.05rem; font-weight: 700; }
+  .today-greet { color: var(--dim); font-size: .8rem; margin-top: 1px; }
+  .prio-item { display: flex; gap: 8px; align-items: center; font-size: .8rem; padding: 3px 0; }
+  .prio-num { color: var(--accent); font-weight: 700; font-size: .72rem; width: 14px; }
+
+  /* notes widget */
+  .notes-area { width: 100%; height: 100%; background: transparent; border: none; resize: none;
+    outline: none; font-size: .82rem; line-height: 1.55; color: var(--text); }
+  .notes-status { position: absolute; bottom: 8px; right: 12px; font-size: .62rem; color: var(--faint); }
+
+  /* finance widget */
+  .fin-cta { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px;
+    color: var(--accent); font-size: .78rem; font-weight: 600; padding: 5px 12px;
+    border: 1px solid var(--border-hi); border-radius: 7px; }
+  .fin-cta:hover { background: var(--accent-bg); }
+
+  /* ── Overlays: palette, picker, inspector, menu, toast ─ */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 100;
+    display: none; align-items: flex-start; justify-content: center; }
+  .overlay.open { display: flex; }
+  .palette { width: min(600px, 92vw); margin-top: 12vh; background: var(--surface);
+    border: 1px solid var(--border-hi); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+  .palette input { width: 100%; background: transparent; border: none; outline: none;
+    padding: 16px 18px; font-size: .95rem; border-bottom: 1px solid var(--border); }
+  .palette-list { max-height: 340px; overflow-y: auto; padding: 6px; }
+  .pal-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 8px;
+    color: var(--dim); font-size: .84rem; cursor: pointer; }
+  .pal-item .icon { color: var(--faint); flex-shrink: 0; }
+  .pal-item.sel, .pal-item:hover { background: var(--accent-bg); color: var(--text); }
+  .pal-item.sel .icon { color: var(--accent); }
+  .pal-hint { color: var(--faint); font-size: .68rem; margin-left: auto; }
+
+  .picker { width: min(680px, 94vw); margin-top: 9vh; background: var(--surface);
+    border: 1px solid var(--border-hi); border-radius: 14px; box-shadow: var(--shadow);
+    max-height: 76vh; display: flex; flex-direction: column; }
+  .picker-head { padding: 16px 18px 10px; }
+  .picker-head h3 { font-size: .95rem; margin-bottom: 10px; }
+  .picker-head input { width: 100%; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 12px; font-size: .84rem; outline: none; }
+  .picker-head input:focus { border-color: var(--accent); }
+  .picker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    gap: 10px; padding: 6px 18px 18px; overflow-y: auto; }
+  .pick-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; text-align: left;
+    transition: border-color .15s, background .15s; background: var(--surface2); }
+  .pick-card:hover { border-color: var(--accent); background: var(--accent-bg); }
+  .pick-card .icon { color: var(--accent); }
+  .pick-name { font-size: .82rem; font-weight: 650; margin-top: 8px; }
+  .pick-desc { font-size: .68rem; color: var(--dim); margin-top: 2px; line-height: 1.4; }
+  .pick-added { font-size: .64rem; color: var(--green); margin-top: 5px; }
+
+  #inspector { position: fixed; top: 0; right: -340px; bottom: 0; width: 320px; background: var(--surface);
+    border-left: 1px solid var(--border-hi); z-index: 110; padding: 18px; overflow-y: auto;
+    transition: right .25s var(--ease); box-shadow: var(--shadow); }
+  #inspector.open { right: 0; }
+  #inspector h3 { font-size: .92rem; margin-bottom: 14px; }
+  .insp-label { font-size: .68rem; text-transform: uppercase; letter-spacing: .8px; color: var(--faint);
+    margin: 14px 0 5px; font-weight: 600; }
+  .insp-input { width: 100%; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 7px; padding: 7px 10px; font-size: .82rem; outline: none; }
+  .insp-input:focus { border-color: var(--accent); }
+  .size-presets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .size-btn { border: 1px solid var(--border); border-radius: 7px; padding: 8px 4px; font-size: .68rem;
+    color: var(--dim); text-align: center; }
+  .size-btn:hover, .size-btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+  .insp-danger { width: 100%; margin-top: 20px; border: 1px solid rgba(255,95,86,.3); color: var(--red);
+    border-radius: 7px; padding: 8px; font-size: .8rem; }
+  .insp-danger:hover { background: rgba(255,95,86,.08); }
+
+  #cellMenu { position: fixed; z-index: 120; background: var(--elev); border: 1px solid var(--border-hi);
+    border-radius: 10px; padding: 5px; min-width: 176px; box-shadow: var(--shadow); display: none; }
+  #cellMenu.open { display: block; }
+  .cm-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 10px;
+    border-radius: 6px; font-size: .8rem; color: var(--text); text-align: left; }
+  .cm-item:hover { background: var(--surface2); }
+  .cm-item.danger { color: var(--red); }
+  .cm-sep { height: 1px; background: var(--border); margin: 4px 6px; }
+
+  #toast { position: fixed; bottom: 22px; right: 22px; background: var(--elev); color: var(--text);
+    border: 1px solid var(--border-hi); border-left: 3px solid var(--green); border-radius: 9px;
+    padding: 10px 16px; font-size: .82rem; z-index: 200; opacity: 0; transform: translateY(8px);
+    transition: all .25s var(--ease); pointer-events: none; box-shadow: var(--shadow); }
+  #toast.show { opacity: 1; transform: translateY(0); }
+
+  .canvas-empty { max-width: 1440px; margin: 10vh auto 0; text-align: center; color: var(--dim); }
+  .canvas-empty h2 { font-size: 1.05rem; color: var(--text); margin-bottom: 6px; }
+
+  @media (max-width: 1024px) {
+    #canvas { grid-template-columns: repeat(6, 1fr); }
+  }
+  @media (max-width: 720px) {
+    #sidebar { display: none; }
+    #topbar, #canvas-wrap { left: 0 !important; }
+    #canvas { grid-template-columns: 1fr; }
+    .cell { grid-column: span 1 !important; }
+    #clock { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Sidebar ──────────────────────────────────────────── -->
+<aside id="sidebar" aria-label="Navigation">
+  <div class="sb-head">
+    <div class="sb-logo"><span data-icon="command"></span></div>
+    <div class="sb-title">Super Bookmark Manager</div>
+  </div>
+  <div class="sb-scroll">
+    <button class="sb-item" data-action="palette" title="Search (Ctrl+K)">
+      <span class="icon" data-icon="search"></span><span class="sb-label">Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="sb-sec-title">Navigate</div>
+    <nav id="navViews"></nav>
+    <div class="sb-sec-title">Workspaces</div>
+    <nav id="navSpaces"></nav>
+    <div class="sb-sec-title">Library</div>
+    <a class="sb-item" href="/posts" title="Saved posts">
+      <span class="icon" data-icon="book"></span><span class="sb-label">Knowledge · Saved Posts</span>
+      <span class="sb-count">{{ stats.total }}</span>
+    </a>
+  </div>
+  <div class="sb-foot">
+    <button class="sb-item" id="btnCollapse" title="Collapse sidebar">
+      <span class="icon" data-icon="collapse"></span><span class="sb-label">Collapse</span>
+    </button>
+    <button class="sb-item" data-action="theme" title="Toggle theme">
+      <span class="icon" data-icon="sun"></span><span class="sb-label">Theme</span>
+    </button>
+  </div>
+</aside>
+
+<!-- ── Topbar ───────────────────────────────────────────── -->
+<header id="topbar">
+  <div>
+    <div class="crumb" id="crumbTitle">Dashboard</div>
+    <div class="crumb-sub" id="crumbSub">All cells</div>
+  </div>
+  <div class="tb-spacer"></div>
+  <button class="tb-search" data-action="palette">
+    <span data-icon="search"></span> Search or run a command <kbd>Ctrl K</kbd>
+  </button>
+  <span id="clock"></span>
+  <button class="icon-btn" data-action="theme" title="Toggle theme"><span data-icon="sun"></span></button>
+  <button class="icon-btn" id="btnCustomize" title="Customize layout (Ctrl+E)"><span data-icon="settings"></span></button>
+  <button class="btn-primary" id="btnAddCell"><span data-icon="plus"></span> Add cell</button>
+  <span class="sync-dot" title="Layout autosaved locally"></span>
+</header>
+
+<!-- ── Canvas ───────────────────────────────────────────── -->
+<div id="canvas-wrap">
+  <div id="canvas" role="list"></div>
+</div>
+
+<!-- ── Command palette ──────────────────────────────────── -->
+<div class="overlay" id="paletteOverlay">
+  <div class="palette" role="dialog" aria-label="Command palette">
+    <input id="paletteInput" placeholder="Search commands, posts, tasks…" autocomplete="off" />
+    <div class="palette-list" id="paletteList"></div>
+  </div>
+</div>
+
+<!-- ── Widget picker ────────────────────────────────────── -->
+<div class="overlay" id="pickerOverlay">
+  <div class="picker" role="dialog" aria-label="Add cell">
+    <div class="picker-head">
+      <h3>Add a cell</h3>
+      <input id="pickerSearch" placeholder="Search widget types…" />
+    </div>
+    <div class="picker-grid" id="pickerGrid"></div>
+  </div>
+</div>
+
+<!-- ── Inspector ────────────────────────────────────────── -->
+<div id="inspector" aria-label="Cell settings">
+  <h3>Cell settings</h3>
+  <div class="insp-label">Title</div>
+  <input class="insp-input" id="inspTitle" />
+  <div class="insp-label">Category / workspace</div>
+  <select class="insp-input" id="inspCat"></select>
+  <div class="insp-label">Size preset</div>
+  <div class="size-presets" id="inspSizes"></div>
+  <button class="insp-danger" id="inspRemove">Remove cell</button>
+</div>
+
+<!-- ── Cell menu ────────────────────────────────────────── -->
+<div id="cellMenu"></div>
+<div id="toast"></div>
+
+<style>
+  [data-icon] svg, .icon svg { width: 16px; height: 16px; display: block; }
+  .cell-icon [data-icon] svg { width: 14px; height: 14px; }
+  .sb-logo [data-icon] svg { width: 16px; height: 16px; color: #fff; }
+  .cell.drop-before { box-shadow: -3px 0 0 0 var(--accent); }
+  .cell.drop-after { box-shadow: 3px 0 0 0 var(--accent); }
+</style>
+
+<script>
+"use strict";
+
+/* ── Icons (feather-style inline SVG) ─────────────────── */
+const P = s => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${s}</svg>`;
+const ICONS = {
+  command: P('<path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/>'),
+  search: P('<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>'),
+  book: P('<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>'),
+  collapse: P('<path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/>'),
+  sun: P('<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
+  settings: P('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h.1a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5h.1a1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.1a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>'),
+  plus: P('<path d="M12 5v14M5 12h14"/>'),
+  dots: P('<circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>'),
+  grip: P('<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>'),
+  x: P('<path d="M18 6 6 18M6 6l12 12"/>'),
+  check: P('<path d="M20 6 9 17l-5-5"/>'),
+  zap: P('<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>'),
+  inbox: P('<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z"/>'),
+  calendar: P('<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>'),
+  tasks: P('<path d="m9 11 3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>'),
+  capture: P('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
+  chart: P('<path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-3"/>'),
+  flask: P('<path d="M10 2v7.5L4.5 19a2 2 0 0 0 1.8 3h11.4a2 2 0 0 0 1.8-3L14 9.5V2"/><path d="M8.5 2h7"/><path d="M7 16h10"/>'),
+  cpu: P('<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3m6-3v3M9 20v3m6-3v3M1 9h3m-3 6h3M20 9h3m-3 6h3"/>'),
+  dollar: P('<path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>'),
+  activity: P('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),
+  file: P('<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><path d="M14 2v6h6"/>'),
+  heart: P('<path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/>'),
+  clock: P('<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>'),
+  pin: P('<path d="M12 17v5"/><path d="M9 10.8 7.5 12.3a1 1 0 0 0 .7 1.7h7.6a1 1 0 0 0 .7-1.7L15 10.8V5h1a1 1 0 0 0 0-2H8a1 1 0 0 0 0 2h1z"/>'),
+  copy: P('<rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
+  trash: P('<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>'),
+  arrow: P('<path d="M5 12h14m-7-7 7 7-7 7"/>'),
+  layers: P('<path d="m12 2 10 6.5L12 15 2 8.5 12 2Z"/><path d="m2 15.5 10 6.5 10-6.5"/>'),
+};
+function mountIcons(root = document) {
+  root.querySelectorAll("[data-icon]").forEach(el => {
+    const name = el.dataset.icon;
+    if (ICONS[name] && !el.firstChild) el.innerHTML = ICONS[name];
+  });
+}
+
+/* ── Server-injected data ─────────────────────────────── */
+const STATS = {{ stats|tojson }};
+const CATEGORIES = {{ categories|tojson }};
+const WORKSPACES = ["personal", "work", "knowledge", "finance", "lab", "system"];
+
+/* ── Saved views (sidebar navigation) ─────────────────── */
+const VIEWS = [
+  { id: "all",       label: "Dashboard", icon: "layers",   types: null },
+  { id: "today",     label: "Today",     icon: "calendar", types: ["today", "tasks", "capture", "habits"] },
+  { id: "knowledge", label: "Knowledge", icon: "book",     types: ["knowledge", "research", "timeline"] },
+  { id: "system",    label: "System",    icon: "cpu",      types: ["system", "ai"] },
+  { id: "finance",   label: "Finance",   icon: "dollar",   types: ["finance"] },
+];
+
+/* ── State ────────────────────────────────────────────── */
+let state = { cells: [], theme: "dark", collapsed: false, view: "all", space: null };
+let uidCounter = Date.now() % 100000;
+const uid = () => "c" + (++uidCounter);
+
+function defaultCells() {
+  const mk = (type, w, h, category) => ({ id: uid(), type, title: WIDGETS[type].name, w, h, pinned: false, category });
+  return [
+    mk("today", 4, 2, "personal"),
+    mk("tasks", 4, 4, "work"),
+    mk("capture", 4, 3, "personal"),
+    mk("knowledge", 4, 3, "knowledge"),
+    mk("system", 4, 2, "system"),
+    mk("projects", 4, 3, "knowledge"),
+    mk("notes", 4, 3, "personal"),
+    mk("timeline", 4, 3, "knowledge"),
+    mk("ai", 4, 2, "system"),
+    mk("research", 4, 3, "knowledge"),
+  ];
+}
+
+let saveTimer = null;
+function saveState() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    fetch("/api/layout", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "main", layout: state }),
+    }).catch(() => {});
+  }, 350);
+}
+
+/* ── Small helpers ────────────────────────────────────── */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove("show"), 2200);
+}
+function relTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const s = (Date.now() - d.getTime()) / 1000;
+  if (s < 60) return "now";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h";
+  return Math.floor(s / 86400) + "d";
+}
+const api = (url, opts = {}) => fetch(url, { headers: { "Content-Type": "application/json" }, ...opts }).then(r => r.json());
+
+/* ── Canvas rendering ─────────────────────────────────── */
+function visibleCells() {
+  const v = VIEWS.find(x => x.id === state.view) || VIEWS[0];
+  return state.cells
+    .filter(c => !v.types || v.types.includes(c.type))
+    .filter(c => !state.space || c.category === state.space);
+}
+
+function renderCanvas() {
+  const canvas = $("#canvas");
+  canvas.innerHTML = "";
+  const cells = visibleCells();
+  if (!cells.length) {
+    canvas.innerHTML = `<div class="canvas-empty" style="grid-column:1/-1">
+      <h2>Nothing here yet</h2>
+      <p class="muted">Add a cell to build your dashboard, or switch views in the sidebar.</p>
+      <p style="margin-top:12px"><button class="btn-primary" onclick="openPicker()">${ICONS.plus} Add cell</button></p>
+    </div>`;
+    mountIcons(canvas);
+    updateCrumb(cells.length);
+    return;
+  }
+  for (const cell of cells) canvas.appendChild(buildCell(cell));
+  mountIcons(canvas);
+  updateCrumb(cells.length);
+}
+
+function updateCrumb(n) {
+  const v = VIEWS.find(x => x.id === state.view) || VIEWS[0];
+  $("#crumbTitle").textContent = state.space ? cap(state.space) : v.label;
+  $("#crumbSub").textContent = `${n} cell${n === 1 ? "" : "s"}${state.space ? " · workspace" : ""}`;
+}
+const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
+
+function buildCell(cell) {
+  const w = WIDGETS[cell.type] || WIDGETS.notes;
+  const el = document.createElement("article");
+  el.className = "cell" + (cell.pinned ? " pinned" : "");
+  el.dataset.id = cell.id;
+  el.dataset.wtype = cell.type;
+  el.setAttribute("role", "listitem");
+  el.style.gridColumn = `span ${cell.w}`;
+  el.style.gridRow = `span ${cell.h}`;
+  el.innerHTML = `
+    <div class="cell-head">
+      <span class="drag-handle" title="Drag to reorder"><span data-icon="grip"></span></span>
+      <span class="cell-icon" data-icon="${w.icon}"></span>
+      <span class="cell-title" title="Double-click to rename">${esc(cell.title)}</span>
+      ${cell.category ? `<span class="cell-cat">${esc(cell.category)}</span>` : ""}
+      <button class="cell-menu-btn" title="Cell menu" aria-label="Cell menu"><span data-icon="dots"></span></button>
+    </div>
+    <div class="cell-body"></div>
+    <span class="resize-handle" title="Drag to resize"><span data-icon="arrow"></span></span>`;
+
+  el.querySelector(".cell-menu-btn").addEventListener("click", e => { e.stopPropagation(); openCellMenu(e, cell); });
+  el.querySelector(".cell-title").addEventListener("dblclick", () => renameInline(el, cell));
+  el.querySelector(".resize-handle").addEventListener("mousedown", e => startResize(e, el, cell));
+  const handle = el.querySelector(".drag-handle");
+  handle.addEventListener("mousedown", () => el.setAttribute("draggable", "true"));
+  el.addEventListener("dragend", () => { el.removeAttribute("draggable"); clearDropMarks(); });
+  el.addEventListener("dragstart", e => {
+    draggedId = cell.id;
+    el.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", cell.id);
+  });
+  el.addEventListener("dragover", e => {
+    if (!draggedId || draggedId === cell.id) return;
+    e.preventDefault();
+    const r = el.getBoundingClientRect();
+    const before = e.clientX < r.left + r.width / 2;
+    clearDropMarks();
+    el.classList.add(before ? "drop-before" : "drop-after");
+    el.dataset.dropSide = before ? "before" : "after";
+  });
+  el.addEventListener("dragleave", () => { el.classList.remove("drop-before", "drop-after"); });
+  el.addEventListener("drop", e => {
+    e.preventDefault();
+    if (!draggedId || draggedId === cell.id) return;
+    const from = state.cells.findIndex(c => c.id === draggedId);
+    const moved = state.cells.splice(from, 1)[0];
+    let to = state.cells.findIndex(c => c.id === cell.id);
+    if (el.dataset.dropSide === "after") to += 1;
+    state.cells.splice(to, 0, moved);
+    draggedId = null;
+    clearDropMarks();
+    saveState();
+    renderCanvas();
+  });
+
+  const body = el.querySelector(".cell-body");
+  body.innerHTML = `<div class="skeleton"></div><div class="skeleton" style="width:70%"></div>`;
+  w.render(body, cell);
+  return el;
+}
+
+function clearDropMarks() {
+  document.querySelectorAll(".drop-before,.drop-after").forEach(x => x.classList.remove("drop-before", "drop-after"));
+}
+let draggedId = null;
+
+/* ── Resize ───────────────────────────────────────────── */
+function startResize(e, el, cell) {
+  e.preventDefault(); e.stopPropagation();
+  const canvas = $("#canvas");
+  const cs = getComputedStyle(canvas);
+  const cols = cs.gridTemplateColumns.split(" ").length;
+  const colW = (canvas.clientWidth - (cols - 1) * 14) / cols;
+  const rowH = 76;
+  const startW = cell.w, startH = cell.h;
+  const sx = e.clientX, sy = e.clientY;
+  el.style.transition = "none";
+  function move(ev) {
+    cell.w = Math.min(cols, Math.max(2, startW + Math.round((ev.clientX - sx) / (colW + 14))));
+    cell.h = Math.min(10, Math.max(1, startH + Math.round((ev.clientY - sy) / (rowH + 14))));
+    el.style.gridColumn = `span ${cell.w}`;
+    el.style.gridRow = `span ${cell.h}`;
+  }
+  function up() {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+    el.style.transition = "";
+    saveState();
+    renderCanvas();
+  }
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+}
+
+/* ── Inline rename ────────────────────────────────────── */
+function renameInline(el, cell) {
+  const tEl = el.querySelector(".cell-title");
+  if (tEl.querySelector("input")) return;
+  const input = document.createElement("input");
+  input.value = cell.title;
+  tEl.textContent = "";
+  tEl.appendChild(input);
+  input.focus(); input.select();
+  const commit = () => {
+    cell.title = input.value.trim() || WIDGETS[cell.type].name;
+    saveState(); renderCanvas();
+  };
+  input.addEventListener("blur", commit);
+  input.addEventListener("keydown", ev => {
+    if (ev.key === "Enter") input.blur();
+    if (ev.key === "Escape") { input.value = cell.title; input.blur(); }
+  });
+}
+
+/* ── Widget registry ──────────────────────────────────── */
+const WIDGETS = {
+  today: {
+    name: "Today", icon: "calendar", cat: "personal", defW: 4, defH: 2,
+    desc: "Date, greeting, day progress and your top priorities.",
+    render(body) {
+      const now = new Date();
+      const h = now.getHours();
+      const greet = h < 5 ? "Working late" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+      const dayPct = Math.round(((h * 60 + now.getMinutes()) / 1440) * 100);
+      body.innerHTML = `
+        <div class="today-date">${now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</div>
+        <div class="today-greet">${greet} · ${dayPct}% of today elapsed</div>
+        <div class="bar" style="margin:8px 0 6px"><div style="width:${dayPct}%"></div></div>
+        <div class="w-prios"><div class="skeleton"></div></div>`;
+      api("/api/tasks").then(tasks => {
+        const top = tasks.filter(t => !t.done).slice(0, 3);
+        const prioEl = body.querySelector(".w-prios");
+        prioEl.innerHTML = top.length
+          ? top.map((t, i) => `<div class="prio-item"><span class="prio-num">${i + 1}</span><span>${esc(t.title)}</span></div>`).join("")
+          : `<div class="muted">No open tasks — enjoy a clear day.</div>`;
+      });
+    },
+  },
+
+  tasks: {
+    name: "Focus Tasks", icon: "tasks", cat: "work", defW: 4, defH: 4,
+    desc: "Task list with priorities, inline add and completion.",
+    render(body, cell) {
+      let showDone = cell._showDone ?? false;
+      function draw() {
+        api("/api/tasks").then(tasks => {
+          const open = tasks.filter(t => !t.done);
+          const done = tasks.filter(t => t.done);
+          const rows = (showDone ? tasks : open);
+          body.innerHTML = `
+            ${rows.length ? rows.map(t => `
+              <div class="task-row ${t.done ? "done" : ""}" data-id="${t.id}">
+                <button class="task-check" title="${t.done ? "Reopen" : "Complete"}">${ICONS.check}</button>
+                <span class="task-title" title="${esc(t.title)}">${esc(t.title)}</span>
+                ${t.priority === "high" ? `<span class="prio prio-high">high</span>` : ""}
+                <button class="task-x" title="Delete">${ICONS.x}</button>
+              </div>`).join("")
+            : `<div class="w-empty"><span data-icon="tasks"></span><div>All clear — no open tasks.</div></div>`}
+            <div class="inline-add">
+              <input placeholder="Add a task… (Enter)" data-add />
+              <select data-prio><option value="normal">·</option><option value="high">!</option></select>
+            </div>
+            <div class="row" style="margin-top:6px;justify-content:space-between">
+              <span class="tiny">${open.length} open${done.length ? ` · ${done.length} done` : ""}</span>
+              <button class="tiny" data-toggle style="color:var(--dim)">${showDone ? "hide" : "show"} completed</button>
+            </div>`;
+          mountIcons(body);
+          body.querySelectorAll(".task-check").forEach(b => b.addEventListener("click", async e => {
+            const id = e.currentTarget.closest(".task-row").dataset.id;
+            const t = tasks.find(x => x.id == id);
+            await api(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify({ done: t.done ? 0 : 1 }) });
+            draw();
+          }));
+          body.querySelectorAll(".task-x").forEach(b => b.addEventListener("click", async e => {
+            const id = e.currentTarget.closest(".task-row").dataset.id;
+            await api(`/api/tasks/${id}`, { method: "DELETE" });
+            draw();
+          }));
+          const input = body.querySelector("[data-add]");
+          input.addEventListener("keydown", async e => {
+            if (e.key !== "Enter" || !input.value.trim()) return;
+            await api("/api/tasks", { method: "POST", body: JSON.stringify({ title: input.value.trim(), priority: body.querySelector("[data-prio]").value }) });
+            draw();
+          });
+          body.querySelector("[data-toggle]").addEventListener("click", () => {
+            showDone = !showDone; cell._showDone = showDone; draw();
+          });
+        });
+      }
+      draw();
+    },
+  },
+
+  capture: {
+    name: "Quick Capture", icon: "zap", cat: "personal", defW: 4, defH: 3,
+    desc: "Capture notes, tasks, ideas and links without breaking flow.",
+    render(body) {
+      let type = "note";
+      const TYPES = ["note", "task", "idea", "link", "research"];
+      function draw() {
+        api("/api/captures").then(caps => {
+          body.innerHTML = `
+            <div class="cap-types">${TYPES.map(t =>
+              `<button class="cap-type ${t === type ? "on" : ""}" data-t="${t}">${t}</button>`).join("")}</div>
+            <div class="inline-add"><input placeholder="Capture something… (Enter)" data-cap /></div>
+            <div style="margin-top:6px">
+              ${caps.slice(0, 6).map(c => `
+                <div class="cap-item">
+                  <span class="cap-badge">${esc(c.type)}</span>
+                  <span class="li-text" title="${esc(c.content)}">${esc(c.content)}</span>
+                  <span class="tiny">${relTime(c.created_at)}</span>
+                </div>`).join("") || `<div class="tiny" style="padding:6px 0">Nothing captured yet.</div>`}
+            </div>`;
+          body.querySelectorAll(".cap-type").forEach(b => b.addEventListener("click", () => { type = b.dataset.t; draw(); }));
+          const input = body.querySelector("[data-cap]");
+          input.addEventListener("keydown", async e => {
+            if (e.key !== "Enter" || !input.value.trim()) return;
+            await api("/api/captures", { method: "POST", body: JSON.stringify({ type, content: input.value.trim() }) });
+            toast(type === "task" ? "Captured as task" : "Captured");
+            input.value = "";
+            api("/api/captures").then(fresh => {
+              const list = body.querySelector(".cap-item")?.parentElement;
+              if (list) draw();
+            });
+          });
+        });
+      }
+      draw();
+    },
+  },
+
+  projects: {
+    name: "Project Progress", icon: "chart", cat: "knowledge", defW: 4, defH: 3,
+    desc: "Your knowledge categories as active areas with volume.",
+    render(body) {
+      api("/api/categories").then(cats => {
+        const top = cats.filter(c => c.count > 0).sort((a, b) => b.count - a.count).slice(0, 6);
+        const max = top.length ? top[0].count : 1;
+        body.innerHTML = top.length ? top.map(c => `
+          <div style="padding:4px 0">
+            <div class="row" style="justify-content:space-between">
+              <span style="font-size:.8rem">${esc(c.name)}</span>
+              <span class="tiny">${c.count} · ${c.count >= max ? "active" : "steady"}</span>
+            </div>
+            <div class="bar" style="margin-top:3px"><div style="width:${Math.round(c.count / max * 100)}%"></div></div>
+          </div>`).join("")
+        : `<div class="w-empty"><span data-icon="chart"></span><div>No categorized posts yet.</div><a class="cta" href="/posts">Open saved posts</a></div>`;
+        mountIcons(body);
+      });
+    },
+  },
+
+  knowledge: {
+    name: "Knowledge Inbox", icon: "inbox", cat: "knowledge", defW: 4, defH: 3,
+    desc: "Recently saved posts from Telegram, Instagram, YouTube…",
+    render(body) {
+      api("/api/posts").then(posts => {
+        const recent = posts.slice(0, 8);
+        body.innerHTML = recent.length ? recent.map(p => `
+          <div class="list-item">
+            <span class="src-badge src-${esc((p.source || "other").replace(/\./g, "-"))}">${esc(p.source || "other")}</span>
+            <span class="li-text" title="${esc(p.summary || p.text || "")}">
+              ${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.title || p.text?.slice(0, 60) || p.url)}</a>` : esc(p.title || p.text?.slice(0, 60) || "(untitled)")}
+            </span>
+            <span class="tiny">${esc(p.category || "")}</span>
+          </div>`).join("")
+        : `<div class="w-empty"><span data-icon="inbox"></span><div>No saved posts yet.</div></div>`;
+        mountIcons(body);
+      });
+    },
+  },
+
+  research: {
+    name: "Research Queue", icon: "flask", cat: "knowledge", defW: 4, defH: 3,
+    desc: "Ideas and research captures — promote findings to tasks.",
+    render(body) {
+      function draw() {
+        api("/api/captures").then(caps => {
+          const items = caps.filter(c => ["research", "idea", "link"].includes(c.type));
+          body.innerHTML = items.length ? items.map(c => `
+            <div class="list-item" data-id="${c.id}">
+              <span class="src-badge" style="color:var(--violet)">${esc(c.type)}</span>
+              <span class="li-text" title="${esc(c.content)}">${esc(c.content)}</span>
+              <button class="icon-btn" style="width:22px;height:22px" data-promote title="Promote to task">${ICONS.arrow}</button>
+            </div>`).join("")
+          : `<div class="w-empty"><span data-icon="flask"></span><div>No research items.</div><button class="cta" data-open-capture>Capture an idea</button></div>`;
+          mountIcons(body);
+          body.querySelectorAll("[data-promote]").forEach(b => b.addEventListener("click", async e => {
+            const row = e.currentTarget.closest(".list-item");
+            const item = items.find(x => x.id == row.dataset.id);
+            await api("/api/tasks", { method: "POST", body: JSON.stringify({ title: item.content, priority: "normal" }) });
+            await api(`/api/captures/${item.id}`, { method: "DELETE" });
+            toast("Promoted to task");
+            draw();
+          }));
+          const cta = body.querySelector("[data-open-capture]");
+          if (cta) cta.addEventListener("click", () => { document.querySelector('.cell[data-wtype="capture"] input')?.focus(); });
+        });
+      }
+      draw();
+    },
+  },
+
+  ai: {
+    name: "Local Model", icon: "cpu", cat: "system", defW: 4, defH: 2,
+    desc: "Live status of your local LLM server — no fake metrics.",
+    render(body) {
+      api("/api/system").then(sys => {
+        const llm = sys.llm || { online: false, endpoint: "?" };
+        body.innerHTML = `
+          <div class="row" style="gap:9px;padding:4px 0">
+            <span class="pill-dot" style="background:${llm.online ? "var(--green)" : "var(--red)"}"></span>
+            <span style="font-size:.84rem;font-weight:600">${llm.online ? "Online" : "Offline"}</span>
+            <span class="muted">${esc(llm.endpoint)}</span>
+          </div>
+          <div class="row" style="padding:2px 0"><span class="tiny">Queue</span><span class="muted" style="margin-left:auto">No active jobs</span></div>
+          <div class="row" style="padding:2px 0"><span class="tiny">Recent jobs</span><span class="muted" style="margin-left:auto">None this session</span></div>`;
+      });
+    },
+  },
+
+  finance: {
+    name: "Finance Snapshot", icon: "dollar", cat: "finance", defW: 4, defH: 2,
+    desc: "Modular slot for watchlists and portfolio data.",
+    render(body, cell) {
+      body.innerHTML = `
+        <div class="w-empty">
+          <span data-icon="dollar"></span>
+          <div>No data source connected.</div>
+          <div class="tiny">Connect a market-data source to populate this cell.</div>
+          <button class="fin-cta" data-hide>Hide this cell</button>
+        </div>`;
+      mountIcons(body);
+      body.querySelector("[data-hide]").addEventListener("click", () => { removeCell(cell.id); });
+    },
+  },
+
+  system: {
+    name: "System Status", icon: "activity", cat: "system", defW: 4, defH: 2,
+    desc: "Real CPU, RAM, disk and GPU utilization from this machine.",
+    render(body) {
+      function level(pct) { return pct >= 90 ? "var(--red)" : pct >= 70 ? "var(--amber)" : "var(--green)"; }
+      function draw() {
+        api("/api/system").then(sys => {
+          const rows = [];
+          if (sys.cpu != null) rows.push(["CPU", sys.cpu, `${sys.cpu}%`]);
+          if (sys.mem) rows.push(["RAM", sys.mem.pct, `${sys.mem.used_gb}/${sys.mem.total_gb} GB`]);
+          if (sys.disk) rows.push(["Disk", sys.disk.pct, `${sys.disk.used_gb}/${sys.disk.total_gb} GB`]);
+          if (sys.gpu) rows.push(["GPU", sys.gpu.util, `${sys.gpu.mem_used}/${sys.gpu.mem_total} MB · ${sys.gpu.temp}°C`]);
+          body.innerHTML = rows.length ? rows.map(([label, pct, detail]) => `
+            <div style="padding:3px 0">
+              <div class="row" style="justify-content:space-between">
+                <span class="row" style="gap:7px"><span class="pill-dot" style="background:${level(pct)}"></span><span style="font-size:.78rem">${label}</span></span>
+                <span class="tiny">${detail}</span>
+              </div>
+              <div class="bar" style="margin-top:3px"><div style="width:${pct}%;background:${level(pct)}"></div></div>
+            </div>`).join("")
+          : `<div class="w-empty"><div>System metrics unavailable.</div></div>`;
+        });
+      }
+      draw();
+      const iv = setInterval(() => { if (!document.contains(body)) { clearInterval(iv); return; } draw(); }, 8000);
+    },
+  },
+
+  notes: {
+    name: "Scratchpad", icon: "file", cat: "personal", defW: 4, defH: 3,
+    desc: "A lightweight note with autosave.",
+    render(body) {
+      api("/api/notes").then(note => {
+        body.innerHTML = `<textarea class="notes-area" placeholder="Write anything… autosaves.">${esc(note?.content || "")}</textarea>
+          <span class="notes-status">saved</span>`;
+        const ta = body.querySelector("textarea");
+        const status = body.querySelector(".notes-status");
+        let t = null;
+        ta.addEventListener("input", () => {
+          status.textContent = "saving…";
+          clearTimeout(t);
+          t = setTimeout(async () => {
+            await api("/api/notes", { method: "POST", body: JSON.stringify({ content: ta.value }) });
+            status.textContent = "saved";
+          }, 700);
+        });
+      });
+    },
+  },
+
+  habits: {
+    name: "Daily Check-in", icon: "heart", cat: "personal", defW: 4, defH: 2,
+    desc: "Three tiny daily habits — remove anytime.",
+    render(body) {
+      const HABITS = ["Moved", "Read", "Hydrated"];
+      const key = "habits-" + new Date().toISOString().slice(0, 10);
+      const done = JSON.parse(localStorage.getItem(key) || "{}");
+      function draw() {
+        body.innerHTML = `<div class="row" style="gap:8px;flex-wrap:wrap;padding-top:4px">` + HABITS.map(h => `
+          <button data-h="${h}" style="display:flex;align-items:center;gap:6px;font-size:.78rem;padding:6px 12px;border-radius:20px;
+            border:1px solid ${done[h] ? "var(--accent)" : "var(--border-hi)"};
+            background:${done[h] ? "var(--accent-bg)" : "transparent"};color:${done[h] ? "var(--accent)" : "var(--dim)"}">
+            ${done[h] ? ICONS.check : ""} ${h}</button>`).join("") + `</div>
+          <div class="tiny" style="margin-top:8px">A quiet check-in — no streaks, no pressure.</div>`;
+        body.querySelectorAll("[data-h]").forEach(b => b.addEventListener("click", () => {
+          const h = b.dataset.h;
+          done[h] = !done[h];
+          localStorage.setItem(key, JSON.stringify(done));
+          draw();
+        }));
+      }
+      draw();
+    },
+  },
+
+  timeline: {
+    name: "Activity", icon: "clock", cat: "knowledge", defW: 4, defH: 3,
+    desc: "Recent events across tasks, captures and saved posts.",
+    render(body) {
+      api("/api/activity").then(events => {
+        body.innerHTML = events.length ? events.map(e => `
+          <div class="list-item">
+            <span class="src-badge" style="color:var(--accent)"><span data-icon="${esc(e.icon)}"></span></span>
+            <span class="li-text" title="${esc(e.detail || "")}"><b style="font-weight:600">${esc(e.text)}</b>${e.detail ? ` · ${esc(e.detail)}` : ""}</span>
+            <span class="tl-time">${relTime(e.time)}</span>
+          </div>`).join("")
+        : `<div class="w-empty"><span data-icon="clock"></span><div>No activity yet — complete a task or capture an idea.</div></div>`;
+        mountIcons(body);
+      });
+    },
+  },
+};
+
+/* ── Cell operations ──────────────────────────────────── */
+function addCell(type) {
+  const w = WIDGETS[type];
+  if (!w) return;
+  state.cells.push({ id: uid(), type, title: w.name, w: w.defW, h: w.defH, pinned: false, category: w.cat });
+  saveState(); renderCanvas();
+  toast(`Added “${w.name}”`);
+}
+function removeCell(id) {
+  const cell = state.cells.find(c => c.id === id);
+  state.cells = state.cells.filter(c => c.id !== id);
+  saveState(); renderCanvas();
+  if (cell) toast(`Removed “${cell.title}”`);
+}
+function duplicateCell(id) {
+  const cell = state.cells.find(c => c.id === id);
+  if (!cell) return;
+  const copy = { ...cell, id: uid(), title: cell.title + " (copy)", pinned: false };
+  const i = state.cells.findIndex(c => c.id === id);
+  state.cells.splice(i + 1, 0, copy);
+  saveState(); renderCanvas();
+}
+
+/* ── Sidebar ──────────────────────────────────────────── */
+function renderSidebar() {
+  const nav = $("#navViews");
+  nav.innerHTML = VIEWS.map(v => `
+    <button class="sb-item ${state.view === v.id && !state.space ? "active" : ""}" data-view="${v.id}" title="${v.label}">
+      <span class="icon" data-icon="${v.icon}"></span><span class="sb-label">${v.label}</span>
+    </button>`).join("");
+  nav.querySelectorAll("[data-view]").forEach(b => b.addEventListener("click", () => {
+    state.view = b.dataset.view; state.space = null;
+    saveState(); renderSidebar(); renderCanvas();
+  }));
+
+  const spaces = $("#navSpaces");
+  const counts = {};
+  state.cells.forEach(c => { if (c.category) counts[c.category] = (counts[c.category] || 0) + 1; });
+  spaces.innerHTML = WORKSPACES.map(ws => `
+    <button class="sb-item ${state.space === ws ? "active" : ""}" data-space="${ws}" title="${cap(ws)}">
+      <span class="icon" data-icon="layers"></span><span class="sb-label">${cap(ws)}</span>
+      ${counts[ws] ? `<span class="sb-count">${counts[ws]}</span>` : ""}
+    </button>`).join("");
+  spaces.querySelectorAll("[data-space]").forEach(b => b.addEventListener("click", () => {
+    state.space = state.space === b.dataset.space ? null : b.dataset.space;
+    saveState(); renderSidebar(); renderCanvas();
+  }));
+  mountIcons($("#sidebar"));
+}
+
+$("#btnCollapse").addEventListener("click", () => {
+  state.collapsed = !state.collapsed;
+  document.body.classList.toggle("sb-collapsed", state.collapsed);
+  saveState();
+});
+
+/* ── Widget picker ────────────────────────────────────── */
+function openPicker() {
+  const overlay = $("#pickerOverlay");
+  overlay.classList.add("open");
+  const grid = $("#pickerGrid");
+  const search = $("#pickerSearch");
+  search.value = "";
+  drawPicker("");
+  search.focus();
+  function drawPicker(q) {
+    const present = new Set(state.cells.map(c => c.type));
+    grid.innerHTML = Object.entries(WIDGETS)
+      .filter(([type, w]) => (w.name + w.desc).toLowerCase().includes(q.toLowerCase()))
+      .map(([type, w]) => `
+        <button class="pick-card" data-type="${type}">
+          <span class="icon" data-icon="${w.icon}"></span>
+          <div class="pick-name">${w.name}</div>
+          <div class="pick-desc">${w.desc}</div>
+          ${present.has(type) ? `<div class="pick-added">Already on dashboard — add another</div>` : ""}
+        </button>`).join("") || `<div class="muted" style="grid-column:1/-1;text-align:center;padding:20px">No widgets match “${esc(q)}”.</div>`;
+    mountIcons(grid);
+    grid.querySelectorAll(".pick-card").forEach(c => c.addEventListener("click", () => {
+      addCell(c.dataset.type);
+      closeOverlays();
+    }));
+  }
+  search.oninput = () => drawPicker(search.value);
+}
+$("#btnAddCell").addEventListener("click", openPicker);
+
+/* ── Inspector ────────────────────────────────────────── */
+let inspCell = null;
+function openInspector(cell) {
+  inspCell = cell;
+  $("#inspTitle").value = cell.title;
+  const sel = $("#inspCat");
+  sel.innerHTML = [`<option value="">uncategorized</option>`]
+    .concat(WORKSPACES.map(ws => `<option value="${ws}" ${cell.category === ws ? "selected" : ""}>${ws}</option>`))
+    .join("");
+  const sizes = [["S", 3, 2], ["M", 4, 3], ["L", 6, 4], ["Wide", 12, 3], ["Tall", 3, 5], ["XL", 8, 5]];
+  $("#inspSizes").innerHTML = sizes.map(([label, w, h]) => `
+    <button class="size-btn ${cell.w === w && cell.h === h ? "on" : ""}" data-w="${w}" data-h="${h}">${label}<br><span class="tiny">${w}×${h}</span></button>`).join("");
+  $("#inspSizes").querySelectorAll(".size-btn").forEach(b => b.addEventListener("click", () => {
+    cell.w = +b.dataset.w; cell.h = +b.dataset.h;
+    saveState(); renderCanvas(); openInspector(cell);
+  }));
+  $("#inspector").classList.add("open");
+}
+$("#inspTitle").addEventListener("input", () => {
+  if (!inspCell) return;
+  inspCell.title = $("#inspTitle").value;
+  saveState();
+});
+$("#inspTitle").addEventListener("blur", renderCanvas);
+$("#inspCat").addEventListener("change", () => {
+  if (!inspCell) return;
+  inspCell.category = $("#inspCat").value;
+  saveState(); renderCanvas(); renderSidebar();
+});
+$("#inspRemove").addEventListener("click", () => {
+  if (inspCell) removeCell(inspCell.id);
+  $("#inspector").classList.remove("open");
+});
+
+/* ── Cell menu ────────────────────────────────────────── */
+let menuCell = null;
+function openCellMenu(e, cell) {
+  menuCell = cell;
+  const menu = $("#cellMenu");
+  menu.innerHTML = `
+    <button class="cm-item" data-op="pin">${cell.pinned ? ICONS.x + " Unpin" : ICONS.pin + " Pin to top"}</button>
+    <button class="cm-item" data-op="rename">${ICONS.capture} Rename</button>
+    <button class="cm-item" data-op="inspect">${ICONS.settings} Customize…</button>
+    <button class="cm-item" data-op="duplicate">${ICONS.copy} Duplicate</button>
+    <div class="cm-sep"></div>
+    <button class="cm-item danger" data-op="remove">${ICONS.trash} Remove</button>`;
+  menu.classList.add("open");
+  const r = e.currentTarget.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(r.left - 80, innerWidth - 200)) + "px";
+  menu.style.top = Math.min(r.bottom + 6, innerHeight - 240) + "px";
+  menu.querySelectorAll(".cm-item").forEach(b => b.addEventListener("click", () => {
+    const op = b.dataset.op;
+    menu.classList.remove("open");
+    if (op === "pin") { cell.pinned = !cell.pinned; state.cells.sort((a, x) => (x.pinned ? 1 : 0) - (a.pinned ? 1 : 0)); saveState(); renderCanvas(); }
+    if (op === "rename") { const el = document.querySelector(`.cell[data-id="${cell.id}"]`); if (el) renameInline(el, cell); }
+    if (op === "inspect") openInspector(cell);
+    if (op === "duplicate") duplicateCell(cell.id);
+    if (op === "remove") removeCell(cell.id);
+  }));
+}
+
+/* ── Command palette ──────────────────────────────────── */
+let palItems = [], palSel = 0;
+function paletteCommands(q) {
+  const cmds = [
+    { icon: "plus", label: "Add a cell…", hint: "action", run: openPicker },
+    { icon: "settings", label: document.body.classList.contains("customizing") ? "Exit customize mode" : "Customize layout", hint: "Ctrl+E", run: toggleCustomize },
+    { icon: "sun", label: "Toggle theme", hint: "action", run: toggleTheme },
+    { icon: "book", label: "Open Saved Posts library", hint: "→ /posts", run: () => location.href = "/posts" },
+    ...VIEWS.slice(1).map(v => ({ icon: v.icon, label: `View: ${v.label}`, hint: "switch", run: () => { state.view = v.id; state.space = null; saveState(); renderSidebar(); renderCanvas(); } })),
+    ...WORKSPACES.map(ws => ({ icon: "layers", label: `Workspace: ${cap(ws)}`, hint: "filter", run: () => { state.space = ws; saveState(); renderSidebar(); renderCanvas(); } })),
+  ];
+  return cmds.filter(c => c.label.toLowerCase().includes(q.toLowerCase()));
+}
+async function openPalette() {
+  $("#paletteOverlay").classList.add("open");
+  const input = $("#paletteInput");
+  input.value = "";
+  palSel = 0;
+  await drawPalette("");
+  input.focus();
+  input.oninput = () => drawPalette(input.value);
+  input.onkeydown = e => {
+    const list = $("#paletteList");
+    if (e.key === "ArrowDown") { palSel = Math.min(palSel + 1, palItems.length - 1); markPal(list); e.preventDefault(); }
+    if (e.key === "ArrowUp") { palSel = Math.max(palSel - 1, 0); markPal(list); e.preventDefault(); }
+    if (e.key === "Enter" && palItems[palSel]) { closeOverlays(); palItems[palSel].run(); }
+  };
+}
+async function drawPalette(q) {
+  const list = $("#paletteList");
+  palItems = paletteCommands(q);
+  let html = "";
+  if (q) {
+    const [tasks, posts] = await Promise.all([api("/api/tasks"), api("/api/posts?q=" + encodeURIComponent(q))]);
+    const tHit = tasks.filter(t => t.title.toLowerCase().includes(q.toLowerCase())).slice(0, 3);
+    tHit.forEach(t => palItems.push({ icon: "tasks", label: t.title, hint: t.done ? "done" : "task", run: () => { state.view = "today"; saveState(); renderSidebar(); renderCanvas(); } }));
+    posts.slice(0, 5).forEach(p => {
+      if (p.url) palItems.push({ icon: "book", label: (p.title || p.url).slice(0, 80), hint: p.source, run: () => window.open(p.url, "_blank") });
+    });
+  }
+  html = palItems.map((c, i) => `
+    <div class="pal-item ${i === palSel ? "sel" : ""}" data-i="${i}">
+      <span class="icon" data-icon="${c.icon}"></span><span>${esc(c.label)}</span>
+      <span class="pal-hint">${esc(c.hint)}</span>
+    </div>`).join("") || `<div class="muted" style="padding:14px;text-align:center">No results for “${esc(q)}”.</div>`;
+  list.innerHTML = html;
+  mountIcons(list);
+  list.querySelectorAll(".pal-item").forEach(el => el.addEventListener("click", () => {
+    closeOverlays();
+    palItems[+el.dataset.i].run();
+  }));
+}
+function markPal(list) {
+  list.querySelectorAll(".pal-item").forEach((el, i) => el.classList.toggle("sel", i === palSel));
+}
+document.querySelectorAll("[data-action='palette']").forEach(b => b.addEventListener("click", openPalette));
+
+/* ── Overlays / theme / customize ─────────────────────── */
+function closeOverlays() {
+  $("#paletteOverlay").classList.remove("open");
+  $("#pickerOverlay").classList.remove("open");
+  $("#cellMenu").classList.remove("open");
+}
+document.querySelectorAll(".overlay").forEach(o => o.addEventListener("mousedown", e => { if (e.target === o) closeOverlays(); }));
+document.addEventListener("click", e => {
+  const menu = $("#cellMenu");
+  if (menu.classList.contains("open") && !menu.contains(e.target) && !e.target.closest(".cell-menu-btn")) menu.classList.remove("open");
+});
+
+function toggleTheme() {
+  state.theme = state.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = state.theme;
+  saveState();
+}
+document.querySelectorAll("[data-action='theme']").forEach(b => b.addEventListener("click", toggleTheme));
+
+function toggleCustomize() {
+  document.body.classList.toggle("customizing");
+  $("#btnCustomize").classList.toggle("on", document.body.classList.contains("customizing"));
+}
+$("#btnCustomize").addEventListener("click", toggleCustomize);
+
+/* ── Keyboard shortcuts ───────────────────────────────── */
+document.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(); }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "e") { e.preventDefault(); toggleCustomize(); }
+  if (e.key === "Escape") { closeOverlays(); $("#inspector").classList.remove("open"); }
+});
+
+/* ── Clock ────────────────────────────────────────────── */
+function tickClock() {
+  const now = new Date();
+  $("#clock").textContent = now.toLocaleDateString(undefined, { weekday: "short", day: "numeric" }) +
+    " · " + now.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+tickClock();
+setInterval(tickClock, 30000);
+
+/* ── Boot ─────────────────────────────────────────────── */
+(async function boot() {
+  try {
+    const res = await api("/api/layout?key=main");
+    const saved = res.layout || {};
+    if (saved.cells && saved.cells.length) state = { ...state, ...saved };
+    else state.cells = defaultCells();
+  } catch {
+    state.cells = defaultCells();
+  }
+  document.documentElement.dataset.theme = state.theme || "dark";
+  document.body.classList.toggle("sb-collapsed", !!state.collapsed);
+  mountIcons();
+  renderSidebar();
+  renderCanvas();
+})();
+</script>
+</body>
+</html>

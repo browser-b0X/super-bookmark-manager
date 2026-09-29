@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Super Bookmark Manager logo">
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+
+  <g id="window">
+    <path d="M154 118
+             L358 118
+             Q384 118 384 144
+             L384 164
+             Q384 170 378 170
+             L134 170
+             Q128 170 128 164
+             L128 144
+             Q128 118 154 118
+             Z" fill="#f2f2f4"/>
+    <circle cx="163" cy="144" r="11" fill="#0b0b10"/>
+    <circle cx="199" cy="144" r="11" fill="#0b0b10"/>
+    <circle cx="235" cy="144" r="11" fill="#0b0b10"/>
+  </g>
+
+  <g id="shield" fill="url(#brandGrad)">
+    <path d="M126 196
+             L126 330
+             L250 404
+             L160 330
+             L160 296
+             C160 286 146 282 146 272
+             C146 262 160 258 160 248
+             L160 192
+             C160 182 154 178 146 178
+             L144 178
+             C132 178 126 184 126 196
+             Z"/>
+    <path d="M386 196
+             L386 330
+             L262 404
+             L352 330
+             L352 296
+             C352 286 366 282 366 272
+             C366 262 352 258 352 248
+             L352 192
+             C352 182 358 178 366 178
+             L368 178
+             C380 178 386 184 386 196
+             Z"/>
+  </g>
+
+  <g id="mesh">
+    <path d="M256 212 L320 249 L320 323 L256 360 L192 323 L192 249 Z
+             M256 286 L256 212
+             M256 286 L320 249
+             M256 286 L320 323
+             M256 286 L256 360
+             M256 286 L192 323
+             M256 286 L192 249"
+          fill="none" stroke="url(#brandGrad)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="256" cy="286" r="17" fill="url(#brandGrad)"/>
+    <circle cx="256" cy="212" r="15" fill="url(#brandGrad)"/>
+    <circle cx="320" cy="249" r="15" fill="url(#brandGrad)"/>
+    <circle cx="320" cy="323" r="15" fill="url(#brandGrad)"/>
+    <circle cx="256" cy="360" r="15" fill="url(#brandGrad)"/>
+    <circle cx="192" cy="323" r="15" fill="url(#brandGrad)"/>
+    <circle cx="192" cy="249" r="15" fill="url(#brandGrad)"/>
+  </g>
+</svg>

@@ -1,0 +1,189 @@
+{
+  "limit": 12,
+  "min_shelf": 4,
+  "engine": "proxy+curated",
+  "note": "Corpus-level LLM derivation with hand-corrected tail assignments.",
+  "categories": [
+    {
+      "name": "food-drink",
+      "description": "Recipes, cooking, ingredients and coffee.",
+      "count": 56
+    },
+    {
+      "name": "technology",
+      "description": "AI, software, engineering, science and cars.",
+      "count": 52
+    },
+    {
+      "name": "social-media",
+      "description": "Platform tactics, growth, creators and content strategy.",
+      "count": 31
+    },
+    {
+      "name": "health-fitness",
+      "description": "Training, medical, wellness, biohacking, self-improvement.",
+      "count": 21
+    },
+    {
+      "name": "arts-culture",
+      "description": "Art, music, film, design, folklore and philosophy.",
+      "count": 12
+    },
+    {
+      "name": "entertainment",
+      "description": "Humour, news, models and adult content.",
+      "count": 8
+    },
+    {
+      "name": "business-money",
+      "description": "Finance, business, legal and local commerce.",
+      "count": 6
+    },
+    {
+      "name": "style-beauty",
+      "description": "Fashion, hair and natural cosmetics.",
+      "count": 4
+    },
+    {
+      "name": "travel",
+      "description": "Destinations, trips and places to go.",
+      "count": 4
+    }
+  ],
+  "mapping": {
+    "other": "other",
+    "uncategorized": "uncategorized",
+    "gardening": "other",
+    "food-recipes": "food-drink",
+    "coffee": "food-drink",
+    "technology": "technology",
+    "science": "technology",
+    "automotive": "technology",
+    "socialmedia": "social-media",
+    "fitness": "health-fitness",
+    "health": "health-fitness",
+    "biohacking": "health-fitness",
+    "self-improvement": "health-fitness",
+    "art": "arts-culture",
+    "music": "arts-culture",
+    "filmproduction": "arts-culture",
+    "designtips": "arts-culture",
+    "folklore": "arts-culture",
+    "folkloremythology": "arts-culture",
+    "philosophy": "arts-culture",
+    "humor": "entertainment",
+    "news": "entertainment",
+    "modelas": "entertainment",
+    "adultcontent": "entertainment",
+    "finance": "business-money",
+    "business": "business-money",
+    "legal": "business-money",
+    "localbusiness": "business-money",
+    "communityresources": "business-money",
+    "fashion": "style-beauty",
+    "haircare": "style-beauty",
+    "naturalcosmetics": "style-beauty",
+    "travel": "travel"
+  },
+  "before": {
+    "categories": 31,
+    "posts": 204
+  },
+  "after": {
+    "categories": 9
+  },
+  "merges": [
+    {
+      "to": "food-drink",
+      "count": 56,
+      "from": [
+        "food-recipes",
+        "coffee"
+      ]
+    },
+    {
+      "to": "technology",
+      "count": 52,
+      "from": [
+        "technology",
+        "science",
+        "automotive"
+      ]
+    },
+    {
+      "to": "social-media",
+      "count": 31,
+      "from": [
+        "socialmedia"
+      ]
+    },
+    {
+      "to": "health-fitness",
+      "count": 21,
+      "from": [
+        "fitness",
+        "health",
+        "self-improvement",
+        "biohacking"
+      ]
+    },
+    {
+      "to": "arts-culture",
+      "count": 12,
+      "from": [
+        "art",
+        "music",
+        "filmproduction",
+        "designtips",
+        "folklore",
+        "folkloremythology",
+        "philosophy"
+      ]
+    },
+    {
+      "to": "entertainment",
+      "count": 8,
+      "from": [
+        "humor",
+        "news",
+        "modelas",
+        "adultcontent"
+      ]
+    },
+    {
+      "to": "business-money",
+      "count": 6,
+      "from": [
+        "finance",
+        "business",
+        "legal",
+        "localbusiness",
+        "communityresources"
+      ]
+    },
+    {
+      "to": "style-beauty",
+      "count": 4,
+      "from": [
+        "fashion",
+        "haircare",
+        "naturalcosmetics"
+      ]
+    },
+    {
+      "to": "travel",
+      "count": 4,
+      "from": [
+        "travel"
+      ]
+    },
+    {
+      "to": "other",
+      "count": 10,
+      "from": [
+        "other",
+        "gardening"
+      ]
+    }
+  ]
+}

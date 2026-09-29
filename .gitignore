@@ -1,0 +1,72 @@
+# Dependencies and Python/compiler caches
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.tsbuildinfo
+
+# Generated application/distribution output; keep all build scripts/manifests
+/frontend/dist/
+/dist/
+/dist-package/
+/dist-standalone/
+/dist-installer/
+/packaging/build-standalone/
+/packaging/*.spec
+
+# Local credentials/configuration. Deliberate empty examples remain source.
+.env
+.env.*
+!.env.example
+/config.json
+/credentials.json
+/secrets.json
+/secrets.yaml
+/litellm/config.local.yaml
+
+# Telegram session files and SQLite databases/sidecars (never release source)
+*.session*
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.bak
+*.bak-*
+*.backup
+
+# User-created backups, exports and copied profiles, not parser fixtures
+/backups/
+/exports/
+/bookmark-exports/
+/restored-libraries/
+/browser-profiles/
+/test-profiles/
+/playwright-profiles/
+
+# Runtime cache and logs; deleting an index entry must preserve local files
+/thumb_cache/
+*.log
+
+# Local verification output, temporary harness captures and build reports
+/.verify/
+/frontend/test-results/
+/frontend/playwright-report/
+/frontend/blob-report/
+/frontend/tests/output/
+/frontend/tests/screenshots/
+/frontend/tests/profiles/
+
+# Internal execution/recovery history; intentionally kept locally
+/docs/recovery/
+/AGENTS.md
+/PROJECT_ASSESSMENT_AND_HANDOFF.md
+
+# No global image/JSON/docs/test ignore: intentional docs assets, synthetic
+# fixtures, package manifests, installer sources and .env.example stay visible.
+
+# Local developer virtual environments
+.venv/

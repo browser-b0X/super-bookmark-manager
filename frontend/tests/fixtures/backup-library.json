@@ -1,0 +1,433 @@
+[
+  {
+    "canonicalUrl": "http://example.invalid/exercise",
+    "categories": [
+      "health-fitness"
+    ],
+    "categoryMode": "manual",
+    "categoryReview": false,
+    "createdAt": "2026-09-24T19:05:56.820Z",
+    "domain": "example.invalid",
+    "favorite": true,
+    "id": "browser-aHR0cDovL2V4YW1wbGUuaW52YWxpZC9leGVyY2lzZQ",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "archived",
+    "tags": [
+      "MiXeD",
+      "health-fitness"
+    ],
+    "title": "Owner Exercise",
+    "updatedAt": "2026-09-24T19:05:56.879Z",
+    "url": "http://example.invalid/exercise",
+    "userNotes": "Owner note health-fitness"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/programming#typescript",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "manual",
+    "categoryReview": false,
+    "createdAt": "2026-09-24T19:05:56.819Z",
+    "domain": "example.invalid",
+    "excerpt": "Travel planning https://example.invalid/travel and programming https://example.invalid/programming#typescript",
+    "favorite": true,
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvcHJvZ3JhbW1pbmcjdHlwZXNjcmlwdA",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "sourceMessageId": "97001",
+    "status": "archived",
+    "tags": [
+      "MiXeD",
+      "other"
+    ],
+    "telegramMessage": {
+      "date": "2026-09-17T09:00:00",
+      "id": "97001",
+      "text": "Travel planning https://example.invalid/travel and programming https://example.invalid/programming#typescript"
+    },
+    "title": "Owner Programming",
+    "updatedAt": "2026-09-24T19:05:56.869Z",
+    "url": "https://example.invalid/programming#typescript",
+    "userNotes": "Owner note other"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/cooking?course=main&serves=2",
+    "categories": [
+      "food-drink"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-24T19:05:56.817Z",
+    "domain": "example.invalid",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvY29va2luZz9jb3Vyc2U9bWFpbiZzZXJ2ZXM9Mg",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [],
+    "title": "Cooking & Kitchen — supplied title",
+    "updatedAt": "2026-09-24T19:05:56.866Z",
+    "url": "https://example.invalid/cooking?course=main&serves=2"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/budgeting",
+    "categories": [
+      "business-money"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-24T19:05:57.722Z",
+    "domain": "example.invalid",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvYnVkZ2V0aW5n",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [],
+    "title": "Budget planning café",
+    "updatedAt": "2026-09-24T19:05:57.744Z",
+    "url": "https://example.invalid/budgeting"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/art",
+    "categories": [
+      "arts-culture"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-24T19:05:57.722Z",
+    "domain": "example.invalid",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvYXJ0",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [],
+    "title": "Art & drawing ideas",
+    "updatedAt": "2026-09-24T19:05:57.751Z",
+    "url": "https://example.invalid/art"
+  },
+  {
+    "canonicalUrl": "https://native.example.invalid/cooking",
+    "categories": [
+      "food-drink"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-24T19:06:02.984Z",
+    "domain": "native.example.invalid",
+    "id": "browser-aHR0cHM6Ly9uYXRpdmUuZXhhbXBsZS5pbnZhbGlkL2Nvb2tpbmc",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [],
+    "title": "Cooking recipe kitchen — supplied",
+    "updatedAt": "2026-09-24T19:06:03.014Z",
+    "url": "https://native.example.invalid/cooking",
+    "userNotes": "Unicode café — 日本語 🍲\nSecond line: <safe> & preserved"
+  },
+  {
+    "canonicalUrl": "https://native.example.invalid/programming#typescript",
+    "categories": [
+      "technology"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-24T19:06:05.444Z",
+    "domain": "native.example.invalid",
+    "id": "browser-aHR0cHM6Ly9uYXRpdmUuZXhhbXBsZS5pbnZhbGlkL3Byb2dyYW1taW5nI3R5cGVzY3JpcHQ",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [],
+    "title": "Programming dynamic tutorial",
+    "updatedAt": "2026-09-24T19:06:05.464Z",
+    "url": "https://native.example.invalid/programming#typescript"
+  },
+  {
+    "canonicalUrl": "https://native.example.invalid/programming?lesson=1&lesson=2#code",
+    "categories": [
+      "technology"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-24T19:06:02.984Z",
+    "domain": "native.example.invalid",
+    "id": "browser-aHR0cHM6Ly9uYXRpdmUuZXhhbXBsZS5pbnZhbGlkL3Byb2dyYW1taW5nP2xlc3Nvbj0xJmxlc3Nvbj0yI2NvZGU",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [],
+    "title": "Programming JavaScript tutorial — supplied",
+    "updatedAt": "2026-09-24T19:06:03.021Z",
+    "url": "https://native.example.invalid/programming?lesson=1&lesson=2#code"
+  },
+  {
+    "canonicalUrl": "https://native.example.invalid/unavailable",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": true,
+    "createdAt": "2026-09-24T19:06:08.329Z",
+    "domain": "native.example.invalid",
+    "id": "browser-aHR0cHM6Ly9uYXRpdmUuZXhhbXBsZS5pbnZhbGlkL3VuYXZhaWxhYmxl",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [],
+    "title": "Unknown item",
+    "updatedAt": "2026-09-24T19:06:08.347Z",
+    "url": "https://native.example.invalid/unavailable"
+  },
+  {
+    "canonicalUrl": "http://example.invalid/no-metadata",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": true,
+    "createdAt": "2026-09-17T09:02:00",
+    "domain": "example.invalid",
+    "excerpt": "A link without metadata: http://example.invalid/no-metadata",
+    "id": "tg-json-aHR0cDovL2V4YW1wbGUuaW52YWxpZC9uby1tZXRhZGF0YQ",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "sourceMessageId": "97003",
+    "status": "inbox",
+    "tags": [],
+    "telegramMessage": {
+      "date": "2026-09-17T09:02:00",
+      "id": "97003",
+      "text": "A link without metadata: http://example.invalid/no-metadata"
+    },
+    "title": "No Metadata",
+    "updatedAt": "2026-09-24T19:05:58.630Z",
+    "url": "http://example.invalid/no-metadata"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/reference",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": true,
+    "createdAt": "2026-09-17T09:01:00",
+    "domain": "example.invalid",
+    "excerpt": "Keep this labeled reference.",
+    "id": "tg-json-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvcmVmZXJlbmNl",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "sourceMessageId": "97002",
+    "status": "inbox",
+    "tags": [],
+    "telegramMessage": {
+      "date": "2026-09-17T09:01:00",
+      "id": "97002",
+      "text": "Keep this labeled reference."
+    },
+    "title": "Reference",
+    "updatedAt": "2026-09-24T19:05:58.632Z",
+    "url": "https://example.invalid/reference"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/travel",
+    "categories": [
+      "travel"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-17T09:00:00",
+    "domain": "example.invalid",
+    "excerpt": "Travel planning https://example.invalid/travel and programming https://example.invalid/programming#typescript",
+    "id": "tg-json-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvdHJhdmVs",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "sourceMessageId": "97001",
+    "status": "inbox",
+    "tags": [],
+    "telegramMessage": {
+      "date": "2026-09-17T09:00:00",
+      "id": "97001",
+      "text": "Travel planning https://example.invalid/travel and programming https://example.invalid/programming#typescript"
+    },
+    "title": "Travel",
+    "updatedAt": "2026-09-24T19:05:58.637Z",
+    "url": "https://example.invalid/travel"
+  },
+  {
+    "canonicalUrl": "https://journeys.example.invalid/travel",
+    "categories": [
+      "travel"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-24T00:00:00+00:00",
+    "domain": "journeys.example.invalid",
+    "excerpt": "https://journeys.example.invalid/travel",
+    "id": "tg-json-aHR0cHM6Ly9qb3VybmV5cy5leGFtcGxlLmludmFsaWQvdHJhdmVs",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "sourceMessageId": "501",
+    "status": "inbox",
+    "tags": [],
+    "telegramMessage": {
+      "date": "2026-09-24T00:00:00+00:00",
+      "id": "501",
+      "text": "https://journeys.example.invalid/travel"
+    },
+    "title": "Travel",
+    "updatedAt": "2026-09-24T19:06:08.639Z",
+    "url": "https://journeys.example.invalid/travel"
+  },
+  {
+    "canonicalUrl": "https://live.example.invalid/art",
+    "categories": [
+      "arts-culture"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-24T00:00:00+00:00",
+    "domain": "live.example.invalid",
+    "excerpt": "Labeled art reference",
+    "id": "tg-json-aHR0cHM6Ly9saXZlLmV4YW1wbGUuaW52YWxpZC9hcnQ",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "sourceMessageId": "504",
+    "status": "inbox",
+    "tags": [],
+    "telegramMessage": {
+      "date": "2026-09-24T00:00:00+00:00",
+      "id": "504",
+      "text": "Labeled art reference"
+    },
+    "title": "Art",
+    "updatedAt": "2026-09-24T19:06:08.668Z",
+    "url": "https://live.example.invalid/art"
+  },
+  {
+    "canonicalUrl": "https://live.example.invalid/cooking",
+    "categories": [
+      "food-drink"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-24T00:00:00+00:00",
+    "domain": "live.example.invalid",
+    "excerpt": "https://live.example.invalid/cooking",
+    "id": "tg-json-aHR0cHM6Ly9saXZlLmV4YW1wbGUuaW52YWxpZC9jb29raW5n",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "sourceMessageId": "502",
+    "status": "inbox",
+    "tags": [],
+    "telegramMessage": {
+      "date": "2026-09-24T00:00:00+00:00",
+      "id": "502",
+      "text": "https://live.example.invalid/cooking"
+    },
+    "title": "Cooking",
+    "updatedAt": "2026-09-24T19:06:08.645Z",
+    "url": "https://live.example.invalid/cooking"
+  },
+  {
+    "canonicalUrl": "https://live.example.invalid/exercise",
+    "categories": [
+      "health-fitness"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-24T00:00:00+00:00",
+    "domain": "live.example.invalid",
+    "excerpt": "https://live.example.invalid/programming https://live.example.invalid/exercise",
+    "id": "tg-json-aHR0cHM6Ly9saXZlLmV4YW1wbGUuaW52YWxpZC9leGVyY2lzZQ",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "sourceMessageId": "503",
+    "status": "inbox",
+    "tags": [],
+    "telegramMessage": {
+      "date": "2026-09-24T00:00:00+00:00",
+      "id": "503",
+      "text": "https://live.example.invalid/programming https://live.example.invalid/exercise"
+    },
+    "title": "Exercise",
+    "updatedAt": "2026-09-24T19:06:08.658Z",
+    "url": "https://live.example.invalid/exercise"
+  },
+  {
+    "canonicalUrl": "https://live.example.invalid/programming",
+    "categories": [
+      "technology"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-24T00:00:00+00:00",
+    "domain": "live.example.invalid",
+    "excerpt": "https://live.example.invalid/programming https://live.example.invalid/exercise",
+    "id": "tg-json-aHR0cHM6Ly9saXZlLmV4YW1wbGUuaW52YWxpZC9wcm9ncmFtbWluZw",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "sourceMessageId": "503",
+    "status": "inbox",
+    "tags": [],
+    "telegramMessage": {
+      "date": "2026-09-24T00:00:00+00:00",
+      "id": "503",
+      "text": "https://live.example.invalid/programming https://live.example.invalid/exercise"
+    },
+    "title": "Programming",
+    "updatedAt": "2026-09-24T19:06:08.652Z",
+    "url": "https://live.example.invalid/programming"
+  }
+]

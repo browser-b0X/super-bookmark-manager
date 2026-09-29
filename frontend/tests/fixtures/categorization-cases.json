@@ -1,0 +1,10 @@
+[
+  { "item": "Cooking", "path": "/cooking", "content": "Cooking & Kitchen — supplied title", "expected": "food-drink" },
+  { "item": "Programming", "path": "/programming", "content": "Programming: TypeScript notes", "expected": "technology" },
+  { "item": "Exercise", "path": "/exercise", "content": "Exercise routine", "expected": "health-fitness" },
+  { "item": "Art", "path": "/art", "content": "Art & drawing ideas", "expected": "arts-culture" },
+  { "item": "Budgeting", "path": "/budgeting", "content": "Budget planning café", "expected": "business-money" },
+  { "item": "Travel", "path": "/travel", "content": "Travel planning", "expected": "travel" },
+  { "item": "Ambiguous", "path": "/reference", "content": "Reference", "expected": "other" },
+  { "item": "Metadata unavailable", "path": "/no-metadata", "content": "No metadata", "expected": "other" }
+]

@@ -1,0 +1,204 @@
+[
+  {
+    "canonicalUrl": "http://example.invalid/exercise",
+    "categories": [
+      "health-fitness"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-18T00:30:16.909Z",
+    "domain": "example.invalid",
+    "id": "browser-aHR0cDovL2V4YW1wbGUuaW52YWxpZC9leGVyY2lzZQ",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [],
+    "title": "Exercise routine",
+    "updatedAt": "2026-09-18T00:30:16.935Z",
+    "url": "http://example.invalid/exercise"
+  },
+  {
+    "canonicalUrl": "http://example.invalid/no-metadata",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": true,
+    "createdAt": "2026-09-17T09:02:00",
+    "domain": "example.invalid",
+    "excerpt": "A link without metadata: http://example.invalid/no-metadata",
+    "id": "tg-json-aHR0cDovL2V4YW1wbGUuaW52YWxpZC9uby1tZXRhZGF0YQ",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "sourceMessageId": "97003",
+    "status": "inbox",
+    "tags": [],
+    "telegramMessage": {
+      "date": "2026-09-17T09:02:00",
+      "id": "97003",
+      "text": "A link without metadata: http://example.invalid/no-metadata"
+    },
+    "title": "No Metadata",
+    "updatedAt": "2026-09-18T00:30:17.026Z",
+    "url": "http://example.invalid/no-metadata"
+  },
+  {
+    "canonicalUrl": "https://gallery.example.invalid/art",
+    "categories": [
+      "arts-culture"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-18T00:30:16.964Z",
+    "domain": "gallery.example.invalid",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvYXJ0",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [],
+    "title": "Art & drawing ideas",
+    "updatedAt": "2026-09-18T00:30:16.979Z",
+    "url": "https://gallery.example.invalid/art"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/budgeting",
+    "categories": [
+      "business-money"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-18T00:30:16.965Z",
+    "domain": "example.invalid",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvYnVkZ2V0aW5n",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "inbox",
+    "tags": [],
+    "title": "Budget planning café",
+    "updatedAt": "2026-09-18T00:30:16.981Z",
+    "url": "https://example.invalid/budgeting"
+  },
+  {
+    "canonicalUrl": "https://notebook.example.invalid/cooking?course=main&serves=2",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "manual",
+    "categoryReview": false,
+    "createdAt": "2026-09-18T00:30:16.909Z",
+    "domain": "notebook.example.invalid",
+    "favorite": true,
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvY29va2luZz9jb3Vyc2U9bWFpbiZzZXJ2ZXM9Mg",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "status": "archived",
+    "tags": [],
+    "title": "Cooking & Kitchen — supplied title",
+    "updatedAt": "2026-09-18T00:30:18.482Z",
+    "url": "https://notebook.example.invalid/cooking?course=main&serves=2",
+    "userNotes": "CuminLedger: cooking note — café"
+  },
+  {
+    "canonicalUrl": "https://notebook.example.invalid/programming#typescript",
+    "categories": [
+      "technology"
+    ],
+    "categoryMode": "manual",
+    "categoryReview": false,
+    "createdAt": "2026-09-18T00:30:16.909Z",
+    "domain": "notebook.example.invalid",
+    "excerpt": "Travel planning https://example.invalid/travel and programming https://example.invalid/programming#typescript",
+    "id": "browser-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvcHJvZ3JhbW1pbmcjdHlwZXNjcmlwdA",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "browser",
+    "sourceMessageId": "97001",
+    "status": "reference",
+    "tags": [
+      "ui-tag",
+      "MixedCase"
+    ],
+    "telegramMessage": {
+      "date": "2026-09-17T09:00:00",
+      "id": "97001",
+      "text": "Travel planning https://example.invalid/travel and programming https://example.invalid/programming#typescript"
+    },
+    "title": "Programming: TypeScript notes",
+    "updatedAt": "2026-09-18T00:30:19.649Z",
+    "url": "https://notebook.example.invalid/programming#typescript",
+    "userNotes": "LambdaNotebook: programming note\nSecond line"
+  },
+  {
+    "canonicalUrl": "https://example.invalid/reference",
+    "categories": [
+      "other"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": true,
+    "createdAt": "2026-09-17T09:01:00",
+    "domain": "example.invalid",
+    "excerpt": "Keep this labeled reference.",
+    "id": "tg-json-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvcmVmZXJlbmNl",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "sourceMessageId": "97002",
+    "status": "inbox",
+    "tags": [],
+    "telegramMessage": {
+      "date": "2026-09-17T09:01:00",
+      "id": "97002",
+      "text": "Keep this labeled reference."
+    },
+    "title": "Reference",
+    "updatedAt": "2026-09-18T00:30:17.025Z",
+    "url": "https://example.invalid/reference"
+  },
+  {
+    "canonicalUrl": "https://journeys.example.invalid/travel",
+    "categories": [
+      "travel"
+    ],
+    "categoryMode": "automatic",
+    "categoryReview": false,
+    "createdAt": "2026-09-17T09:00:00",
+    "domain": "journeys.example.invalid",
+    "excerpt": "Travel planning https://example.invalid/travel and programming https://example.invalid/programming#typescript",
+    "id": "tg-json-aHR0cHM6Ly9leGFtcGxlLmludmFsaWQvdHJhdmVs",
+    "mediaType": "article",
+    "metadataStatus": "partial",
+    "platform": "web",
+    "projectIds": [],
+    "source": "telegram",
+    "sourceMessageId": "97001",
+    "status": "inbox",
+    "tags": [],
+    "telegramMessage": {
+      "date": "2026-09-17T09:00:00",
+      "id": "97001",
+      "text": "Travel planning https://example.invalid/travel and programming https://example.invalid/programming#typescript"
+    },
+    "title": "Travel",
+    "updatedAt": "2026-09-18T00:30:17.024Z",
+    "url": "https://journeys.example.invalid/travel"
+  }
+]

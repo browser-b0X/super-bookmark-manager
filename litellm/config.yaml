@@ -1,0 +1,56 @@
+# LiteLLM proxy config for the Super Bookmark Manager categorizer.
+#
+# One virtual model name — "dashboard-categorizer" — fans out across
+# free-tier providers with priority-based failover:
+#
+#   1. Groq     (gpt-oss-120b)               — instant, free-tier rate limits
+#   2. Gemini   (gemini-3.6-flash)         — failover on Groq 429s
+#   3. Mistral  (ministral-14b-latest)     — reliable third tier
+#   4. local    (llama-server @ 127.0.0.1:8080) — offline last resort
+#
+# Start with:  ./start_proxy.sh   (port 4000)
+
+model_list:
+  - model_name: dashboard-categorizer
+    litellm_params:
+      model: groq/openai/gpt-oss-120b
+      api_key: "os.environ/GROQ_API_KEY"
+      rpm: 30 # Safe margin for Groq free tier
+      tpm: 79000
+    priority: 1 # Lower number = tried first (deployment-level, NOT inside litellm_params)
+
+  - model_name: dashboard-categorizer
+    litellm_params:
+      model: gemini/gemini-3.6-flash
+      api_key: "os.environ/GEMINI_API_KEY"
+      rpm: 15 # Google AI Studio free tier limits
+      tpm: 1000000
+    priority: 2
+
+  - model_name: dashboard-categorizer
+    litellm_params:
+      model: mistral/ministral-14b-latest
+      api_key: "os.environ/MISTRAL_API_KEY"
+    priority: 3
+
+  # Offline tier: the existing local llama-server (see config.LLM_BASE_URL).
+  # Lowest priority — only used when every cloud provider is cooling down.
+  - model_name: dashboard-categorizer
+    litellm_params:
+      model: openai/local-model
+      api_base: "os.environ/LLM_BASE_URL"
+      api_key: "os.environ/LLM_API_KEY"
+      timeout: 120
+    priority: 4 # Offline last resort
+
+router_settings:
+  routing_strategy: latency-based-routing # Deployments ordered by `priority` below: Groq(1) -> Gemini(2) -> Mistral(3) -> local(4)
+  # Redis is not installed on this machine; cooldown state is kept in-memory.
+  # Install redis and uncomment to share cooldowns across proxy restarts:
+  # redis_url: "redis://localhost:6379/0"
+  enable_resource_limits: true
+  cooldown_time: 60 # Bench a provider for 60s if it throws an HTTP 429
+  allowed_fails: 1 # Failover instantly on a single error
+
+general_settings:
+  master_key: "sk-local-dashboard-proxy"

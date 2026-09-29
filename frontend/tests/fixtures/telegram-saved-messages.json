@@ -1,0 +1,48 @@
+{
+  "name": "Saved Messages",
+  "type": "saved_messages",
+  "id": 97000,
+  "messages": [
+    {
+      "id": 97001,
+      "type": "message",
+      "date": "2026-09-17T09:00:00",
+      "text": "Travel planning https://example.invalid/travel and programming https://example.invalid/programming#typescript",
+      "text_entities": [
+        { "type": "plain", "text": "Travel planning " },
+        { "type": "link", "text": "https://example.invalid/travel" },
+        { "type": "plain", "text": " and programming " },
+        { "type": "link", "text": "https://example.invalid/programming#typescript" }
+      ]
+    },
+    {
+      "id": 97002,
+      "type": "message",
+      "date": "2026-09-17T09:01:00",
+      "text": ["Keep this ", { "type": "text_link", "text": "labeled reference", "href": "https://example.invalid/reference" }, "."],
+      "text_entities": [
+        { "type": "plain", "text": "Keep this " },
+        { "type": "text_link", "text": "labeled reference", "href": "https://example.invalid/reference" },
+        { "type": "plain", "text": "." }
+      ]
+    },
+    {
+      "id": 97003,
+      "type": "message",
+      "date": "2026-09-17T09:02:00",
+      "text": "A link without metadata: http://example.invalid/no-metadata"
+    },
+    {
+      "id": 97004,
+      "type": "message",
+      "date": "2026-09-17T09:03:00",
+      "text": "Repeated URL with different text: https://example.invalid/travel"
+    },
+    {
+      "id": 97005,
+      "type": "message",
+      "date": "2026-09-17T09:04:00",
+      "text": "A synthetic note without any links."
+    }
+  ]
+}
