@@ -72,6 +72,8 @@ def isolate_routes():
         idle = dict(ok=True, credentials_configured=False, session_exists=False,
                     authorized=False, login_step=None, expires_in=None)
         return jsonify(idle if request.method == "GET" else {**idle, "result": "idle", "code": ""})
+    if request.path == "/api/ai/providers" and request.method == "GET":
+        return jsonify(ok=True, providers=[], ready=[], available=False)
     if request.path.startswith("/api/") and request.path not in ("/api/library", "/api/stats", "/api/categories"):
         BLOCKED.append("unexpected API " + request.path)
         return jsonify(error="Disabled fixture API"), 503

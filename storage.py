@@ -7,7 +7,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import config
 
@@ -48,6 +48,20 @@ def init_db(path=None):
             id          TEXT UNIQUE,
             document    TEXT,
             deleted     INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS legacy_adopted (
+            url         TEXT PRIMARY KEY
+        );
+
+        CREATE TABLE IF NOT EXISTS library_meta (
+            key         TEXT PRIMARY KEY,
+            value       INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS library_purged (
+            url         TEXT PRIMARY KEY,
+            rev         INTEGER NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS categories (
@@ -100,6 +114,12 @@ def init_db(path=None):
         conn.execute("ALTER TABLE saved_posts ADD COLUMN thumbnail TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass  # column already exists
+    for column in ("manual INTEGER DEFAULT 0", "swept_at TEXT"):
+        try:
+            conn.execute(f"ALTER TABLE saved_posts ADD COLUMN {column}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+    _migrate_library_identity(conn)
     # Seed default categories if table is empty
     existing = conn.execute("SELECT COUNT(*) as c FROM categories").fetchone()["c"]
     if existing == 0:
@@ -115,6 +135,89 @@ def init_db(path=None):
             )
     conn.commit()
     conn.close()
+
+
+def url_identity(url: str) -> str:
+    """One link, however it was spelled: the key every library match uses.
+
+    The browser stores `new URL(u).href` while older rows kept the raw string
+    (no trailing slash, upper-case host, explicit default port). Matching on
+    the raw string let a delete miss its row and a re-add create a twin.
+    """
+    try:
+        p = urlsplit(url)
+        port = p.port
+        scheme = p.scheme.lower()
+        if (scheme, port) in (("http", 80), ("https", 443)):
+            port = None
+        host = (p.hostname or "").lower()
+        path = quote(p.path or "/", safe="/%:@!$&'()*+,;=-._~")
+        userinfo = ""
+        if p.username is not None:
+            userinfo = p.username + (":" + p.password if p.password is not None else "") + "@"
+        return f"{scheme}://{userinfo}{host}{':' + str(port) if port else ''}{path}" + \
+            (f"?{p.query}" if p.query else "") + (f"#{p.fragment}" if p.fragment else "")
+    except ValueError:
+        return url
+
+
+def _migrate_library_identity(conn):
+    """Backfill identities and repair rows written before identity matching.
+
+    * Tombstones no longer reserve an ID (a later import of a URL variant
+      produced the same client ID and wedged every save with a 409).
+    * A tombstone and a live row for the same link: the live row survived only
+      because the delete was sent under another spelling. Honour the delete.
+    * Two live rows for the same link: keep the most recently updated one.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(library_items)")}
+    if "ident" not in columns:
+        conn.execute("ALTER TABLE library_items ADD COLUMN ident TEXT")
+    if "rev" not in columns:
+        # Change counter for delta sync: every write stamps the next number.
+        conn.execute("ALTER TABLE library_items ADD COLUMN rev INTEGER NOT NULL DEFAULT 0")
+    conn.execute("INSERT OR IGNORE INTO library_meta (key, value) VALUES ('rev', 0)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_library_ident ON library_items(ident)")
+    for row in conn.execute("SELECT url FROM library_items WHERE ident IS NULL").fetchall():
+        conn.execute("UPDATE library_items SET ident = ? WHERE url = ?", (url_identity(row[0]), row[0]))
+    conn.execute("UPDATE library_items SET id = NULL WHERE deleted = 1 AND id IS NOT NULL")
+    groups = conn.execute("""
+        SELECT ident FROM library_items GROUP BY ident HAVING COUNT(*) > 1
+    """).fetchall()
+    for (ident,) in groups:
+        rows = conn.execute("SELECT rowid, url, deleted, document FROM library_items WHERE ident = ? ORDER BY rowid", (ident,)).fetchall()
+        if any(r[2] for r in rows):
+            keep = next(r for r in rows if r[2])
+            conn.execute("UPDATE library_items SET document = NULL, deleted = 1, id = NULL WHERE rowid = ?", (keep[0],))
+        else:
+            def updated(r):
+                try:
+                    return json.loads(r[3]).get("updatedAt", "")
+                except (TypeError, ValueError):
+                    return ""
+            keep = max(rows, key=updated)
+            # Never lose curation from the twin being removed: fold its tags,
+            # notes, favourite and pin into the copy that stays.
+            try:
+                kept = json.loads(keep[3])
+                for r in rows:
+                    if r[0] == keep[0]:
+                        continue
+                    other = json.loads(r[3])
+                    kept["tags"] = list(dict.fromkeys([*kept.get("tags", []), *other.get("tags", [])]))
+                    notes = [n for n in (kept.get("userNotes"), other.get("userNotes")) if isinstance(n, str) and n.strip()]
+                    if len(set(notes)) > 1 or (notes and not kept.get("userNotes")):
+                        kept["userNotes"] = "\n\n".join(dict.fromkeys(notes))
+                    for flag in ("favorite", "pinned"):
+                        if other.get(flag):
+                            kept[flag] = True
+                conn.execute("UPDATE library_items SET document = ? WHERE rowid = ?",
+                             (json.dumps(kept, ensure_ascii=True, allow_nan=False), keep[0]))
+            except (TypeError, ValueError):
+                pass
+        for r in rows:
+            if r[0] != keep[0]:
+                conn.execute("DELETE FROM library_items WHERE rowid = ?", (r[0],))
 
 
 class LibraryValidationError(ValueError):
@@ -138,83 +241,146 @@ def _library_http_url(value) -> bool:
         return False
 
 
+_REQUIRED_STRINGS = ("id", "url", "source", "platform", "domain", "status", "createdAt", "updatedAt", "metadataStatus")
+_OPTIONAL_STRINGS = ("canonicalUrl", "sourceMessageId", "title", "description", "excerpt", "thumbnailUrl", "mediaType",
+                     "userNotes", "aiSummary", "lastOpenedAt", "metadataError", "categoryMode", "importBatchId",
+                     "siteName", "author", "publishedAt", "lang", "faviconUrl", "finalUrl", "linkStatus", "enrichedAt",
+                     "metadataRetryAt", "originalTitle")
+_ENUMS = {
+    "source": ("telegram", "whatsapp", "manual", "browser", "import", "api"),
+    "platform": ("instagram", "x", "youtube", "github", "reddit", "tiktok", "facebook", "threads", "linkedin",
+                 "pinterest", "bluesky", "web", "pdf", "other"),
+    "status": ("inbox", "to-review", "in-progress", "reference", "archived"),
+    "metadataStatus": ("pending", "enriched", "partial", "failed", "none"),
+    "mediaType": ("video", "image", "thread", "article", "repository", "document", "post", "other"),
+    "categoryMode": ("manual", "automatic"),
+    "linkStatus": ("ok", "redirected", "gone", "error"),
+}
+_FIELD_SOURCES = ("file", "fetched", "user", "derived", "ai")
+
+
+def _validate_post(post, label: str) -> str:
+    """Validate one SavedPost and return its canonical JSON document."""
+    if not isinstance(post, dict):
+        raise LibraryValidationError(f"{label} must be a SavedPost object.")
+    for field in _REQUIRED_STRINGS:
+        if not isinstance(post.get(field), str):
+            raise LibraryValidationError(f"{label}.{field} must be a string.")
+    if not post["id"].strip() or not _library_http_url(post["url"]):
+        raise LibraryValidationError(f"{label} requires a nonempty id and a valid HTTP(S) url.")
+    for field in _OPTIONAL_STRINGS:
+        if field in post and not isinstance(post[field], str):
+            raise LibraryValidationError(f"{label}.{field} must be a string when supplied.")
+    for field, choices in _ENUMS.items():
+        if field in post and post[field] not in choices:
+            raise LibraryValidationError(f"{label}.{field} is not a supported value.")
+    for field in ("categories", "tags", "projectIds"):
+        if not isinstance(post.get(field), list) or any(not isinstance(value, str) for value in post[field]):
+            raise LibraryValidationError(f"{label}.{field} must be an array of strings.")
+    if "folderPath" in post and (not isinstance(post["folderPath"], list) or any(not isinstance(v, str) for v in post["folderPath"])):
+        raise LibraryValidationError(f"{label}.folderPath must be an array of strings when supplied.")
+    for field in ("favorite", "pinned", "categoryReview"):
+        if field in post and not isinstance(post[field], bool):
+            raise LibraryValidationError(f"{label}.{field} must be a boolean when supplied.")
+    for field in ("wordCount", "readingMinutes", "httpStatus", "metadataAttempts", "position"):
+        if field in post and (type(post[field]) is not int or post[field] < 0):
+            raise LibraryValidationError(f"{label}.{field} must be a non-negative integer when supplied.")
+    if "fieldSources" in post:
+        sources = post["fieldSources"]
+        if not isinstance(sources, dict) or any(not isinstance(k, str) or v not in _FIELD_SOURCES for k, v in sources.items()):
+            raise LibraryValidationError(f"{label}.fieldSources must map field names to file, fetched, user, derived or ai.")
+    if "telegramMessage" in post:
+        message = post["telegramMessage"]
+        if not isinstance(message, dict) or not isinstance(message.get("text"), str):
+            raise LibraryValidationError(f"{label}.telegramMessage requires a text string.")
+        for field in ("id", "date"):
+            if field in message and not isinstance(message[field], str):
+                raise LibraryValidationError(f"{label}.telegramMessage.{field} must be a string.")
+    try:
+        return json.dumps(post, ensure_ascii=True, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise LibraryValidationError(f"{label} must contain valid JSON values.") from exc
+
+
+def _validate_url_list(data, key: str):
+    values = data.get(key, [])
+    if not isinstance(values, list) or any(not _library_http_url(url) for url in values):
+        raise LibraryValidationError(f"{key} must contain only valid HTTP(S) URL strings.")
+    return values
+
+
+def _validate_category_ops(data):
+    ops = data.get("categoryOps", [])
+    if not isinstance(ops, list):
+        raise LibraryValidationError("categoryOps must be an array.")
+    for op in ops:
+        kind = op.get("op") if isinstance(op, dict) else None
+        names = {"add": ("name",), "delete": ("name",), "rename": ("from", "to")}.get(kind)
+        if names is None or set(op) != {"op", *names} or any(not isinstance(op[n], str) or not op[n].strip() for n in names):
+            raise LibraryValidationError("categoryOps entries must be add/delete {name} or rename {from, to}.")
+    return ops
+
+
 def _validate_library_delta(data):
+    """Strict whole-delta validation, used by backup restore."""
     if not isinstance(data, dict) or not isinstance(data.get("posts"), list) or not isinstance(data.get("deletedUrls"), list):
         raise LibraryValidationError("Expected an object with posts and deletedUrls arrays.")
-    required_strings = ("id", "url", "source", "platform", "domain", "status", "createdAt", "updatedAt", "metadataStatus")
-    optional_strings = ("canonicalUrl", "sourceMessageId", "title", "description", "excerpt", "thumbnailUrl", "mediaType", "userNotes", "aiSummary", "lastOpenedAt", "metadataError", "categoryMode")
-    enums = {
-        "source": ("telegram", "manual", "browser", "import", "api"),
-        "platform": ("instagram", "x", "youtube", "github", "reddit", "tiktok", "web", "pdf", "other"),
-        "status": ("inbox", "to-review", "in-progress", "reference", "archived"),
-        "metadataStatus": ("pending", "enriched", "partial", "failed"),
-        "mediaType": ("video", "image", "thread", "article", "repository", "document", "post", "other"),
-        "categoryMode": ("manual", "automatic"),
-    }
-    documents = []
-    for index, post in enumerate(data["posts"]):
-        label = f"posts[{index}]"
-        if not isinstance(post, dict):
-            raise LibraryValidationError(f"{label} must be a SavedPost object.")
-        for field in required_strings:
-            if not isinstance(post.get(field), str):
-                raise LibraryValidationError(f"{label}.{field} must be a string.")
-        if not post["id"].strip() or not _library_http_url(post["url"]):
-            raise LibraryValidationError(f"{label} requires a nonempty id and a valid HTTP(S) url.")
-        for field in optional_strings:
-            if field in post and not isinstance(post[field], str):
-                raise LibraryValidationError(f"{label}.{field} must be a string when supplied.")
-        for field, choices in enums.items():
-            if field in post and post[field] not in choices:
-                raise LibraryValidationError(f"{label}.{field} is not a supported value.")
-        for field in ("categories", "tags", "projectIds"):
-            if not isinstance(post.get(field), list) or any(not isinstance(value, str) for value in post[field]):
-                raise LibraryValidationError(f"{label}.{field} must be an array of strings.")
-        for field in ("favorite", "pinned", "categoryReview"):
-            if field in post and not isinstance(post[field], bool):
-                raise LibraryValidationError(f"{label}.{field} must be a boolean when supplied.")
-        if "telegramMessage" in post:
-            message = post["telegramMessage"]
-            if not isinstance(message, dict) or not isinstance(message.get("text"), str):
-                raise LibraryValidationError(f"{label}.telegramMessage requires a text string.")
-            for field in ("id", "date"):
-                if field in message and not isinstance(message[field], str):
-                    raise LibraryValidationError(f"{label}.telegramMessage.{field} must be a string.")
-        try:
-            documents.append(json.dumps(post, ensure_ascii=True, allow_nan=False))
-        except (TypeError, ValueError) as exc:
-            raise LibraryValidationError(f"{label} must contain valid JSON values.") from exc
-    for url in data["deletedUrls"]:
-        if not _library_http_url(url):
-            raise LibraryValidationError("deletedUrls must contain only valid HTTP(S) URL strings.")
+    documents = [_validate_post(post, f"posts[{index}]") for index, post in enumerate(data["posts"])]
+    _validate_url_list(data, "deletedUrls")
     return documents
 
 
-def _library_snapshot(conn) -> dict:
-    posts, deleted_urls = [], []
-    for row in conn.execute("SELECT document, url, deleted FROM library_items ORDER BY rowid"):
+def _current_rev(conn) -> int:
+    row = conn.execute("SELECT value FROM library_meta WHERE key = 'rev'").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _next_rev(conn) -> int:
+    """A counter that only ever grows (a MAX() over rows would shrink when an
+    undelete or purge removes the newest row, and clients would miss writes)."""
+    rev = _current_rev(conn) + 1
+    conn.execute("INSERT INTO library_meta (key, value) VALUES ('rev', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (rev,))
+    return rev
+
+
+def _library_snapshot(conn, since: int = 0) -> dict:
+    """Full library (since=0) or only what changed after revision `since`.
+
+    A delta lists changed posts, tombstones written since then and links
+    purged by an import undo; the client merges it into its own copy.
+    """
+    posts, deleted_urls, idents = [], [], set()
+    for row in conn.execute("SELECT document, url, deleted, ident, rev FROM library_items ORDER BY rowid"):
+        idents.add(row["ident"])
+        if since and row["rev"] <= since:
+            continue
         if row["deleted"]:
             deleted_urls.append(row["url"])
         else:
             posts.append(json.loads(row["document"]))
-    # Exact URL comparison, including query and fragment; no implicit adoption.
+    adopted = {row[0] for row in conn.execute("SELECT url FROM legacy_adopted")}
+    # A legacy row is done once its link (in any spelling) is in the library,
+    # deleted, or explicitly folded into an existing post by the client.
     legacy_rows = [
-        dict(row) for row in conn.execute("""
-            SELECT saved_posts.* FROM saved_posts
-             WHERE NOT EXISTS (SELECT 1 FROM library_items WHERE library_items.url = saved_posts.url)
-             ORDER BY saved_posts.id
-        """) if _library_http_url(row["url"])
+        dict(row) for row in conn.execute("SELECT * FROM saved_posts ORDER BY id")
+        if _library_http_url(row["url"]) and row["url"] not in adopted and url_identity(row["url"]) not in idents
     ]
-    return {"posts": posts, "deletedUrls": deleted_urls, "legacyRows": legacy_rows}
+    categories = [row[0] for row in conn.execute("SELECT name FROM categories ORDER BY sort_order, name")]
+    result = {"posts": posts, "deletedUrls": deleted_urls, "legacyRows": legacy_rows, "categories": categories,
+              "rev": _current_rev(conn)}
+    if since:
+        result["since"] = since
+        result["purgedUrls"] = [row[0] for row in conn.execute("SELECT url FROM library_purged WHERE rev > ?", (since,))]
+    return result
 
 
-def get_library() -> dict:
-    """Read the complete library and unadopted legacy rows in one snapshot."""
+def get_library(since: int = 0) -> dict:
+    """Read the library (or its changes after `since`) and unadopted legacy rows."""
     conn = _connect()
     try:
         with conn:
             conn.execute("BEGIN")
-            result = _library_snapshot(conn)
+            result = _library_snapshot(conn, since if since and since <= _current_rev(conn) else 0)
         return result
     finally:
         conn.close()
@@ -246,9 +412,10 @@ def write_backup_library(path, data):
         with conn:
             conn.execute("DELETE FROM categories")
             conn.executemany("INSERT INTO categories (name, sort_order, created_at) VALUES (:name, :sort_order, :created_at)", data["categories"])
-            conn.executemany("INSERT INTO library_items (url, id, document) VALUES (?, ?, ?)",
-                             [(p["url"], p["id"], json.dumps(p, ensure_ascii=True, allow_nan=False)) for p in data["posts"]])
-            conn.executemany("INSERT INTO library_items (url, id, deleted) VALUES (:url, :id, 1)", data["tombstones"])
+            conn.executemany("INSERT INTO library_items (url, id, document, ident) VALUES (?, ?, ?, ?)",
+                             [(p["url"], p["id"], json.dumps(p, ensure_ascii=True, allow_nan=False), url_identity(p["url"])) for p in data["posts"]])
+            conn.executemany("INSERT INTO library_items (url, id, deleted, ident) VALUES (?, ?, 1, ?)",
+                             [(t["url"], t["id"], url_identity(t["url"])) for t in data["tombstones"]])
         # Close a complete standalone file, not a DB depending on a missing WAL.
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("PRAGMA journal_mode=DELETE")
@@ -258,44 +425,155 @@ def write_backup_library(path, data):
         conn.close()
 
 
+def _norm_shelf(name: str) -> str:
+    return name.strip().lower().replace(" ", "-")
+
+
+def _apply_category_op(conn, op) -> Optional[str]:
+    """Apply one shelf change from the browser; return a rejection reason or None."""
+    now = datetime.now(timezone.utc).isoformat()
+    if op["op"] == "add":
+        name = _norm_shelf(op["name"])
+        if conn.execute("SELECT 1 FROM categories WHERE name = ?", (name,)).fetchone():
+            return None
+        try:
+            _check_shelf_growth(_known_shelves(conn), {name})
+        except LibraryValidationError:
+            return "shelf_limit"
+        order = (conn.execute("SELECT MAX(sort_order) FROM categories").fetchone()[0] or 0) + 1
+        conn.execute("INSERT INTO categories (name, sort_order, created_at) VALUES (?, ?, ?)", (name, order, now))
+        return None
+    if op["op"] == "delete":
+        name = op["name"]
+        if name in RESERVED_SHELVES:
+            return "reserved"
+        conn.execute("UPDATE saved_posts SET category = 'uncategorized' WHERE category = ?", (name,))
+        conn.execute("DELETE FROM categories WHERE name = ?", (name,))
+        return None
+    old, new = op["from"], _norm_shelf(op["to"])
+    if old in RESERVED_SHELVES or new in RESERVED_SHELVES:
+        return "reserved"
+    if old == new:
+        return None
+    if conn.execute("SELECT 1 FROM categories WHERE name = ?", (new,)).fetchone():
+        conn.execute("DELETE FROM categories WHERE name = ?", (old,))
+    elif conn.execute("SELECT 1 FROM categories WHERE name = ?", (old,)).fetchone():
+        conn.execute("UPDATE categories SET name = ? WHERE name = ?", (new, old))
+    else:
+        order = (conn.execute("SELECT MAX(sort_order) FROM categories").fetchone()[0] or 0) + 1
+        conn.execute("INSERT INTO categories (name, sort_order, created_at) VALUES (?, ?, ?)", (new, order, now))
+    conn.execute("UPDATE saved_posts SET category = ? WHERE category = ?", (new, old))
+    return None
+
+
 def save_library(data) -> dict:
-    """Validate, atomically apply a delta, and return canonical committed state."""
-    documents = _validate_library_delta(data)
+    """Validate and atomically apply a delta; return committed state plus rejections.
+
+    One bad item never blocks the rest: invalid posts, stale writes, ID
+    collisions and shelf-limit breaches come back in `rejected` with a reason
+    while everything else commits. Only a malformed envelope is refused whole.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("posts"), list) or not isinstance(data.get("deletedUrls"), list):
+        raise LibraryValidationError("Expected an object with posts and deletedUrls arrays.")
+    deleted_urls = _validate_url_list(data, "deletedUrls")
+    undelete_urls = _validate_url_list(data, "undeleteUrls")
+    adopted_urls = _validate_url_list(data, "adoptedUrls")
+    # Undoing an import removes its untouched links outright (no tombstone), so
+    # the same file can be imported again later.
+    purge_urls = _validate_url_list(data, "purgeUrls")
+    category_ops = _validate_category_ops(data)
+    since = data.get("since", 0)
+    if type(since) is not int or since < 0:
+        raise LibraryValidationError("since must be a non-negative integer.")
+    rejected, accepted = [], []
+    for index, post in enumerate(data["posts"]):
+        try:
+            accepted.append((post, _validate_post(post, f"posts[{index}]")))
+        except LibraryValidationError as exc:
+            url = post.get("url") if isinstance(post, dict) and isinstance(post.get("url"), str) else ""
+            pid = post.get("id") if isinstance(post, dict) and isinstance(post.get("id"), str) else ""
+            rejected.append({"url": url, "id": pid, "reason": "invalid", "error": str(exc)})
     conn = _connect()
     try:
         with conn:
             conn.execute("BEGIN IMMEDIATE")
-            known = _known_shelves(conn)
-            incoming_shelves = {name for post in data["posts"] for name in post["categories"]}
-            _check_shelf_growth(known, incoming_shelves)
-            for post in data["posts"]:
-                if post.get("categoryMode") == "automatic" and not set(post["categories"]).issubset(known):
-                    raise LibraryValidationError("Automatic categorization may only assign existing shelves.")
-            # Check both existing and batch identities, including retained tombstone IDs.
-            incoming_ids = {}
-            for post in data["posts"]:
-                owner = conn.execute("SELECT url FROM library_items WHERE id = ?", (post["id"],)).fetchone()
-                if (owner and owner["url"] != post["url"]) or (post["id"] in incoming_ids and incoming_ids[post["id"]] != post["url"]):
-                    raise LibraryConflictError("A library ID already belongs to a different URL; no changes were saved.")
-                incoming_ids[post["id"]] = post["url"]
+            stamp = []
+
+            def rev():
+                # Allocate a revision only when something is actually written,
+                # so a fully rejected delta leaves the library (and its rev) unchanged.
+                if not stamp:
+                    stamp.append(_next_rev(conn))
+                return stamp[0]
+            rejected_ops = []
+            for op in category_ops:
+                reason = _apply_category_op(conn, op)
+                if reason:
+                    rejected_ops.append({**op, "reason": reason})
+            for url in undelete_urls:
+                conn.execute("DELETE FROM library_items WHERE ident = ? AND deleted = 1", (url_identity(url),))
+            for url in purge_urls:
+                removed = conn.execute("DELETE FROM library_items WHERE ident = ? AND deleted = 0", (url_identity(url),)).rowcount
+                if removed:
+                    conn.execute("INSERT INTO library_purged (url, rev) VALUES (?, ?) ON CONFLICT(url) DO UPDATE SET rev = excluded.rev", (url, rev()))
             # Deletions take precedence over every upsert, including unseen URLs.
-            for url in data["deletedUrls"]:
-                conn.execute("""
-                    INSERT INTO library_items (url, deleted) VALUES (?, 1)
-                    ON CONFLICT(url) DO UPDATE SET document = NULL, deleted = 1
-                """, (url,))
-            for post, document in zip(data["posts"], documents):
-                existing = conn.execute("SELECT id, deleted FROM library_items WHERE url = ?", (post["url"],)).fetchone()
-                if existing:
-                    # Different-ID reimports cannot replace the existing user's curation.
-                    if existing["deleted"] or existing["id"] != post["id"]:
-                        continue
-                    conn.execute("UPDATE library_items SET document = ? WHERE url = ?", (document, post["url"]))
+            for url in deleted_urls:
+                ident = url_identity(url)
+                if conn.execute("SELECT 1 FROM library_items WHERE ident = ?", (ident,)).fetchone():
+                    conn.execute("UPDATE library_items SET document = NULL, deleted = 1, id = NULL, rev = ? WHERE ident = ?", (rev(), ident))
                 else:
-                    conn.execute("INSERT INTO library_items (url, id, document) VALUES (?, ?, ?)", (post["url"], post["id"], document))
-            result = _library_snapshot(conn)
+                    conn.execute("INSERT INTO library_items (url, deleted, ident, rev) VALUES (?, 1, ?, ?)", (url, ident, rev()))
+            # Shelves already in use by documents this delta does not replace.
+            replacing = {url_identity(post["url"]) for post, _ in accepted}
+            known = {row[0] for row in conn.execute("SELECT name FROM categories")}
+            for row in conn.execute("SELECT document, ident FROM library_items WHERE deleted = 0"):
+                if row["ident"] not in replacing:
+                    known.update(json.loads(row["document"]).get("categories", []))
+            in_use = set(known)
+            batch_ids = {}
+            for post, document in accepted:
+                ident = url_identity(post["url"])
+
+                def reject(reason, error=""):
+                    rejected.append({"url": post["url"], "id": post["id"], "reason": reason, **({"error": error} if error else {})})
+
+                owner = conn.execute("SELECT ident FROM library_items WHERE id = ?", (post["id"],)).fetchone()
+                if (owner and owner["ident"] != ident) or batch_ids.get(post["id"], ident) != ident:
+                    reject("id_conflict", "This ID already belongs to a different link.")
+                    continue
+                existing = conn.execute("SELECT id, deleted, document FROM library_items WHERE ident = ?", (ident,)).fetchone()
+                if existing and existing["deleted"]:
+                    reject("deleted", "This link was deleted.")
+                    continue
+                if existing and existing["id"] != post["id"]:
+                    # A re-import under another ID never replaces existing curation.
+                    reject("duplicate_url", "This link is already saved under another ID.")
+                    continue
+                if existing:
+                    stored = json.loads(existing["document"])
+                    if isinstance(stored.get("updatedAt"), str) and stored["updatedAt"] > post["updatedAt"]:
+                        reject("stale", "A newer version of this link is already saved.")
+                        continue
+                if post.get("categoryMode") == "automatic" and not set(post["categories"]).issubset(known | RESERVED_SHELVES):
+                    reject("unknown_shelf", "Automatic categorization may only assign existing shelves.")
+                    continue
+                try:
+                    _check_shelf_growth(in_use, set(post["categories"]))
+                except LibraryValidationError as exc:
+                    reject("shelf_limit", str(exc))
+                    continue
+                in_use.update(post["categories"])
+                batch_ids[post["id"]] = ident
+                if existing:
+                    conn.execute("UPDATE library_items SET document = ?, rev = ? WHERE ident = ?", (document, rev(), ident))
+                else:
+                    conn.execute("INSERT INTO library_items (url, id, document, ident, rev) VALUES (?, ?, ?, ?, ?)",
+                                 (post["url"], post["id"], document, ident, rev()))
+            for url in adopted_urls:
+                conn.execute("INSERT OR IGNORE INTO legacy_adopted (url) VALUES (?)", (url,))
+            result = _library_snapshot(conn, since if since and since <= _current_rev(conn) else 0)
         # The transaction context commits before callers can acknowledge this result.
-        return result
+        return {**result, "rejected": rejected, **({"rejectedOps": rejected_ops} if rejected_ops else {})}
     finally:
         conn.close()
 
@@ -338,10 +616,10 @@ def update_classification(tg_msg_id: int, category: str, summary: str, tags: lis
     conn.execute(
         """
         UPDATE saved_posts
-           SET category = ?, summary = ?, tags = ?, processed = 1
+           SET category = ?, summary = ?, tags = ?, processed = 1, swept_at = ?
          WHERE tg_msg_id = ?
         """,
-        (category, summary, json.dumps(tags), tg_msg_id),
+        (category, summary, json.dumps(tags), datetime.now(timezone.utc).isoformat(), tg_msg_id),
     )
     conn.commit()
     conn.close()
@@ -363,7 +641,7 @@ def update_post(tg_msg_id: int, title: str, summary: str, category: str, tags: l
     conn.execute(
         """
         UPDATE saved_posts
-           SET title = ?, summary = ?, category = ?, tags = ?, processed = 1
+           SET title = ?, summary = ?, category = ?, tags = ?, processed = 1, manual = 1
          WHERE tg_msg_id = ?
         """,
         (title, summary, category, json.dumps(tags), tg_msg_id),
@@ -402,14 +680,17 @@ def get_unprocessed_posts(limit: int = 50, untagged_only: bool = False) -> list[
     conn = _connect()
     # untagged_only: re-classify posts still parked in the catch-all
     # categories instead of never-seen posts (used by Bulk categorize).
-    where = ("category IN ('uncategorized', 'other')" if untagged_only
+    # A post the owner filed by hand is never swept, and posts the sweep has
+    # already visited go to the back so older ones are eventually reached.
+    where = ("category IN ('uncategorized', 'other') AND COALESCE(manual, 0) = 0" if untagged_only
              else "processed = 0")
+    order = "swept_at IS NOT NULL, swept_at, date_utc DESC" if untagged_only else "date_utc DESC"
     rows = conn.execute(
         f"""
         SELECT tg_msg_id, title, text, url, source
           FROM saved_posts
          WHERE {where}
-         ORDER BY date_utc DESC
+         ORDER BY {order}
          LIMIT ?
         """,
         (limit,),
@@ -548,7 +829,7 @@ def set_post_category(tg_msg_id: int, category: str):
     """Update only the category of a post, preserving other fields."""
     conn = _connect()
     conn.execute(
-        "UPDATE saved_posts SET category = ? WHERE tg_msg_id = ?",
+        "UPDATE saved_posts SET category = ?, manual = 1 WHERE tg_msg_id = ?",
         (category, tg_msg_id),
     )
     conn.commit()

@@ -1,3 +1,4 @@
+import { runtimeToken } from "../../lib/publicRuntime";
 import { useEffect, useRef, useState } from "react";
 
 type ConfigStatus = {
@@ -7,7 +8,7 @@ type ConfigStatus = {
 };
 type ConfigAction = { action: "save"; api_id: string; api_hash: string } | { action: "clear"; confirm: true };
 
-export default function TelegramConfig() {
+export default function TelegramConfig({ onConfigurationChanged }: { onConfigurationChanged?: () => void }) {
   const [config, setConfig] = useState<ConfigStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -43,8 +44,10 @@ export default function TelegramConfig() {
         api_hash_configured: data.api_hash_configured, config_readable: data.config_readable });
       if (action) {
         clearInputs(); setEditing(false);
+        if (data.config_readable) onConfigurationChanged?.();
         if (data.config_readable) setMessage(action.action === "save"
           ? "Developer credential settings saved. Saving is not login and does not start refresh."
+          : runtimeToken ? "Saved developer credentials cleared. Your Telegram session is unchanged."
           : "Saved developer credentials cleared. Clearing does not clear environment variables or your Telegram session.");
       }
     } catch {
@@ -99,24 +102,35 @@ export default function TelegramConfig() {
     <p className="mt-2 text-[.76rem] text-[var(--dim)]">
       Use your Telegram developer API credentials. These are separate from your Telegram login/session.
     </p>
+    <p className="mt-2 text-[.76rem] text-[var(--dim)]">
+      <a href="https://my.telegram.org/auth" target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] underline">
+        Get your Telegram API ID and hash
+      </a>{" "}
+      (opens a new tab). Sign in, choose API development tools, and create your application.
+      Then return here to save its API ID and API hash.
+    </p>
     <div className="mt-3 space-y-1 text-[.76rem]" aria-live="polite">
       <p>API ID configured: <b>{yesNo(config?.api_id_configured)}</b></p>
       <p>API hash configured: <b>{yesNo(config?.api_hash_configured)}</b></p>
       <p>Saved config readable: <b>{yesNo(config?.config_readable)}</b></p>
     </div>
     <p className="mt-2 text-[.72rem] text-[var(--dim)]">
-      Environment variables override saved keys. Clearing does not clear environment variables.
+      {runtimeToken ? "Keys saved here belong only to this Super Bookmark Manager profile. Inherited developer credentials are ignored."
+        : "Environment variables override saved keys. Clearing does not clear environment variables."}
       These indicators describe credential configuration only; they do not check Telegram login or session authorization.
       Saving is not login and does not start refresh.
     </p>
     {config && !config.config_readable && <p role="alert" className="mt-3 text-[.76rem] text-[var(--red)]">
-      Saved configuration is unreadable. Saved keys cannot be verified; environment credentials may still be configured.
+      {runtimeToken ? "Saved configuration is unreadable. Saved keys cannot be verified."
+        : "Saved configuration is unreadable. Saved keys cannot be verified; environment credentials may still be configured."}
       Check the local server and retry before changing saved credentials.
     </p>}
     {error && <p role="alert" className="mt-3 text-[.76rem] text-[var(--red)]">{error}</p>}
     {!config && !busy && !error && <p role="alert" className="mt-3 text-[.76rem]">Telegram configuration status is unavailable. Retry to check it.</p>}
     {(!config || !config.config_readable) && <button type="button" className="btn mt-3 max-w-full whitespace-normal" disabled={busy} onClick={() => void readOrUpdate()}>Retry</button>}
-    <p className="mt-3 text-[.76rem]">Configure Telegram Saved Messages refresh now?</p>
+    <p className="mt-3 text-[.76rem]">{config?.config_readable && config.api_id_configured && config.api_hash_configured
+      ? "Developer credentials are configured. Use the Telegram Account section below to connect or check your account."
+      : "Configure Telegram Saved Messages refresh now?"}</p>
     {editing && <form className="mt-3 min-w-0 space-y-3" autoComplete="off" onSubmit={e => { e.preventDefault(); save(); }}>
       <p id="telegram-credentials-hint" className="text-[.72rem] text-[var(--dim)]">
         Saved values are never shown. Leave a field blank to preserve its configured value. Use Clear to remove saved developer credentials.

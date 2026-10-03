@@ -21,6 +21,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
+import ai_providers
 import categorizer
 import config
 import storage
@@ -155,49 +156,28 @@ DERIVE_SCHEMA = {
 
 
 def _proxy_json(system: str, user: str, schema: dict, max_tokens: int = 2600,
-                rounds: int = 3) -> Optional[dict]:
+                rounds: int = 2) -> Optional[dict]:
     """
-    Structured call through the LiteLLM proxy: strict schema, then json_object,
-    repeated for `rounds`. A whole taxonomy rides on this one answer, so a
-    transient 503 from one provider must not decide the shape of the library —
-    each round re-enters the proxy and gets routed to a different provider.
+    Structured call through the built-in AI provider chain. A whole taxonomy
+    rides on this one answer, so a failed or unreadable reply gets another round;
+    the chain benches a failing provider, so the next round goes elsewhere.
     """
-    headers = {
-        "Authorization": f"Bearer {categorizer.PROXY_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    base = {
-        "model": categorizer.PROXY_MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "temperature": 0.2,
-        "max_tokens": max_tokens,
-    }
-    attempts = [
-        {**base, "response_format": {"type": "json_schema", "json_schema": schema}},
-        {**base, "response_format": {"type": "json_object"}},
+    hint = json.dumps(schema.get("schema", schema), separators=(",", ":"))
+    messages = [
+        {"role": "system", "content": system + "\nReturn ONLY a JSON object matching this schema: " + hint},
+        {"role": "user", "content": user},
     ]
     last_error = ""
     for _ in range(max(1, rounds)):
-        for payload in attempts:
-            try:
-                req = urllib.request.Request(
-                    categorizer.PROXY_URL, headers=headers,
-                    data=json.dumps(payload).encode("utf-8"), method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=90) as resp:
-                    body = json.loads(resp.read().decode("utf-8"))
-                parsed = categorizer._extract_json(body["choices"][0]["message"]["content"])
-                if parsed:
-                    return parsed
-                last_error = "unparseable response"
-            except urllib.error.HTTPError as e:
-                last_error = f"HTTP {e.code}"
-            except (urllib.error.URLError, KeyError, TimeoutError,
-                    json.JSONDecodeError, IndexError) as e:
-                last_error = type(e).__name__
+        try:
+            text, _provider = ai_providers.chat(messages, max_tokens=max_tokens, timeout=90)
+        except ai_providers.NoProvider as exc:
+            last_error = exc.code
+            continue
+        parsed = categorizer._extract_json(text)
+        if parsed:
+            return parsed
+        last_error = "unparseable response"
     _LAST_ERROR["proxy"] = last_error
     return None
 

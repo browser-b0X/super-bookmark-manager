@@ -11,6 +11,8 @@ developer-key config file: Telegram session protected by Windows user-local
 filesystem permissions; not an encrypted credential vault.
 """
 import asyncio
+import builtins
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -23,10 +25,18 @@ import telegram_config
 
 
 def _client_factory(session_file, api_id, api_hash):
-    """Test seam: unit tests replace this factory with a scripted fake client."""
+    """Test seam: unit tests replace this factory with a scripted fake client.
+
+    request_retries must stay positive. Telethon recovers from a DC migration or a
+    transient server fault by retrying; with no attempt left it discards the real RPC
+    error and raises a bare ValueError that this module can only report as "unknown".
+    flood_sleep_threshold is 0 so a wait raises at once instead of outlasting the
+    caller's connect deadline and being misreported as unreachable.
+    """
     from telethon import TelegramClient
     return TelegramClient(str(session_file), api_id, api_hash,
-                          connection_retries=0, request_retries=0, timeout=15)
+                          connection_retries=0, request_retries=5, timeout=15,
+                          raise_last_call_error=True, flood_sleep_threshold=0)
 
 
 LOGIN_TTL_SECONDS = 300
@@ -81,9 +91,11 @@ _MESSAGES = {
 class AuthError(RuntimeError):
     """Fixed safe message per code; never constructed with user-supplied values."""
 
-    def __init__(self, code, status=400):
+    def __init__(self, code, status=400, diagnostic=None):
         super().__init__(_MESSAGES.get(code, _MESSAGES["unknown"]))
         self.code, self.status = code, status
+        self.diagnostic = diagnostic if isinstance(diagnostic, str) and re.fullmatch(
+            r"TG1-(?:(?:CLIENT|CONNECT|REQUEST)-(?:[0-9A-F]{12}|OTHER)|RESULT-EMPTY)", diagnostic) else None
 
 
 def session_path() -> Path:
@@ -183,43 +195,86 @@ def _prepare_session_file():
     return created
 
 
-async def _run_connect_step(action, api_id, api_hash):
+def _failure_identifier(stage, exc):
+    """Fingerprint only a trusted exception class, never its text or arguments."""
+    from telethon import errors
+    cls = type(exc)
+    trusted = any(cls is value for namespace in (vars(builtins), vars(errors))
+                  for value in namespace.values() if isinstance(value, type))
+    category = (hashlib.sha256((cls.__module__ + "." + cls.__qualname__).encode("ascii"))
+                .hexdigest()[:12].upper()) if trusted else "OTHER"
+    return "TG1-" + stage + "-" + category
+
+
+async def _run_connect_step(action, api_id, api_hash, diagnose=False):
     """One bounded client lifecycle per HTTP step: connect, act, disconnect."""
-    client = _make_client(session_path(), api_id, api_hash)
+    client = None
+    stage = "CLIENT"
     try:
+        client = _make_client(session_path(), api_id, api_hash)
         async with asyncio.timeout(_CONNECT_TIMEOUT_SECONDS):
+            stage = "CONNECT"
             await client.connect()
+            stage = "REQUEST"
             return await action(client)
+    except Exception as exc:
+        if diagnose and not isinstance(exc, AuthError) and _map_exception(exc) == "unknown":
+            raise AuthError("unknown", 400, _failure_identifier(stage, exc)) from None
+        raise
     finally:
-        try:
-            await asyncio.wait_for(client.disconnect(), timeout=5)
-        except Exception:
-            pass
+        if client is not None:
+            try:
+                await asyncio.wait_for(client.disconnect(), timeout=5)
+            except Exception:
+                pass
 
 
 def status():
-    """Booleans/enums only: never session bytes, path, phone, code or hash."""
+    """Booleans/enums only: never session bytes, path, phone, code or hash.
+
+    Never waits behind a network step (login, check, refresh can hold the
+    session for tens of seconds): if the lock is busy, answer from the last
+    known state and say so.
+    """
     global _auth_cache
-    with _LOCK:
-        _expire_locked()
-        session_exists = session_path().is_file()
-        if not session_exists:
-            authorized = False
-            _auth_cache = None
-        elif (_auth_cache is not None
-              and time.monotonic() - _auth_cache["at"] < _AUTH_CACHE_TTL_SECONDS):
-            authorized = _auth_cache["authorized"]
-        else:
-            authorized = None
+    if not _LOCK.acquire(timeout=0.5):
         api_id, api_hash = telegram_config.resolve_credentials()
+        cache, transaction = _auth_cache, _transaction
         return {
             "credentials_configured": bool(api_id and api_hash),
-            "session_exists": session_exists,
-            "authorized": authorized,
-            "login_step": _transaction["step"] if _transaction else None,
-            "expires_in": (max(0, int(_transaction["expires_at"] - time.monotonic()))
-                           if _transaction else None),
+            "session_exists": session_path().is_file(),
+            "authorized": cache["authorized"] if cache else None,
+            "login_step": transaction["step"] if transaction else None,
+            "expires_in": (max(0, int(transaction["expires_at"] - time.monotonic())) if transaction else None),
+            "busy": True,
         }
+    try:
+        return _status_locked()
+    finally:
+        _LOCK.release()
+
+
+def _status_locked():
+    global _auth_cache
+    _expire_locked()
+    session_exists = session_path().is_file()
+    if not session_exists:
+        authorized = False
+        _auth_cache = None
+    elif (_auth_cache is not None
+          and time.monotonic() - _auth_cache["at"] < _AUTH_CACHE_TTL_SECONDS):
+        authorized = _auth_cache["authorized"]
+    else:
+        authorized = None
+    api_id, api_hash = telegram_config.resolve_credentials()
+    return {
+        "credentials_configured": bool(api_id and api_hash),
+        "session_exists": session_exists,
+        "authorized": authorized,
+        "login_step": _transaction["step"] if _transaction else None,
+        "expires_in": (max(0, int(_transaction["expires_at"] - time.monotonic()))
+                       if _transaction else None),
+    }
 
 
 def check_authorization():
@@ -264,10 +319,10 @@ def start_login(phone_raw, restart=False):
             return await client.send_code_request(phone)
 
         try:
-            sent = asyncio.run(_run_connect_step(send_code, api_id, api_hash))
+            sent = asyncio.run(_run_connect_step(send_code, api_id, api_hash, diagnose=True))
             phone_code_hash = getattr(sent, "phone_code_hash", None)
             if not isinstance(phone_code_hash, str) or not phone_code_hash:
-                raise AuthError("unknown", 503)
+                raise AuthError("unknown", 503, "TG1-RESULT-EMPTY")
         except AuthError:
             if created:
                 _unlink_session_quietly()
@@ -288,13 +343,11 @@ def start_login(phone_raw, restart=False):
         return status()
 
 
-def _submit_secret(step, value, pattern, invalid_code, sign):
+def _submit_secret(step, value, prepare, invalid_code, sign):
     """Shared code/2FA step: the secret is transient and never stored."""
     global _transaction, _auth_cache
-    if not isinstance(value, str):
-        raise AuthError(invalid_code)
-    secret = value.strip()
-    if not re.fullmatch(pattern, secret):
+    secret = prepare(value) if isinstance(value, str) else None
+    if secret is None:
         raise AuthError(invalid_code)
     with _LOCK:
         _expire_locked()
@@ -342,16 +395,30 @@ async def _sign_in_code(client, transaction, code):
 
 
 async def _sign_in_password(client, transaction, password):
-    await client.sign_in(password=password if isinstance(password, bytes) else password.encode("utf-8"))
+    # Telethon hashes the password itself (compute_check -> password.encode),
+    # so a bytes value raises AttributeError before verification is attempted.
+    await client.sign_in(password=password)
     return True
 
 
+def _prepare_code(value):
+    code = value.strip()
+    return code if re.fullmatch(r"[0-9]{4,8}", code) else None
+
+
+def _prepare_password(value):
+    # Bounded nonempty text, forwarded verbatim: a real 2FA password may
+    # contain spaces anywhere, including at either edge.
+    return value if 0 < len(value) <= 256 else None
+
+
 def submit_code(code):
-    return _submit_secret("awaiting_code", code, r"[0-9]{4,8}", "code_invalid", _sign_in_code)
+    return _submit_secret("awaiting_code", code, _prepare_code, "code_invalid", _sign_in_code)
 
 
 def submit_password(password):
-    return _submit_secret("awaiting_password", password, r"\S{1,256}", "password_invalid", _sign_in_password)
+    return _submit_secret("awaiting_password", password, _prepare_password,
+                          "password_invalid", _sign_in_password)
 
 
 def cancel_login():
@@ -380,12 +447,13 @@ def disconnect(mode="logout"):
             api_id, api_hash = _require_credentials()
 
             async def log_out(client):
-                try:
-                    authorized = bool(await client.is_user_authorized())
-                except Exception:
-                    authorized = False
-                if authorized:
-                    await client.log_out()
+                # A probe failure must propagate: without it, revocation is unknown.
+                if not await client.is_user_authorized():
+                    return False
+                if not await client.log_out():
+                    # Telethon returns False when the log-out RPC failed, leaving the
+                    # remote authorization in place. Never report that as logged out.
+                    raise AuthError("network", 503)
                 return True
 
             try:
@@ -399,7 +467,8 @@ def disconnect(mode="logout"):
                     raise AuthError("network" if code in ("network", "flood", "unknown") else code,
                                     503) from None
         try:
-            path.unlink()
+            # A confirmed Telethon log-out already deleted this file.
+            path.unlink(missing_ok=True)
         except OSError:
             raise AuthError("session_locked", 503) from None
         return {**status(), "result": "logged_out" if mode == "logout" else "removed_local"}
@@ -419,6 +488,9 @@ class _FakeClient:
       code '111111' -> success, '000000' -> expired, anything else -> invalid;
       phone ending '2' -> success requires 2FA (SessionPasswordNeededError),
       password 'fake-2fa-password' succeeds, anything else is rejected.
+    sign_in and log_out deliberately match real Telethon 1.45.0 semantics (text
+    password, self-deleting session file, boolean log-out result) so this seam
+    cannot hide a divergence from the bundled library again.
     Success writes a real (schema-valid) Telethon SQLiteSession auth key, so the
     file is a genuine session artifact that is NOT registered with Telegram;
     the real refresh path therefore still fails safe on authorization.
@@ -461,9 +533,9 @@ class _FakeClient:
 
     async def sign_in(self, phone=None, code=None, phone_code_hash=None, password=None):
         if password is not None:
-            expected = b"fake-2fa-password"
-            supplied = password if isinstance(password, bytes) else str(password).encode("utf-8")
-            if supplied != expected:
+            # Mirrors real Telethon: compute_hash calls password.encode('utf-8'),
+            # so a bytes password raises AttributeError here exactly as it does there.
+            if password.encode("utf-8") != b"fake-2fa-password":
                 raise PasswordHashInvalidError("synthetic")
             self._authorize()
             return None
@@ -486,7 +558,11 @@ class _FakeClient:
         return bool(self._session().auth_key)
 
     async def log_out(self):
-        return None
+        # Mirrors real Telethon log_out: release the session, delete its own file
+        # and report success, so callers cannot mistake a stale file for log-out.
+        await self.disconnect()
+        self._path.unlink(missing_ok=True)
+        return True
 
 
 # Synthetic error classes whose names match Telethon's, so the class-name error

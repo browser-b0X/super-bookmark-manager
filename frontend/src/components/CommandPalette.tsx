@@ -25,8 +25,9 @@ export default function CommandPalette({ onClose }: { onClose: () => void }) {
     const ql = q.toLowerCase();
     const cmds: Item[] = [
       { icon: Plus, label: "Add a link to the library…", hint: "action", run: () => navigate("/library/settings") },
-      { icon: Inbox, label: "Catch up on new links", run: () => navigate("/") },
-      { icon: Bookmark, label: "Go to Library", run: () => navigate("/library") },
+      { icon: Bookmark, label: "Go to the feed", run: () => navigate("/") },
+      { icon: Inbox, label: "New links waiting to be sorted", run: () => navigate("/library/inbox") },
+      { icon: Bookmark, label: "All saved links", run: () => navigate("/library") },
       { icon: Settings, label: "Library settings & import", run: () => navigate("/library/settings") },
       ...categories.filter(c => !c.archived).map(c => ({
         icon: Bookmark, label: `Category: ${c.name}`, hint: "filter",
@@ -65,22 +66,32 @@ export default function CommandPalette({ onClose }: { onClose: () => void }) {
             ref={inputRef}
             className="w-full bg-transparent py-4 text-[.95rem] outline-none"
             placeholder="Search posts, categories, commands…"
+            aria-controls="palette-results"
+            aria-activedescendant={items[sel] ? `palette-item-${sel}` : undefined}
+            aria-describedby="palette-count"
             value={q}
             onChange={e => setQ(e.target.value)}
             onKeyDown={e => {
               if (e.key === "ArrowDown") { e.preventDefault(); setSel(s => Math.min(s + 1, items.length - 1)); }
               if (e.key === "ArrowUp") { e.preventDefault(); setSel(s => Math.max(s - 1, 0)); }
               if (e.key === "Enter" && items[sel]) run(items[sel]);
+              if (e.key === "Home") { e.preventDefault(); setSel(0); }
+              if (e.key === "End") { e.preventDefault(); setSel(Math.max(0, items.length - 1)); }
             }}
           />
         </div>
-        <div className="max-h-[340px] overflow-y-auto p-1.5">
+        <span id="palette-count" className="sr-only" aria-live="polite">{items.length} result{items.length === 1 ? "" : "s"}</span>
+        <div id="palette-results" className="max-h-[340px] overflow-y-auto p-1.5" aria-label="Results">
           {items.length === 0 && <div className="p-4 text-center text-[.8rem] text-[var(--faint)]">No results for “{q}”.</div>}
           {items.map((it, i) => {
             const Icon = it.icon;
             return (
               <button
                 key={i}
+                id={`palette-item-${i}`}
+                aria-current={i === sel ? "true" : undefined}
+                tabIndex={-1}
+                ref={el => { if (i === sel) el?.scrollIntoView({ block: "nearest" }); }}
                 className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[.84rem] ${i === sel ? "bg-[var(--accent-bg)] text-[var(--text)]" : "text-[var(--dim)] hover:bg-[var(--surface2)]"}`}
                 onMouseEnter={() => setSel(i)}
                 onClick={() => run(it)}

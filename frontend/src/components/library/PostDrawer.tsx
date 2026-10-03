@@ -1,43 +1,99 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Copy, ExternalLink, Pin, RefreshCw, Star, Trash2, X } from "lucide-react";
+import { ExternalLink, Pencil, Pin, RefreshCw, Star, Trash2, X } from "lucide-react";
 import type { SavedPost } from "../../types";
 import { useLibrary } from "../../store/library";
 import { PLATFORM_META, STATUS_META, STATUS_ORDER, relTime } from "../../lib/ui";
-import { enrichSavedPost } from "../../lib/metadataEnrichment";
+import { enrichSavedPost, refreshIfStale } from "../../lib/metadataEnrichment";
+import SiteLine from "./SiteLine";
 import { relatedItems } from "../../lib/relatedItems";
+import { libraryUrl, normalizeUrl } from "../../lib/platform";
 
 export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose: () => void }) {
   const navigate = useNavigate();
   const updatePost = useLibrary(s => s.updatePost);
+  const restoreTitle = useLibrary(s => s.restoreOriginalTitle);
   const deletePosts = useLibrary(s => s.deletePosts);
-  const importPosts = useLibrary(s => s.importPosts);
   const categories = useLibrary(s => s.categories);
   const posts = useLibrary(s => s.posts);
   const logActivity = useLibrary(s => s.logActivity);
   const [tagInput, setTagInput] = useState("");
   const [enriching, setEnriching] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editing, setEditing] = useState<null | "title" | "description">(null);
+  const [draft, setDraft] = useState("");
+
+  const panel = useRef<HTMLElement>(null);
+  // Dialog behaviour: focus moves in, Tab stays inside, Escape closes, and
+  // focus returns to whatever opened the panel.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    if (!panel.current?.contains(document.activeElement)) panel.current?.focus({ preventScroll: true });
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); onClose(); return; }
+      if (e.key !== "Tab" || !panel.current) return;
+      const focusable = [...panel.current.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), textarea, select, [tabindex]:not([tabindex="-1"])')]
+        .filter(el => el.offsetParent !== null);
+      if (!focusable.length) return;
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === panel.current)) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      if (opener && opener.isConnected && opener !== document.body) opener.focus({ preventScroll: true });
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The same page saved under another spelling (http/https, www, tracking
+  // parameters, a canonical or redirect target): offer to merge, never automatically.
+  const duplicate = useMemo(() => {
+    const keys = new Set([post.url, post.canonicalUrl, post.finalUrl].filter((u): u is string => !!u).map(normalizeUrl));
+    return posts.find(p => p.id !== post.id && libraryUrl(p.url) !== libraryUrl(post.url)
+      && [p.url, p.canonicalUrl, p.finalUrl].some(u => !!u && keys.has(normalizeUrl(u))));
+  }, [posts, post]);
+
+  const mergeDuplicate = () => {
+    if (!duplicate) return;
+    // Keep this link; carry over everything the owner added to the other one.
+    const notes = [post.userNotes, duplicate.userNotes].filter(n => n?.trim()).join("\n\n");
+    updatePost(post.id, {
+      tags: [...new Set([...post.tags, ...duplicate.tags])],
+      favorite: post.favorite || duplicate.favorite,
+      pinned: post.pinned || duplicate.pinned,
+      ...(notes ? { userNotes: notes } : {}),
+      createdAt: post.createdAt < duplicate.createdAt ? post.createdAt : duplicate.createdAt,
+      ...(post.categories.every(c => c === "uncategorized" || c === "other") && duplicate.categories.some(c => c !== "uncategorized" && c !== "other")
+        ? { categories: duplicate.categories } : {}),
+      folderPath: post.folderPath?.length ? post.folderPath : duplicate.folderPath,
+    });
+    deletePosts([duplicate.id]);
+    logActivity("organize", "Merged a duplicate link", post.title);
+  };
+
+  // Opening a link is a good moment to refresh an old or missing preview.
+  useEffect(() => { refreshIfStale(post); }, [post.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const startEdit = (field: "title" | "description") => { setDraft(post[field] ?? ""); setEditing(field); };
+  const commitEdit = () => {
+    if (!editing) return;
+    const value = draft.trim();
+    if (value !== (post[editing] ?? "")) {
+      // The owner's wording is never replaced by a later metadata refresh.
+      updatePost(post.id, { [editing]: value || undefined, fieldSources: { ...post.fieldSources, [editing]: value ? "user" : undefined } });
+    }
+    setEditing(null);
+  };
 
   const related = useMemo(() => relatedItems(post, posts), [posts, post]);
 
   const meta = PLATFORM_META[post.platform];
   const MetaIcon = meta.icon;
 
-  const duplicate = () => {
-    importPosts([{
-      ...post,
-      id: post.id + "-copy-" + Date.now().toString(36),
-      title: (post.title || "Untitled") + " (copy)",
-      pinned: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }]);
-  };
-
   const retryMetadata = async () => {
     setEnriching(true);
-    await enrichSavedPost(post.id);
+    await enrichSavedPost(post.id, { force: true });
     setEnriching(false);
   };
 
@@ -45,8 +101,11 @@ export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose
     <>
       <div className="fixed inset-0 z-[90] bg-black/40" onClick={onClose} aria-hidden />
       <aside
-        className="fixed top-0 right-0 bottom-0 z-[95] flex w-[min(460px,94vw)] flex-col overflow-y-auto border-l p-5"
-        style={{ background: "var(--surface)", borderColor: "var(--border-hi)", boxShadow: "var(--shadow)" }}
+        ref={panel}
+        tabIndex={-1}
+        aria-modal="true"
+        className="fixed top-0 right-0 bottom-0 z-[95] flex w-[min(460px,94vw)] flex-col overflow-y-auto border-l p-5 outline-none"
+        style={{ background: "var(--surface-solid)", borderColor: "var(--border-hi)", boxShadow: "var(--shadow)" }}
         role="dialog" aria-label="Saved post detail"
       >
         {/* header actions */}
@@ -62,15 +121,38 @@ export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose
           <button className="icon-btn" title={post.pinned ? "Unpin" : "Pin"} onClick={() => updatePost(post.id, { pinned: !post.pinned })}>
             <Pin size={15} className={post.pinned ? "text-[var(--accent)]" : ""} />
           </button>
-          <button className="icon-btn" title="Duplicate" onClick={duplicate}><Copy size={15} /></button>
           <button className="icon-btn" title="Close" onClick={onClose}><X size={15} /></button>
         </div>
 
-        <h2 className="text-[1rem] leading-snug font-semibold">{post.title || post.url}</h2>
-        <div className="mt-1 text-[.72rem] text-[var(--faint)]">
-          {post.domain} · saved {relTime(post.createdAt)}
+        {editing === "title" ? (
+          <input className="input text-[1rem] font-semibold" autoFocus aria-label="Title" value={draft}
+            onChange={e => setDraft(e.target.value)} onBlur={commitEdit}
+            onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") { e.preventDefault(); setEditing(null); } }} />
+        ) : (
+          <div className="flex items-start gap-2">
+            <h2 className="min-w-0 flex-1 break-words text-[1rem] leading-snug font-semibold">{post.title || post.url}</h2>
+            <button className="icon-btn shrink-0 opacity-60 hover:opacity-100" title="Edit title" aria-label="Edit title" onClick={() => startEdit("title")}><Pencil size={13} /></button>
+          </div>
+        )}
+        {post.fieldSources?.title === "ai" && post.originalTitle !== undefined && <p className="mt-1 text-[.7rem] text-[var(--faint)]">
+          Title tidied by AI · <button className="underline" onClick={() => restoreTitle(post.id)}
+            title={post.originalTitle || "(no title)"}>Restore original</button>
+        </p>}
+        {post.aiSummary && <p className="mt-1 text-[.76rem] text-[var(--dim)]">{post.aiSummary}</p>}
+        <SiteLine post={post} className="mt-1" />
+        <div className="mt-0.5 text-[.72rem] text-[var(--faint)]">
+          saved {relTime(post.createdAt)}
           {post.lastOpenedAt ? ` · opened ${relTime(post.lastOpenedAt)}` : ""}
+          {post.folderPath?.length ? ` · ${post.folderPath.join(" › ")}` : ""}
         </div>
+        {post.linkStatus === "gone" && <p role="note" className="mt-2 text-[.74rem] text-[var(--amber)]">This page no longer exists at its address{post.httpStatus ? ` (HTTP ${post.httpStatus})` : ""}. Your saved copy of the details is unchanged.</p>}
+        {post.finalUrl && <p className="mt-1 truncate text-[.7rem] text-[var(--faint)]" title={post.finalUrl}>Now redirects to {post.finalUrl}</p>}
+        {duplicate && (
+          <div role="note" className="mt-2 flex items-center gap-2 rounded-lg border p-2 text-[.74rem]" style={{ borderColor: "var(--border-hi)" }}>
+            <span className="min-w-0 flex-1">Possible duplicate of <button className="underline" onClick={() => navigate(`/library/item/${duplicate.id}`)}>{duplicate.title || duplicate.url}</button></span>
+            <button className="btn" style={{ padding: "2px 8px", fontSize: ".7rem" }} onClick={mergeDuplicate} title="Keep this link and move tags, notes, favourite and shelf over from the other">Merge into this</button>
+          </div>
+        )}
 
         {/* source + actions */}
         <div className="mt-3 flex flex-wrap gap-2">
@@ -82,20 +164,29 @@ export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose
           </button>
         </div>
         <div className="mt-1.5 text-[.66rem] text-[var(--faint)]">
-          metadata: <span style={{ color: post.metadataStatus === "failed" ? "var(--red)" : post.metadataStatus === "enriched" ? "var(--green)" : "var(--amber)" }}>{post.metadataStatus}</span>
+          preview: <span style={{ color: post.metadataStatus === "failed" ? "var(--red)" : post.metadataStatus === "enriched" ? "var(--green)" : "var(--amber)" }}>
+            {post.metadataStatus === "none" ? "site offers none" : post.metadataStatus}</span>
           {post.metadataError ? ` — ${post.metadataError}` : ""}
+          {post.metadataRetryAt ? ` Next automatic try in ${Math.max(1, Math.ceil((Date.parse(post.metadataRetryAt) - Date.now()) / 60000))} min.` : ""}
           {post.sourceMessageId ? ` · telegram msg ${post.sourceMessageId}` : ""}
         </div>
 
         {/* description / excerpt */}
-        {(post.description || post.excerpt) && (
-          <div className="panel mt-4 p-3">
-            {post.description && <p className="text-[.8rem] leading-relaxed">{post.description}</p>}
-            {post.excerpt && post.excerpt !== post.description && (
-              <p className="mt-2 line-clamp-4 text-[.74rem] text-[var(--dim)] italic">“{post.excerpt}”</p>
-            )}
-          </div>
-        )}
+        <div className="panel mt-4 p-3">
+          {editing === "description" ? (
+            <textarea className="input" rows={4} autoFocus aria-label="Description" value={draft}
+              onChange={e => setDraft(e.target.value)} onBlur={commitEdit}
+              onKeyDown={e => { if (e.key === "Escape") { e.preventDefault(); setEditing(null); } }} />
+          ) : (
+            <div className="flex items-start gap-2">
+              <p className={`flex-1 text-[.8rem] leading-relaxed ${post.description ? "" : "text-[var(--faint)]"}`}>{post.description || "No description."}</p>
+              <button className="icon-btn shrink-0 opacity-60 hover:opacity-100" title="Edit description" aria-label="Edit description" onClick={() => startEdit("description")}><Pencil size={13} /></button>
+            </div>
+          )}
+          {post.excerpt && post.excerpt !== post.description && (
+            <p className="mt-2 line-clamp-4 text-[.74rem] text-[var(--dim)] italic">“{post.excerpt}”</p>
+          )}
+        </div>
 
         {/* status */}
         <div className="mt-4">

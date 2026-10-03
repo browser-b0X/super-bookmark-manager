@@ -3,6 +3,7 @@
 Synthetic phone/code/password/api canaries stay in disposable local state.
 Run with Python -B. Output contains check names and booleans only, not tracebacks.
 """
+import asyncio
 import contextlib
 import ctypes
 from ctypes import wintypes
@@ -30,6 +31,18 @@ ACTIVE_PROFILE = None
 REPORT = sys.stdout
 SOCKET_CONNECT = socket.socket.connect
 CREATE_CONNECTION = socket.create_connection
+
+# Telethon is an optional runtime dependency, so the real-library check below is
+# guarded; importing it never opens a socket, session file or credential.
+try:
+    from telethon import errors as telethon_errors
+    from telethon import functions as telethon_functions
+    from telethon import password as telethon_password
+    from telethon import types as telethon_types
+    from telethon.client.auth import AuthMethods
+    TELETHON_PRESENT = True
+except ImportError:
+    TELETHON_PRESENT = False
 
 
 def protect_personal_files(event, args):
@@ -147,16 +160,20 @@ class ScriptedClient:
     """Scripted offline stand-in for the Telethon client used by telegram_auth."""
 
     def __init__(self, path, authorized=False, on_connect=None, on_send_code=None,
-                 on_code=None, on_password=None, log_out=None):
+                 on_code=None, on_password=None, log_out=None, on_probe=None,
+                 log_out_result=True):
         self.path = Path(path)
         self.authorized = authorized
         self.calls = {"connect": 0, "send": 0, "code": 0, "password": 0, "logout": 0}
         self.sent_phone = None
+        self.passwords = []
         self._on_connect = on_connect
         self._on_send_code = on_send_code
         self._on_code = on_code
         self._on_password = on_password
         self._log_out = log_out
+        self._on_probe = on_probe
+        self._log_out_result = log_out_result
 
     async def connect(self):
         self.calls["connect"] += 1
@@ -176,6 +193,10 @@ class ScriptedClient:
     async def sign_in(self, phone=None, code=None, phone_code_hash=None, password=None):
         if password is not None:
             self.calls["password"] += 1
+            # Mirrors bundled Telethon 1.45.0: sign_in -> compute_check ->
+            # compute_hash calls password.encode('utf-8'), so a bytes password
+            # raises AttributeError here exactly as it does against the library.
+            self.passwords.append(password.encode("utf-8"))
             if self._on_password is not None:
                 self._on_password()
             self.authorized = True
@@ -187,6 +208,8 @@ class ScriptedClient:
         return None
 
     async def is_user_authorized(self):
+        if self._on_probe is not None:
+            self._on_probe()
         return self.authorized
 
     async def log_out(self):
@@ -194,6 +217,12 @@ class ScriptedClient:
         if self._log_out is not None:
             self._log_out()
         self.authorized = False
+        if self._log_out_result is not True:
+            # Telethon returns False when the log-out RPC failed: the remote
+            # authorization is still in place and the session file is untouched.
+            return False
+        self.path.unlink(missing_ok=True)
+        return True
 
 
 def forbid_network(sock, address):
@@ -207,7 +236,7 @@ def forbid_network(sock, address):
 class AuthTests(unittest.TestCase):
     STATUS_KEYS = {"ok", "credentials_configured", "session_exists", "authorized",
                    "login_step", "expires_in"}
-    ALLOWED_KEYS = STATUS_KEYS | {"result", "code", "error"}
+    ALLOWED_KEYS = STATUS_KEYS | {"result", "code", "error", "diagnostic"}
 
     def setUp(self):
         self.stack = contextlib.ExitStack()
@@ -238,7 +267,11 @@ class AuthTests(unittest.TestCase):
         telegram_auth._transaction = None
         telegram_auth._auth_cache = None
         self.addCleanup(self.reset_auth)
-        # Guard: no test may construct a real Telethon client.
+        # Guard: no test may construct a real Telethon client. The genuine factory
+        # is retained for the single test that exercises the real client's retry
+        # loop; that client is never connected and the socket guards above still
+        # forbid any non-loopback transport.
+        self.real_client_factory = telegram_auth._client_factory
         self.stack.enter_context(patch.object(telegram_auth, "_client_factory",
                                               side_effect=AssertionError("real client forbidden")))
         self.api_id = str(10000000 + secrets.randbelow(90000000))
@@ -314,6 +347,27 @@ class AuthTests(unittest.TestCase):
 
     # --- mandated state-machine matrix -------------------------------------
 
+    def test_start_diagnostics_are_stage_and_class_only(self):
+        self.configure()
+        client = self.client()
+        identifiers = {}
+        for stage in ("CLIENT", "CONNECT", "REQUEST"):
+            def fail():
+                raise ValueError("synthetic " + self.phone + self.api_hash)
+            self.install(on_connect=fail if stage == "CONNECT" else None,
+                         on_send_code=fail if stage == "REQUEST" else None)
+            boundary = patch.object(self.auth, "_make_client", side_effect=ValueError(self.phone)) if stage == "CLIENT" else contextlib.nullcontext()
+            with boundary:
+                data = self.send(client, {"action": "start", "phone": self.phone}, 400)
+            self.assertEqual(data["code"], "unknown")
+            self.assertRegex(data["diagnostic"], "^TG1-" + stage + "-[0-9A-F]{12}$")
+            identifiers[stage] = data["diagnostic"].split("-")[-1]
+            self.assertFalse(self.session.exists())
+        self.assertEqual(len(set(identifiers.values())), 1)
+        hostile = type("Secret" + self.api_hash, (Exception,), {})
+        self.assertEqual(self.auth._failure_identifier("REQUEST", hostile(self.phone)), "TG1-REQUEST-OTHER")
+        self.assertIsNone(self.auth.AuthError("unknown", diagnostic=self.api_hash).diagnostic)
+
     def test_missing_credentials_block_connect(self):
         self.expect_error(lambda: self.auth.start_login(self.phone), "configuration", 409)
         self.assertTrue(self.auth.status() == {
@@ -384,7 +438,7 @@ class AuthTests(unittest.TestCase):
         self.assertTrue(data["result"] == "password_required")
         self.assertTrue(data["login_step"] == "awaiting_password")
         self.expect_error(lambda: self.auth.submit_code(self.code), "login_step", 409)
-        for value in ("", "  ", "a" * 257, None, 123):
+        for value in ("", "a" * 257, None, 123):
             self.expect_error(lambda: self.auth.submit_password(value), "password_invalid", 400)
         client._on_password = lambda: (_ for _ in ()).throw(PasswordHashInvalidError("synthetic"))
         self.expect_error(lambda: self.auth.submit_password(self.password), "password_invalid", 400)
@@ -393,7 +447,165 @@ class AuthTests(unittest.TestCase):
         data = self.auth.submit_password(self.password)
         self.assertTrue(data["result"] == "connected" and data["authorized"] is True)
         self.assertTrue(client.calls["password"] == 2 and self.auth._transaction is None)
+        self.assertTrue(client.passwords == [self.password.encode("utf-8")] * 2)
         self.assertTrue(windows_acl_is_private(self.session))
+
+    def test_two_factor_password_keeps_spaces_verbatim(self):
+        """F4: a real 2FA password may contain spaces anywhere; never trim or reject."""
+        self.configure()
+        for spaced in ("two words apart", "  padded  ", "   ", "\tmiddle\tword\t"):
+            client = self.install(
+                on_code=lambda: (_ for _ in ()).throw(SessionPasswordNeededError("synthetic")))
+            self.auth.start_login(self.phone)
+            data = self.auth.submit_code(self.code)
+            self.assertTrue(data["result"] == "password_required")
+            data = self.auth.submit_password(spaced)
+            self.assertTrue(data["result"] == "connected", repr(spaced))
+            self.assertTrue(client.passwords == [spaced.encode("utf-8")], repr(spaced))
+            self.assertTrue(self.auth.disconnect("remove_local")["result"] == "removed_local")
+
+    @unittest.skipUnless(TELETHON_PRESENT, "telethon is not installed")
+    def test_real_telethon_password_path_receives_text(self):
+        """F1: the bundled Telethon sign_in hashes a str; bytes raise AttributeError."""
+        algo = telethon_types.PasswordKdfAlgoSHA256SHA256PBKDF2HMACSHA512iter100000SHA256ModPow(
+            salt1=b"synthetic-salt-1", salt2=b"synthetic-salt-2", g=3, p=b"synthetic-prime")
+        password_info = telethon_types.account.Password(
+            new_algo=algo,
+            new_secure_algo=telethon_types.SecurePasswordKdfAlgoSHA512(salt=b"synthetic-secure"),
+            secure_random=b"\x00" * 256,
+            has_password=True, current_algo=algo, srp_B=b"\x02" * 256, srp_id=1)
+        seen = []
+        real_compute_hash = telethon_password.compute_hash
+
+        def observing(supplied_algo, supplied_password):
+            # Delegate to the real hasher so the library's own password.encode
+            # step is genuinely exercised, not stubbed away.
+            seen.append(supplied_password)
+            return real_compute_hash(supplied_algo, supplied_password)
+
+        class RealSignIn:
+            sign_in = AuthMethods.sign_in
+
+            async def get_me(self):
+                return None
+
+            async def __call__(self, request):
+                if isinstance(request, telethon_functions.account.GetPasswordRequest):
+                    return password_info
+                raise AssertionError("no other request may be issued")
+
+        error = ""
+        with patch.object(telethon_password, "compute_hash", observing):
+            try:
+                asyncio.run(self.auth._sign_in_password(RealSignIn(), {}, self.password))
+            except Exception as exc:
+                error = type(exc).__name__ + ": " + str(exc)
+        self.assertTrue(seen == [self.password])
+        self.assertTrue("has no attribute 'encode'" not in error)
+        # Hashing succeeded, so execution reached Telethon's SRP prime validation,
+        # which rejects the synthetic prime. That stage is the library's own math.
+        self.assertTrue(error == "ValueError: bad p/g in password", error)
+
+    @unittest.skipUnless(TELETHON_PRESENT, "telethon is not installed")
+    def test_retryable_rpc_errors_are_not_collapsed_into_value_error(self):
+        """F5: with no request retries, Telethon's _call replaces every retryable
+        RPC error with a bare ValueError, which the mapper can only call unknown."""
+        client = self.real_client_factory(self.profile / "synthetic-retry.session",
+                                          24681357, "0" * 32)
+        self.addCleanup(client.session.close)
+        client.session.set_dc(2, "127.0.0.1", 443)
+
+        class StubSender:
+            """Transport stand-in: no socket is opened, nothing leaves the host.
+            The final scripted outcome repeats, so a script of one error keeps
+            failing for every retry instead of silently succeeding."""
+
+            def __init__(self, script):
+                self.script, self.attempts = list(script), 0
+
+            def send(self, request, ordered=False):
+                self.attempts += 1
+                item = self.script.pop(0) if len(self.script) > 1 else self.script[0]
+
+                async def outcome():
+                    if isinstance(item, Exception):
+                        raise item
+                    return telethon_types.auth.SentCode(
+                        type=telethon_types.auth.SentCodeTypeApp(length=5),
+                        phone_code_hash="synthetic-hash")
+                return outcome()
+
+        async def not_authorized():
+            return False
+
+        async def no_switch(new_dc):
+            return None
+
+        async def instant(_seconds):
+            return None
+
+        client.is_user_authorized = not_authorized
+        client._switch_dc = no_switch
+        request = telethon_functions.auth.SendCodeRequest(
+            "+447700900000", 24681357, "0" * 32, telethon_types.CodeSettings())
+
+        # A DC migration is recoverable: Telethon must switch and retry.
+        migrate = StubSender([telethon_errors.NetworkMigrateError(None, 2), "ok"])
+        client._sender = migrate
+        sent = asyncio.run(client._call(migrate, request))
+        self.assertTrue(migrate.attempts == 2, migrate.attempts)
+        self.assertTrue(sent.phone_code_hash == "synthetic-hash")
+
+        # Once retries are exhausted the real RPC error must survive, so the
+        # diagnostic names the server fault instead of an opaque ValueError.
+        broken = StubSender([telethon_errors.ServerError(None, "RPC_INTERNAL")])
+        client._sender = broken
+        with patch("asyncio.sleep", instant):
+            with self.assertRaises(telethon_errors.ServerError):
+                asyncio.run(client._call(broken, request))
+        self.assertTrue(broken.attempts > 1, broken.attempts)
+        self.assertTrue(self.auth._failure_identifier(
+            "REQUEST", telethon_errors.ServerError(None, "RPC_INTERNAL"))
+            != self.auth._failure_identifier("REQUEST", ValueError("synthetic")))
+
+        # A flood wait must surface as flood, not sleep past the connect deadline.
+        flooded = StubSender([telethon_errors.FloodWaitError(None, 5)])
+        client._sender = flooded
+        with self.assertRaises(telethon_errors.FloodWaitError):
+            asyncio.run(client._call(flooded, request))
+        self.assertTrue(flooded.attempts == 1, flooded.attempts)
+        self.assertTrue(self.auth._map_exception(
+            telethon_errors.FloodWaitError(None, 5)) == "flood")
+
+    def test_logout_requires_confirmed_remote_revocation(self):
+        """F2: never report success or delete the session without confirmed log-out."""
+        self.configure()
+        path, marker = self.make_session_file()
+        # Telethon returns False when the log-out RPC failed.
+        sent = self.install(authorized=True, log_out_result=False)
+        self.expect_error(lambda: self.auth.disconnect(), "network", 503)
+        self.assertTrue(sent.calls["logout"] == 1 and path.is_file())
+        self.assertTrue(self.auth.status()["session_exists"] is True)
+        self.assertTrue(self.auth.status()["authorized"] is None)
+        # An authorization-probe failure must propagate, not read as "unauthorized".
+        self.install(authorized=True, on_probe=lambda: (_ for _ in ()).throw(
+            ConnectionError("synthetic")))
+        self.expect_error(lambda: self.auth.disconnect(), "network", 503)
+        self.assertTrue(path.is_file())
+        self.assertTrue(self.auth.disconnect("remove_local")["result"] == "removed_local")
+        self.assertTrue(not path.exists() and marker not in self.output.getvalue())
+
+    def test_confirmed_logout_is_not_reported_as_session_locked(self):
+        """F3: Telethon deletes its own session file, so that outcome is success."""
+        self.configure()
+        path, marker = self.make_session_file()
+        sent = self.install(authorized=True)
+        data = self.auth.disconnect()
+        self.assertTrue(data["result"] == "logged_out")
+        self.assertTrue(sent.calls["logout"] == 1 and not path.exists())
+        self.assertTrue(self.auth.status()["session_exists"] is False)
+        self.assertTrue(self.auth.status()["authorized"] is False)
+        self.assertTrue(marker not in self.output.getvalue())
 
     def test_flood_and_network_and_locked_and_dependency(self):
         self.configure()

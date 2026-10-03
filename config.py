@@ -22,17 +22,12 @@ def __getattr__(name):
     raise AttributeError(name)
 
 
-TELEGRAM_SESSION_FILE = str(Path(__file__).parent / "session.session")
+TELEGRAM_SESSION_FILE = os.environ.get("SBM_TELEGRAM_SESSION_FILE") or str(Path(__file__).parent / "session.session")
 
-# ── Local LLM (OpenAI-compatible) ─────────────────────────────────────────────
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://127.0.0.1:8080/v1")
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "not-needed")  # most local servers don't need one
-LLM_MODEL = os.environ.get("LLM_MODEL", "local-model")
-
-# ── LiteLLM categorizer proxy (Groq -> Gemini -> Mistral -> local failover) ──
-# Started via ./litellm/start_proxy.sh — see litellm/config.yaml + .env.example
-LITELLM_PROXY_URL = os.environ.get("LITELLM_PROXY_URL", "http://127.0.0.1:4000")
-LITELLM_PROXY_KEY = os.environ.get("LITELLM_PROXY_KEY", "sk-local-dashboard-proxy")
+# ── AI providers ──────────────────────────────────────────────────────────────
+# Keys are entered in Settings > AI & previews and stored in the user profile
+# (see ai_providers.py). GROQ_API_KEY / GEMINI_API_KEY / MISTRAL_API_KEY and
+# LLM_BASE_URL (a local OpenAI-compatible server) still work in source mode.
 
 # ── Storage ────────────────────────────────────────────────────────────────────
 DB_PATH = os.environ.get("SAVED_POSTS_DB_PATH", str(Path(__file__).parent / "saved_posts.db"))

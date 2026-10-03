@@ -92,6 +92,8 @@ def isolate_routes():
         idle = dict(ok=True, credentials_configured=False, session_exists=False,
                     authorized=False, login_step=None, expires_in=None)
         return jsonify(idle if request.method == "GET" else {**idle, "result": "idle", "code": ""})
+    if request.path == "/api/ai/providers" and request.method == "GET":
+        return jsonify(ok=True, providers=[], ready=[], available=False)
     if request.path.startswith("/api/") and request.path not in ("/api/library", "/api/stats", "/api/categories", "/api/categorize", "/api/telegram/refresh", "/api/backup/export", "/api/backup/preview", "/api/backup/restore"):
         BLOCKED.append("unexpected API " + request.path)
         return jsonify(error="Disabled fixture API"), 503
@@ -111,6 +113,7 @@ def isolate_assets(response):
 import library_backup
 ORIGINAL_WRITE = storage.write_backup_library
 ORIGINAL_LINK = library_backup.os.link
+ORIGINAL_COPY = library_backup.shutil.copyfileobj
 
 def failed_write(path, data):
     partial = dict(data, posts=data["posts"][:1])
@@ -118,6 +121,10 @@ def failed_write(path, data):
     raise OSError("Synthetic interrupted restore")
 
 def failed_link(*args):
+    raise OSError("Synthetic publication failure")
+
+def failed_copy(source, target, *args):
+    target.write(b"partial")
     raise OSError("Synthetic publication failure")
 
 server = make_server("127.0.0.1", int(sys.argv[2]), dashboard.app, threaded=True)
@@ -139,6 +146,8 @@ def controls():
         if command in ("restore-fail-on", "restore-fail-off", "publish-fail-on", "publish-fail-off"):
             storage.write_backup_library = failed_write if command == "restore-fail-on" else ORIGINAL_WRITE
             library_backup.os.link = failed_link if command == "publish-fail-on" else ORIGINAL_LINK
+            # The no-hard-link copy fallback must fail too for a publication failure.
+            library_backup.shutil.copyfileobj = failed_copy if command == "publish-fail-on" else ORIGINAL_COPY
             print(json.dumps({"command": command, "ok": True}), flush=True)
             continue
         if command == "backup-snapshot":

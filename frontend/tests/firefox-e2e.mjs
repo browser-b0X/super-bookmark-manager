@@ -53,21 +53,24 @@ try{
   await page.getByRole('button',{name:'Saved Views',exact:true}).click();const dialog=page.getByRole('dialog',{name:'Saved Views',exact:true});
   await dialog.getByLabel('View name',{exact:true}).fill('Firefox dynamic');await dialog.getByRole('button',{name:'Save current',exact:true}).click();await dialog.getByRole('status').filter({hasText:'View saved.'}).waitFor();await dialog.getByRole('button',{name:'Close',exact:true}).click();
   const views=(await state()).views;await page.goto(base+'/library/settings');
-  for(const name of ['empty','not-sqlite','truncated','missing-bookmarks','missing-places','schema','bad-fk','view','malformed','unsupported']){
+  // 'malformed' (one bad URL among good ones) now imports the good ones; covered by chromium-unit.
+  for(const name of ['empty','not-sqlite','truncated','missing-bookmarks','missing-places','schema','bad-fk','view','unsupported']){
     await select(name,/empty|SQLite|schema|Malformed|Invalid|No HTTP/);assert.deepEqual(await snapshot(name,8),before,name);
   }
   await result().scrollIntoViewIfNeeded();await shot('b2-firefox-import-error.png');
-  pass('10 empty/non-SQLite/truncated/missing/incompatible/bad-fk/malformed/unsupported cases: controlled and zero mutation');
+  pass('9 empty/non-SQLite/truncated/missing/incompatible/bad-fk/unsupported cases: controlled and zero mutation');
   await page.evaluate(()=>{window.originalArrayBuffer=File.prototype.arrayBuffer;File.prototype.arrayBuffer=async()=>{throw Error('synthetic locked file');};});
   await select('valid',/Firefox may still be using this database/);await page.evaluate(()=>{File.prototype.arrayBuffer=window.originalArrayBuffer;delete window.originalArrayBuffer;});assert.deepEqual(await snapshot('locked read',8),before);pass('Locked/unreadable selected-file simulation: guidance, no bypass or mutation');
   await select('duplicates',/1 valid unique bookmark URLs, 0 new, 1 already present, 4 duplicate/);assert.deepEqual(await snapshot('duplicate-only',8),before);pass('Duplicate-only copied database succeeds with zero additions and no curation changes');
   // Reach through keyboard and activate the native file picker.
+  // Listen first: Playwright enables file-chooser interception asynchronously.
+  const chooser=page.waitForEvent('filechooser');
   let reachable=false;for(let i=0;i<180;i++){if(await button().evaluate(e=>e===document.activeElement)){reachable=true;break;}await page.keyboard.press('Tab');}
-  assert.ok(reachable);const chooser=page.waitForEvent('filechooser');await page.keyboard.press('Enter');await(await chooser).setFiles({name:'renamed-copy-no-extension',mimeType:'application/octet-stream',buffer:beforeBytes});
+  assert.ok(reachable);await page.keyboard.press('Enter');await(await chooser).setFiles({name:'renamed-copy-no-extension',mimeType:'application/octet-stream',buffer:beforeBytes});
   await result().filter({hasText:'3 valid unique bookmark URLs, 2 new, 1 already present, 1 duplicate entries, 1 unsupported entries, 0 malformed entries, 3 history-only rows ignored'}).waitFor();
   const first=await snapshot('Firefox adds2 ->10',10);for(const old of before)assert.deepEqual(first.find(p=>p.id===old.id),old);
   const fresh=first.find(p=>p.url==='http://metadata.fixture.test/firefox?lesson=1&lesson=2#code');const untitled=first.find(p=>p.url==='http://metadata.fixture.test/classify-failure');
-  assert.equal(fresh.canonicalUrl,fresh.url);assert.equal(fresh.title,'Cooking recipe supplied');assert.equal(fresh.source,'browser');assert.deepEqual(fresh.categories,['technology']);assert.equal(fresh.metadataStatus,'enriched');assert.match(fresh.description,/Firefox gzip/);assert.equal(fresh.thumbnailUrl,ready.preview);
+  assert.equal(fresh.canonicalUrl,fresh.url);assert.equal(fresh.title,'Cooking recipe supplied');assert.equal(fresh.source,'browser');assert.deepEqual(fresh.categories,['technology']);assert.equal(fresh.metadataStatus,'enriched');assert.match(fresh.description,/Firefox gzip/);assert.match(fresh.thumbnailUrl,/^\/thumb\/img_[0-9a-f]{24}$/);/* preview image is now cached locally */
   assert.equal(untitled.title,'Fetched Classifier failure title');assert.deepEqual(untitled.categories,['other']);assert.equal(untitled.categoryReview,true);assert.equal(untitled.metadataStatus,'enriched');
   assert.ok(first.every(p=>!p.url.includes('history-only.invalid')));await result().scrollIntoViewIfNeeded();await shot('b2-firefox-import-success.png');
   pass('Keyboard/renamed copy, nested3 unique, duplicate1, overlap1, unsupported1, history3 excluded; query/fragment retained; exact prior8');
@@ -77,8 +80,8 @@ try{
   pass('Reimport exact10 including curation/manual other/IDs; no new enrichment requests; views unchanged');
   await page.goto(base+'/library');await page.getByRole('button',{name:'Saved Views',exact:true}).click();const viewsDialog=page.getByRole('dialog',{name:'Saved Views',exact:true});await viewsDialog.getByLabel('Saved view',{exact:true}).selectOption({label:'Firefox dynamic'});await viewsDialog.getByRole('button',{name:'Apply view',exact:true}).click();await viewsDialog.waitFor({state:'hidden'});await page.waitForFunction(()=>document.querySelectorAll('main article').length===2);pass('Saved View dynamically contains2 Firefox records');
   const link=page.locator(`main a[href="/library/item/${fresh.id}"]`);await link.click();await page.getByRole('dialog',{name:'Saved post detail'}).waitFor();await page.reload();await page.getByRole('dialog',{name:'Saved post detail'}).waitFor();
-  await page.waitForFunction(src=>[...document.images].some(img=>img.src===src&&img.complete&&img.naturalWidth===320),ready.preview);
-  await page.goto(base+'/');assert.ok(await page.getByRole('link',{name:/library/i}).count());pass('Library result/detail direct refresh and decoded thumbnail; Catch Up reachable');
+  await page.waitForFunction(src=>[...document.images].some(img=>img.src===src&&img.complete&&img.naturalWidth===320),base+fresh.thumbnailUrl);
+  await page.goto(base+'/');assert.ok(await page.getByRole('button',{name:/All saved/}).count());pass('Library result/detail direct refresh and decoded thumbnail; feed reachable');
   await page.goto(base+'/library/settings');await select('failure',/1 valid unique bookmark URLs, 1 new/);const failed=await snapshot('failure retained11',11);assert.equal(failed.find(p=>p.url.endsWith('/failure')).metadataStatus,'failed');for(const old of first)assert.deepEqual(failed.find(p=>p.id===old.id),old);pass('Metadata503 does not roll back import or curation;11 durable');
   const backup=await page.evaluate(async()=>{const r=await fetch('/api/backup/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:true})});return {code:r.status,body:await r.json()};});assert.equal(backup.code,200);report.backup=backup.body;
   await context.close();await newContext();await page.goto(base+'/library');assert.deepEqual(await snapshot('fresh browser11',11),failed);pass('Fresh browser exact11 recovery and backup export available');

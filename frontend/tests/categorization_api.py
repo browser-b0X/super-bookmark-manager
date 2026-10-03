@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
+(ROOT / ".verify/g3-c5-categorization-20260917").mkdir(parents=True, exist_ok=True)
 FIXTURE = Path(tempfile.mkdtemp(prefix="api-", dir=ROOT / ".verify/g3-c5-categorization-20260917"))
 DB = FIXTURE / "fixture.sqlite"
 os.environ.update(SAVED_POSTS_DB_PATH=str(DB), TELEGRAM_API_ID="0", TELEGRAM_API_HASH="", LLM_API_KEY="fixture", LITELLM_PROXY_KEY="fixture")
@@ -82,10 +83,12 @@ class C5(unittest.TestCase):
         self.assertEqual(self.client.post('/api/library', json={"posts": [document(["other"], categoryMode="manual")], "deletedUrls": []}).status_code, 200)
         before = storage.get_library()
         too_many = document(["new-1", "new-2", "new-3", "new-4"], categoryMode="manual")
-        self.assertEqual(self.client.post('/api/library', json={"posts": [too_many], "deletedUrls": []}).status_code, 400)
+        response = self.client.post('/api/library', json={"posts": [too_many], "deletedUrls": []})
+        self.assertEqual([r["reason"] for r in response.get_json()["rejected"]], ["shelf_limit"])
         self.assertEqual(storage.get_library(), before)
         invented = document(["model-invention"], categoryMode="automatic")
-        self.assertEqual(self.client.post('/api/library', json={"posts": [invented], "deletedUrls": []}).status_code, 400)
+        response = self.client.post('/api/library', json={"posts": [invented], "deletedUrls": []})
+        self.assertEqual([r["reason"] for r in response.get_json()["rejected"]], ["unknown_shelf"])
         self.assertEqual(storage.get_library(), before)
         valid = document(["technology"], categoryMode="automatic", categoryReview=False)
         self.assertEqual(self.client.post('/api/library', json={"posts": [valid], "deletedUrls": []}).status_code, 200)

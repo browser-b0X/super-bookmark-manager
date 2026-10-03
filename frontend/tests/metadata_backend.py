@@ -20,6 +20,7 @@ sys.path.insert(0, str(WORKSPACE))
 sys.dont_write_bytecode = True
 from metadata_fixture import BASE_URL, PUBLIC_IP, JPEG, ControlledHTTP, install_guard, GUARD_FAILURES
 
+(WORKSPACE / ".verify" / "metadata-enrichment-20260924").mkdir(parents=True, exist_ok=True)
 FIXTURE = tempfile.TemporaryDirectory(prefix="backend-fixture-", dir=WORKSPACE / ".verify" / "metadata-enrichment-20260924")
 ROOT = Path(FIXTURE.name)
 install_guard(ROOT)
@@ -31,6 +32,11 @@ import storage
 safe = None
 if importlib.util.find_spec("safe_http"):
     import safe_http as safe
+
+
+def page_requests(http):
+    """Requests other than the once-per-site icon lookup."""
+    return [r for r in http.requests if r[0] != "/favicon.ico"]
 
 
 class RouteTests(unittest.TestCase):
@@ -87,6 +93,8 @@ class BoundaryTests(unittest.TestCase):
         self.addCleanup(self.patch.stop)
         with metadata._flight_lock:
             metadata._recent.clear()
+        with metadata._favicon_lock:
+            metadata._favicons.clear()
         self.guard_count = len(GUARD_FAILURES)
 
     def tearDown(self):
@@ -101,8 +109,12 @@ class BoundaryTests(unittest.TestCase):
         result = self.fetch("/article")
         self.assertEqual(result["title"], "OG & title")
         self.assertEqual(result["summary"], 'OG "description"')
+        # The preview image is fetched once to cache it locally; when that fails
+        # (here: not an image) the remote URL is kept. The site icon is tried too.
         self.assertEqual(result["thumbnail"], BASE_URL + "/preview.jpg?a=1&b=2")
-        self.assertEqual(len(self.http.requests), 1)
+        paths = [r[0] for r in self.http.requests]
+        self.assertEqual(paths[:2], ["/article", "/preview.jpg?a=1&b=2"])
+        self.assertTrue(set(paths[2:]) <= {"/favicon.ico"}, paths)
         self.assertEqual(result["status"], "ok")
 
     def test_connection_close_complete_bodies(self):
@@ -164,17 +176,28 @@ class BoundaryTests(unittest.TestCase):
         result = self.fetch()
         self.assertEqual(result["title"], "Keep me")
         self.assertEqual(result["thumbnail"], "")
-        self.assertEqual(len(self.http.connections), 1)
+        # Only the page (and the once-per-site icon) were ever connected to.
+        self.assertEqual(len(self.http.connections), len(self.http.requests))
+        self.assertTrue({r[0] for r in self.http.requests} <= {"/", "/favicon.ico"})
+
+    def test_measured_social_shell_is_not_rejected_as_too_large(self):
+        head = b'<meta property="og:title" content="Real caption">'
+        body = head + b" " * (636_955 - len(head))
+        self.assertEqual(len(body), 636_955)
+        self.http.routes["/shell"] = (200, {"Content-Type": "text/html", "Content-Length": str(len(body))}, body)
+        result = self.fetch("/shell")
+        self.assertEqual(result["error"], "")
+        self.assertEqual(result["title"], "Real caption")
 
     def test_oversize_declared_streamed_chunked_and_encoding(self):
-        self.http.routes["/length"] = (200, {"Content-Type": "text/html", "Content-Length": str(512 * 1024 + 1)}, b"")
-        self.http.routes["/chunked"] = (200, {"Content-Type": "text/html", "Transfer-Encoding": "chunked"}, b"80001\r\n" + b"x" * (512 * 1024 + 1) + b"\r\n0\r\n\r\n")
+        self.http.routes["/length"] = (200, {"Content-Type": "text/html", "Content-Length": str(safe.HTML_LIMIT + 1)}, b"")
+        self.http.routes["/chunked"] = (200, {"Content-Type": "text/html", "Transfer-Encoding": "chunked"}, format(safe.HTML_LIMIT + 1, "x").encode() + b"\r\n" + b"x" * (safe.HTML_LIMIT + 1) + b"\r\n0\r\n\r\n")
         def stream(handler):
             handler.send_response(200)
             handler.send_header("Content-Type", "text/html")
             handler.send_header("Connection", "close")
             handler.end_headers()
-            handler.wfile.write(b"x" * (512 * 1024 + 1))
+            handler.wfile.write(b"x" * (safe.HTML_LIMIT + 1))
             handler.close_connection = True
         self.http.routes["/stream"] = stream
         self.http.routes["/gzip"] = (200, {"Content-Encoding": "gzip"}, b"fake compressed")
@@ -193,7 +216,7 @@ class BoundaryTests(unittest.TestCase):
         with patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:1", "HTTPS_PROXY": "http://127.0.0.1:1", "NETRC": "C:/forbidden"}):
             self.fetch("/cookie")
         for _, headers in self.http.requests:
-            self.assertEqual(headers["User-Agent"], "SavedPostsMetadata/1.0")
+            self.assertEqual(headers["User-Agent"], "Mozilla/5.0 (compatible; SuperBookmarkManager/0.1; +link preview)")
             self.assertEqual(headers["Host"], "metadata.fixture.test")
             self.assertFalse({h.lower() for h in headers} & {"cookie", "authorization", "proxy-authorization"})
             self.assertEqual(headers["Accept-Encoding"], "identity")
@@ -264,6 +287,48 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual(result["thumbnail"], "")
         self.assertEqual(sorted(p.name for p in self.cache.iterdir()), ["TestCode"])
 
+    def test_instagram_login_wall_falls_back_to_public_embed(self):
+        self.http.html("/reel/WallCode1/", '<title>Instagram</title><meta property="og:title" content="Instagram">')
+        self.http.html("/p/WallCode1/embed/captioned/", '<div class="Embed"><a class="Username" href="#"><span>chef.ana</span></a>'
+                       '<img class="EmbeddedMediaImage" alt="" src="http://cdn.fixture.test/embed.jpg?a=1&amp;b=2">'
+                       '<div class="Caption"><a class="CaptionUsername">chef.ana</a> Lemon cake<br>6 ingredients &amp; honey</div></div>')
+        self.http.routes["/embed.jpg?a=1&b=2"] = (200, {"Content-Type": "image/jpeg"}, JPEG)
+        with EnrichmentDepthTests._plain_tls(self):
+            result = metadata.fetch_metadata("http://www.instagram.com/reel/WallCode1/")
+        self.assertEqual(result["thumbnail"], "/thumb/WallCode1")
+        self.assertIn("6 ingredients & honey", result["summary"])
+        self.assertEqual(result.get("author"), "chef.ana")
+        # An image the embed does not have leaves the card to its styled fallback.
+        self.http.html("/reel/WallCode2/", '<title>Instagram</title>')
+        self.http.html("/p/WallCode2/embed/captioned/", '<div>Sorry, this content is unavailable</div>')
+        with EnrichmentDepthTests._plain_tls(self):
+            self.assertEqual(metadata.fetch_metadata("http://www.instagram.com/reel/WallCode2/")["thumbnail"], "")
+
+    def test_social_pages_retry_once_as_the_whatsapp_preview_crawler(self):
+        self.http.dns["www.facebook.com"] = [PUBLIC_IP]
+        seen = []
+        self.http.routes["/lisbonwalks/posts/1"] = (200, {"Content-Type": "text/html"}, b"<title>Log in</title>")
+        real_get = metadata.safe_http.get
+        def by_agent(url, deadline=None, headers=None, **kw):
+            seen.append(headers["User-Agent"])
+            if headers["User-Agent"].startswith("WhatsApp/"):
+                self.http.routes["/lisbonwalks/posts/1"] = (200, {"Content-Type": "text/html"},
+                    b'<meta property="og:title" content="Lisbon Walks"><meta property="og:description" content="Pastel de nata walk this weekend">'
+                    b'<meta property="og:image" content="http://cdn.fixture.test/fb.jpg">')
+            return real_get(url, deadline=deadline, headers=headers, **kw)
+        self.http.routes["/fb.jpg"] = (200, {"Content-Type": "image/jpeg"}, JPEG)
+        with patch.object(metadata.safe_http, "get", side_effect=by_agent), EnrichmentDepthTests._plain_tls(self):
+            result = metadata.fetch_metadata("http://www.facebook.com/lisbonwalks/posts/1")
+        self.assertTrue(result["thumbnail"].startswith("/thumb/img_"))
+        self.assertEqual((result["title"], result["summary"]), ("Lisbon Walks", "Pastel de nata walk this weekend"))
+        self.assertTrue(seen[0].startswith("Mozilla/") and any(a.startswith("WhatsApp/") for a in seen))
+        # Ordinary sites never get the crawler retry.
+        seen.clear()
+        self.http.html("/plain", "<title>Plain page</title>")
+        with patch.object(metadata.safe_http, "get", side_effect=by_agent):
+            self.fetch("/plain")
+        self.assertFalse(any(a.startswith("WhatsApp/") for a in seen))
+
     def test_instagram_deterministic_key_and_host_matching(self):
         url = "http://www.instagram.com/no-post?x=1"
         import hashlib
@@ -322,7 +387,7 @@ class BoundaryTests(unittest.TestCase):
             results = [first.result()] + [f.result() for f in rest]
         self.assertTrue(all(r["title"] == "Shared" for r in results))
         self.assertEqual(self.fetch("/same")["title"], "Shared")
-        self.assertEqual(len(self.http.requests), 1)
+        self.assertEqual(len(page_requests(self.http)), 1)
         release.clear()
         entered.clear()
         for n in range(4):
@@ -330,12 +395,132 @@ class BoundaryTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = [pool.submit(self.fetch, f"/cap{n}") for n in range(3)]
             limit = time.monotonic() + 1
-            while len(self.http.requests) < 4 and time.monotonic() < limit:
+            while len(page_requests(self.http)) < 4 and time.monotonic() < limit:
                 threading.Event().wait(0.01)
             self.assertEqual(self.fetch("/cap3")["error"], "busy")
             release.set()
             self.assertTrue(all(f.result()["title"] == "Shared" for f in futures))
         self.assertLessEqual(len(metadata._recent), 128)
+
+
+class EnrichmentDepthTests(unittest.TestCase):
+    """Audit phase 3: charset, title, rich fields, local preview cache."""
+    setUp = BoundaryTests.setUp
+    tearDown = BoundaryTests.tearDown
+    fetch = BoundaryTests.fetch
+
+    def test_meta_charset_is_honoured_without_a_header_charset(self):
+        body = '<meta charset="windows-1251"><title>Привет мир</title>'.encode("cp1251")
+        self.http.routes["/cyr"] = (200, {"Content-Type": "text/html"}, body)
+        self.assertEqual(self.fetch("/cyr")["title"], "Привет мир")
+        body = '<meta http-equiv="Content-Type" content="text/html; charset=Shift_JIS"><title>日本語のページ</title>'.encode("shift_jis")
+        self.http.routes["/sjis"] = (200, {"Content-Type": "text/html"}, body)
+        self.assertEqual(self.fetch("/sjis")["title"], "日本語のページ")
+
+    def test_only_the_document_title_counts(self):
+        self.http.html("/svg", '<title>My Article</title><body><svg><title>Close</title></svg><svg><title>Menu</title></svg>')
+        self.assertEqual(self.fetch("/svg")["title"], "My Article")
+        self.http.html("/svgfirst", '<svg><title>Icon</title></svg><title>Real title</title>')
+        self.assertEqual(self.fetch("/svgfirst")["title"], "Real title")
+
+    def test_json_ld_canonical_site_author_date_lang_and_reading_time(self):
+        article = " ".join(["word"] * 460)
+        self.http.html("/rich", f"""<html lang="en-GB"><head><title>Doc</title>
+            <link rel="canonical" href="/canonical-article">
+            <script type="application/ld+json">{{"@context":"https://schema.org","@graph":[{{"@type":"WebSite","name":"Site"}},
+              {{"@type":"NewsArticle","headline":"LD headline","description":"LD description","image":{{"url":"/ld.jpg"}},
+                "datePublished":"2026-03-04T10:00:00+02:00","author":[{{"@type":"Person","name":"Ada Writer"}}],
+                "publisher":{{"@type":"Organization","name":"Fixture Times"}}}}]}}</script></head>
+            <body><nav>{"menu " * 50}</nav><article><p>{article}</p></article></body></html>""")
+        result = self.fetch("/rich")
+        self.assertEqual(result["title"], "LD headline")  # cleaner than a "Title | Site" <title>
+        self.assertEqual(result["summary"], "LD description")
+        self.assertEqual(result["thumbnail"], BASE_URL + "/ld.jpg")
+        self.assertEqual(result["author"], "Ada Writer")
+        self.assertEqual(result["siteName"], "Fixture Times")
+        self.assertEqual(result["publishedAt"], "2026-03-04T08:00:00Z")
+        self.assertEqual(result["lang"], "en-GB")
+        self.assertEqual(result["canonicalUrl"], BASE_URL + "/canonical-article")
+        self.assertEqual(result["wordCount"], 460)
+        self.assertEqual(result["readingMinutes"], 2)
+
+    def test_preview_image_and_site_icon_are_cached_locally(self):
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 1500
+        ico = b"\x00\x00\x01\x00" + b"\x01" * 200
+        self.http.routes["/img.png"] = (200, {"Content-Type": "application/octet-stream"}, png)
+        self.http.routes["/icon.ico"] = (200, {"Content-Type": "image/x-icon"}, ico)
+        self.http.html("/cached", '<title>Cached</title><meta property="og:image" content="/img.png"><link rel="icon" href="/icon.ico">')
+        result = self.fetch("/cached")
+        self.assertTrue(result["thumbnail"].startswith("/thumb/img_"), result)
+        self.assertTrue(result["faviconUrl"].startswith("/thumb/ico_"), result)
+        stored = self.cache / result["thumbnail"].split("/")[-1]
+        self.assertEqual(stored.read_bytes(), png)
+        response = dashboard.app.test_client().get(result["thumbnail"])
+        self.assertEqual(response.mimetype, "image/png")
+        self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+        response.close()
+
+    def test_gone_pages_and_redirects_are_reported(self):
+        self.http.routes["/gone"] = (404, {}, b"")
+        result = self.fetch("/gone")
+        self.assertEqual((result["error"], result.get("httpStatus"), result.get("linkStatus")), ("http_error", 404, "gone"))
+        self.http.routes["/moved"] = (301, {"Location": "/landing"}, b"")
+        self.http.html("/landing", "<title>Landing</title>")
+        result = self.fetch("/moved")
+        self.assertEqual((result["finalUrl"], result["linkStatus"]), (BASE_URL + "/landing", "redirected"))
+
+    def _plain_tls(self):
+        class TLSContext:
+            def wrap_socket(self, sock, server_hostname, do_handshake_on_connect):
+                from metadata_fixture import PlainTLSSocket
+                return PlainTLSSocket(sock)
+        return patch.object(safe.ssl, "create_default_context", return_value=TLSContext())
+
+    def test_oembed_providers_give_previews_without_the_page(self):
+        for host in ("www.tiktok.com", "publish.twitter.com", "x.com"):
+            self.http.dns[host] = [PUBLIC_IP]
+        tiktok = "/oembed?url=https%3A%2F%2Fwww.tiktok.com%2F%40someone%2Fvideo%2F123"
+        self.http.routes[tiktok] = (200, {"Content-Type": "application/json"},
+            b'{"title":"Dance","author_name":"someone","provider_name":"TikTok","thumbnail_url":"http://cdn.fixture.test/tt.jpg"}')
+        self.http.routes["/tt.jpg"] = (200, {"Content-Type": "image/jpeg"}, JPEG)
+        with self._plain_tls():
+            result = metadata.fetch_metadata("https://www.tiktok.com/@someone/video/123")
+        self.assertEqual((result["title"], result["author"], result["siteName"]), ("Dance", "someone", "TikTok"))
+        self.assertTrue(result["thumbnail"].startswith("/thumb/img_"))
+        tweet = "/oembed?url=https%3A%2F%2Fx.com%2Fa%2Fstatus%2F1&omit_script=1&dnt=true"
+        self.http.routes[tweet] = (200, {"Content-Type": "application/json"},
+            b'{"type":"rich","author_name":"A","provider_url":"https://twitter.com","html":"<blockquote><p>Hello <a href=\\"https://t.co/x\\">world</a></p></blockquote>"}')
+        with self._plain_tls():
+            result = metadata.fetch_metadata("https://x.com/a/status/1")
+        self.assertEqual(result["summary"], "Hello world")
+        self.assertEqual(result["author"], "A")
+
+    def test_reddit_json_and_arxiv_abstract(self):
+        self.http.dns["www.reddit.com"] = [PUBLIC_IP]
+        listing = [{"data": {"children": [{"data": {"title": "Thread", "selftext": "Body text", "author": "op",
+                    "subreddit": "python", "created_utc": 1700000000,
+                    "preview": {"images": [{"source": {"url": "http://cdn.fixture.test/r.jpg"}}]}}}]}}]
+        self.http.routes["/r/python/comments/abc/thread.json?raw_json=1&limit=1"] = (200, {"Content-Type": "application/json"}, json.dumps(listing).encode())
+        self.http.routes["/r.jpg"] = (200, {"Content-Type": "image/jpeg"}, JPEG)
+        with self._plain_tls():
+            result = metadata.fetch_metadata("https://www.reddit.com/r/python/comments/abc/thread/")
+        self.assertEqual((result["title"], result["summary"], result["siteName"], result["author"]), ("Thread", "Body text", "r/python", "u/op"))
+        self.assertEqual(result["publishedAt"], "2023-11-14T22:13:20Z")
+        self.assertTrue(result["thumbnail"].startswith("/thumb/img_"))
+        self.assertEqual(metadata._arxiv_abstract_url("https://arxiv.org/pdf/2401.01234v2"), "https://arxiv.org/abs/2401.01234v2")
+        self.assertEqual(metadata._arxiv_abstract_url("https://arxiv.org/pdf/2401.01234.pdf"), "https://arxiv.org/abs/2401.01234")
+
+    def test_slow_first_byte_within_budget_succeeds(self):
+        def slow(handler):
+            time.sleep(2.6)
+            body = b"<title>Slow but fine</title>"
+            handler.send_response(200)
+            handler.send_header("Content-Type", "text/html")
+            handler.send_header("Content-Length", str(len(body)))
+            handler.end_headers()
+            handler.wfile.write(body)
+        self.http.routes["/slow"] = slow
+        self.assertEqual(self.fetch("/slow")["title"], "Slow but fine")
 
 
 if __name__ == "__main__":

@@ -12,8 +12,11 @@ __pycache__/
 /dist/
 /dist-package/
 /dist-standalone/
+/dist-standalone-v*/
 /dist-installer/
+/dist-installer-v*/
 /packaging/build-standalone/
+/packaging/build-standalone-v*/
 /packaging/*.spec
 
 # Local credentials/configuration. Deliberate empty examples remain source.
@@ -24,7 +27,8 @@ __pycache__/
 /credentials.json
 /secrets.json
 /secrets.yaml
-/litellm/config.local.yaml
+/ai.json
+/litellm/
 
 # Telegram session files and SQLite databases/sidecars (never release source)
 *.session*
@@ -50,9 +54,12 @@ __pycache__/
 # Runtime cache and logs; deleting an index entry must preserve local files
 /thumb_cache/
 *.log
+/vibe_images/
+/Claude outputs/
+/site/
 
 # Local verification output, temporary harness captures and build reports
-/.verify/
+.verify/
 /frontend/test-results/
 /frontend/playwright-report/
 /frontend/blob-report/
@@ -70,3 +77,5 @@ __pycache__/
 
 # Local developer virtual environments
 .venv/
+CLAUDE.local.md
+.claude/settings.local.json

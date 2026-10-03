@@ -2,10 +2,9 @@
 Hybrid categorizer with free-tier provider failover.
 
 Strategy per post (in order):
-  1. LiteLLM proxy ("dashboard-categorizer"): Groq -> Gemini -> Mistral
-     -> local llama-server, with automatic 429 cooldowns (port 4000).
-  2. Direct local LLM (config.LLM_BASE_URL) if the proxy is down.
-  3. Keyword scoring for bare URLs or when every LLM path fails.
+  1. The built-in AI provider chain (ai_providers.py): Gemini -> Groq ->
+     OpenRouter -> NVIDIA -> a local server, using whichever keys are set in Settings.
+  2. Keyword scoring for bare URLs, or when no provider is set up or answers.
 
 Classification is REUSE-ONLY. Every tier may only pick a category that already
 exists, or fall back to 'other'. Growing the taxonomy is a separate, deliberate
@@ -27,15 +26,13 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
+import ai_providers
 import config
 import storage
 
 # Regex to strip reasoning/thinking blocks from model output
 _THINK_RE = re.compile(r'<' + 'think' + '>.*?<' + '/think' + '>', re.DOTALL)
 
-PROXY_URL = getattr(config, "LITELLM_PROXY_URL", "http://127.0.0.1:4000") + "/v1/chat/completions"
-PROXY_API_KEY = getattr(config, "LITELLM_PROXY_KEY", "sk-local-dashboard-proxy")
-PROXY_MODEL = "dashboard-categorizer"
 
 
 # Structural, not topical: never offered to the model as a shelf, never a
@@ -195,19 +192,11 @@ def _post_payload(post: dict) -> str:
     return "\n".join(parts) if parts else "(no content)"
 
 
-# ── Proxy availability ────────────────────────────────────────────────────────
+# ── Provider availability ─────────────────────────────────────────────────────
 
 def proxy_available(timeout: float = 1.5) -> bool:
-    """Cheap health probe of the LiteLLM proxy."""
-    try:
-        req = urllib.request.Request(
-            PROXY_URL.rsplit("/v1/", 1)[0] + "/health/liveliness",
-            headers={"Authorization": f"Bearer {PROXY_API_KEY}"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout):
-            return True
-    except (urllib.error.URLError, OSError, ValueError):
-        return False
+    """Is any AI provider set up and not benched? (Name kept for callers.)"""
+    return ai_providers.available()
 
 
 # ── JSON extraction helper (messy-output rescue) ─────────────────────────────
@@ -266,132 +255,31 @@ def _validate_result(result: dict, existing: list[str]) -> Optional[dict]:
     }
 
 
-# ── Tier 1: LiteLLM proxy ─────────────────────────────────────────────────────
+# ── Tier 1: AI provider chain ────────────────────────────────────────────────
 
 def auto_categorize_post(post_content: str, existing_categories: list[str]) -> Optional[dict]:
     """
-    Send one post to the auto-switching proxy and return a structured
-    classification. Returns None when the whole proxy stack fails so the
-    caller can fall back to the direct local LLM or keywords.
-
-    `post_content` is the raw post payload; the prompt around it is built here so
-    there is exactly one copy of the shelf list in the request.
+    Classify one post through the provider chain. Returns None when no provider
+    answers usefully, so the caller falls back to keywords.
     """
-    user_prompt = _user_prompt(post_content, existing_categories)
-    headers = {
-        "Authorization": f"Bearer {PROXY_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    base_payload = {
-        "model": PROXY_MODEL,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.1,  # low temp kills creative category hallucination
-        "max_tokens": 1024,
-    }
-
-    # Attempt 1: strict json_schema. Attempt 2: plain json_object (some
-    # routed providers don't support strict schemas).
-    attempts = [
-        {**base_payload, "response_format": {"type": "json_schema", "json_schema": _JSON_SCHEMA_PAYLOAD}},
-        {**base_payload, "response_format": {"type": "json_object"}},
+    schema_hint = json.dumps(_JSON_SCHEMA_PAYLOAD["schema"], separators=(",", ":"))
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT + "\nReturn ONLY a JSON object matching this schema: " + schema_hint},
+        {"role": "user", "content": _user_prompt(post_content, existing_categories)},
     ]
-
-    for payload in attempts:
-        try:
-            req = urllib.request.Request(
-                PROXY_URL, headers=headers,
-                data=json.dumps(payload).encode("utf-8"), method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                raw_result = json.loads(resp.read().decode("utf-8"))
-            structured_content = raw_result["choices"][0]["message"]["content"]
-            parsed = _extract_json(structured_content) or None
-        except (urllib.error.URLError, OSError, ValueError, KeyError, IndexError, TypeError):
-            continue
-        if parsed:
-            validated = _validate_result(parsed, existing_categories)
-            if validated:
-                return validated
-    return None
-
-
-# ── Tier 2: direct local LLM (kept for proxy-less operation) ─────────────────
-
-def _provider_errors() -> tuple:
-    """Optional SDK errors, loaded only on the direct-provider path."""
     try:
-        from openai import OpenAIError
-    except ImportError:
-        return (OSError,)
-    return (OpenAIError, OSError)
+        text, provider = ai_providers.chat(messages, max_tokens=1000)
+    except ai_providers.NoProvider:
+        return None
+    parsed = _extract_json(text)
+    validated = _validate_result(parsed, existing_categories) if parsed else None
+    if validated:
+        validated["engine"] = provider
+    return validated
 
 
 def _get_client():
-    """Create OpenAI client for the local server, verify with retries."""
-    try:
-        from openai import OpenAI
-    except ImportError:
-        return None
-    try:
-        client = OpenAI(base_url=config.LLM_BASE_URL, api_key=config.LLM_API_KEY,
-                        timeout=10, max_retries=0)
-    except (*_provider_errors(), ValueError):
-        return None
-    for attempt in range(3):
-        try:
-            client.models.list()
-            return client
-        except _provider_errors():
-            if attempt < 2:
-                wait = 2 ** (attempt + 1)
-                print(f"  [categorizer] Optional LLM unavailable; retrying in {wait}s...")
-                time.sleep(wait)
-            else:
-                return None
-
-
-def _detect_model(client) -> str:
-    """Auto-detect model name from the server."""
-    try:
-        for m in client.models.list():
-            return m.id
-    except (*_provider_errors(), AttributeError, TypeError):
-        pass
-    return config.LLM_MODEL
-
-
-def _local_classify(client, model_name: str, post_content: str, existing: list[str]) -> Optional[dict]:
-    """Direct local LLM call with the same reuse-only contract (json_object mode)."""
-    schema_hint = json.dumps(_JSON_SCHEMA_PAYLOAD["schema"], separators=(",", ":"))
-    system = (
-        SYSTEM_PROMPT
-        + "\nReturn ONLY a JSON object matching this schema: " + schema_hint
-    )
-    user_prompt = _user_prompt(post_content, existing)
-    try:
-        resp = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.1,
-            max_tokens=1024,
-            response_format={"type": "json_object"},
-            extra_body={"reasoning_format": "none"},
-        )
-    except _provider_errors():
-        return None
-    try:
-        raw = resp.choices[0].message.content
-    except (AttributeError, IndexError, TypeError):
-        return None
-    parsed = _extract_json(raw)
-    if parsed:
-        return _validate_result(parsed, existing)
+    """Retired: the direct OpenAI-SDK tier is now the chain's "local" provider."""
     return None
 
 
@@ -648,40 +536,23 @@ def categorize_unprocessed(batch_size: int = 500, untagged_only: bool = False) -
 
     print(f"[categorizer] {len(posts)} posts: {len(content_posts)} with content, {len(bare_posts)} bare URLs")
 
-    use_proxy = False
-    client = None
-    model_name = None
-
-    if content_posts:
-        if proxy_available():
-            use_proxy = True
-            print("[categorizer] Optional proxy online — provider failover active")
-        else:
-            print("[categorizer] Proxy offline — trying optional direct LLM...")
-            client = _get_client()
-            if client:
-                model_name = _detect_model(client)
-                print("[categorizer] Optional direct LLM connected")
-            else:
-                print("[categorizer] No LLM available — keyword fallback for all posts")
+    use_ai = bool(content_posts) and proxy_available()
+    print("[categorizer] AI provider chain ready" if use_ai
+          else "[categorizer] No AI provider set up (Settings > AI & previews) — keyword fallback")
 
     existing = storage.get_categories()
     live = {_norm_category(c) for c in existing}
     processed = 0
-    proxy_hits = local_hits = kw_hits = 0
+    ai_hits = kw_hits = 0
 
     for post in content_posts:
         payload = _post_payload(post)
         result: Optional[dict] = None
 
-        if use_proxy:
+        if use_ai:
             result = auto_categorize_post(payload, existing)
             if result:
-                proxy_hits += 1
-        if result is None and client:
-            result = _local_classify(client, model_name, payload, existing)
-            if result:
-                local_hits += 1
+                ai_hits += 1
 
         if result:
             apply_classification(post["tg_msg_id"], result, _build_summary(post))
@@ -702,7 +573,7 @@ def categorize_unprocessed(batch_size: int = 500, untagged_only: bool = False) -
         storage.update_classification(post["tg_msg_id"], category, _build_summary(post), tags)
         processed += 1
 
-    print(f"[categorizer] Done: {processed} posts — proxy {proxy_hits}, local LLM {local_hits}, keywords {kw_hits + len(bare_posts)}")
+    print(f"[categorizer] Done: {processed} posts — AI {ai_hits}, keywords {kw_hits + len(bare_posts)}")
     return processed
 
 
@@ -720,13 +591,7 @@ def categorize_content(content: str, keywords_only: bool = False) -> dict:
     if not keywords_only and proxy_available():
         result = auto_categorize_post(content, existing)
         if result:
-            return {**result, "engine": "proxy"}
-
-    client = None if keywords_only else _get_client()
-    if client:
-        result = _local_classify(client, _detect_model(client), content, existing)
-        if result:
-            return {**result, "engine": "local-llm"}
+            return {**result, "engine": result.get("engine", "ai")}
 
     category, tags = _keyword_classify(content, {_norm_category(c) for c in existing})
     return {
@@ -737,27 +602,7 @@ def categorize_content(content: str, keywords_only: bool = False) -> dict:
     }
 
 
-# =====================================================================
-# Production test simulation
-# =====================================================================
 if __name__ == "__main__":
     storage.init_db()
-    my_dashboard_categories = storage.get_categories() or [
-        "Software Development", "Cooking Recipes", "Fitness & Health",
-    ]
-
-    test_post_1 = "I found an amazing tutorial on building multi-tenant microservices using FastAPI and Docker containers."
-    print("Processing Post 1...")
-    if proxy_available():
-        result_1 = auto_categorize_post(test_post_1, my_dashboard_categories)
-    else:
-        result_1 = None
-    print(json.dumps(result_1 or {"error": "proxy offline"}, indent=2))
-
-    test_post_2 = "Yield curves are flattening and the Federal Reserve might cut interest rates by 25 basis points next quarter."
-    print("\nProcessing Post 2...")
-    if proxy_available():
-        result_2 = auto_categorize_post(test_post_2, my_dashboard_categories)
-    else:
-        result_2 = None
-    print(json.dumps(result_2 or {"error": "proxy offline"}, indent=2))
+    sample = "A tutorial on building multi-tenant services with FastAPI and Docker containers."
+    print(json.dumps(categorize_content(sample), indent=2))

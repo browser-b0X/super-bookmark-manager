@@ -2,43 +2,90 @@
 
 <img src="frontend/public/brand-logo.svg" alt="Super Bookmark Manager logo" width="96" height="96" />
 
-**A local-first bookmark manager for organizing browser bookmarks and Telegram Saved Messages on Windows.**
+**A local-first feed for the links you save — browser bookmarks, Telegram Saved
+Messages and WhatsApp chats — on Windows.**
 
+[Website](https://browser-b0x.github.io/super-bookmark-manager/) ·
+[Download](https://github.com/browser-b0X/super-bookmark-manager/releases/latest) ·
+[Report a bug or suggest an idea](https://github.com/browser-b0X/super-bookmark-manager/issues)
 
 ## Features
 
-- Import browser bookmarks and Telegram Saved Messages into one library.
-- Automatic categorization with a bounded set of shelves and keyword fallback.
-- Search and filter; edit notes, reading status, tags and categories.
-- Save reusable filters with Saved Views and find Related Items locally.
-- Catch Up on unread links, with previews when available.
-- Export and restore library backups; keep durable records in local SQLite storage.
+- **One feed.** New, unsorted links drift across the top of the page; keep, save
+  for later or archive each one in place. Everything you keep sits below as a
+  picture-first library. When nothing new is waiting, older favourites resurface.
+- **Bring your links.** Import browser bookmarks (Chrome, Edge, Brave, Firefox),
+  Telegram Saved Messages and WhatsApp chat exports, or paste any link.
+- **Good-looking cards without a thumbnail.** Posts from X, TikTok, Instagram,
+  Facebook, Reddit and others are drawn in the spirit of their platform; plain web
+  pages get a link-preview card with the site, title and description.
+- **Organize your way.** Shelves, tags, notes, reading status, favourites, saved
+  views, platform filters and search (`site:`, `#tag`, `is:later`). Drag tiles into
+  your own order.
+- **Optional AI tidying with free keys.** Add a Google Gemini, Groq, OpenRouter or
+  NVIDIA NIM key — or point at a local Ollama server — and the app suggests shelves,
+  tags, clean titles and one-line summaries for you to review. Without a key,
+  local keyword rules sort your links.
+- **Yours, on your PC.** Links live in a local SQLite library with export/restore
+  backups. Light and dark themes.
 
 ## Installation
 
-When the first public release is published, download `SuperBookmarkManager-Setup.exe`
-and its checksum from this repository's Releases page. This source preparation does
-not itself publish a release. Run the installer for your Windows user, then launch
-**Super Bookmark Manager** from the Start Menu. Administrator elevation, Python,
-Node and npm are not required for normal use. The application opens in your browser
-at `http://127.0.0.1:5001`; keep its local server window open while using it.
+Download `SuperBookmarkManager-Setup.exe` and its checksum from the
+[Releases page](https://github.com/browser-b0X/super-bookmark-manager/releases).
+Run the installer for your Windows user, then launch **Super Bookmark Manager**
+from the Start Menu (a Desktop shortcut is optional). Administrator rights, Python,
+Node and npm are not required.
 
-The release candidate is **unsigned** and may trigger Windows SmartScreen or antivirus
-warnings. Check the SHA-256 against the release checksum before running it.
+The app opens in your browser at `http://127.0.0.1:5001` and runs quietly in the
+background. Launching it again reopens the running app. To stop it, use the power
+button at the bottom of the sidebar (or **Settings → Quit Super Bookmark Manager**);
+it saves any pending changes first. Installing or starting a newer version stops an
+older copy that is still running, so you always get the version you installed.
 
-## Browser imports
+The installer is **unsigned** and may trigger Windows SmartScreen or antivirus
+warnings. Check its SHA-256 against the published checksum before running it.
 
-In Library Settings, select an exported bookmark HTML file, a copied Chromium
-`Bookmarks` JSON file, or a copied Firefox `places.sqlite` file. Export HTML from
-your browser's bookmark manager, or make a consistent database/file copy with the
-browser closed. Imports read only files you explicitly select; the application does
-not scan live browser profiles. Firefox history-only rows are excluded. Reimports
-merge links without intentionally replacing your curation.
+### Upgrading from v0.1.0
+
+v0.2.0 keeps its data in `%LOCALAPPDATA%\SuperBookmarkManager\`. Your v0.1.0 library in
+`%LOCALAPPDATA%\SavedPostsDashboard\` is left untouched and is not imported
+automatically. To bring it across, export a backup from v0.1.0's Settings before
+upgrading, then restore that file in v0.2.0 under **Settings → Backup**.
+
+### WinGet (pending availability)
+
+A WinGet listing is prepared. It becomes available only after the release is
+published and the WinGet community listing is accepted; until then this command
+does not work:
+
+```powershell
+winget install --id browser-b0X.SuperBookmarkManager --exact --source winget --scope user
+```
+
+WinGet uses the same Windows installer. It does not remove security warnings or
+add macOS/Linux support. [Package preparation details](packaging/winget/README.md).
+
+## Bringing links in
+
+All imports are in **Settings → Sources**. Drop a file and the format is detected;
+you see a preview before anything is saved. Reimports merge links without replacing
+your own edits.
+
+- **Browsers:** an exported bookmark HTML file, a copied Chromium `Bookmarks` JSON
+  file, or a copied Firefox `places.sqlite` file (copy it with the browser closed).
+  The app reads only files you select; it never scans live browser profiles.
+  You can leave folders out or file a folder onto a shelf.
+- **WhatsApp:** on your phone, open a chat (for example *Message yourself*), choose
+  **Export chat → Without media**, and import the `.txt` file or `.zip`. WhatsApp
+  Desktop and Web cannot export chats.
+- **Telegram:** connect your account (below) to refresh Saved Messages, or import a
+  Telegram Desktop JSON export.
 
 ## Telegram setup
 
-1. Obtain your personal API ID and API Hash through [Telegram's API development tools](https://my.telegram.org).
-2. Open **Settings → Telegram Integration**.
+1. [Sign in to Telegram's developer portal](https://my.telegram.org/auth), choose **API development tools**, and create an application to obtain your API ID and API hash.
+2. Open **Settings → Sources** and find the Telegram section.
 3. Save your developer credentials.
 4. Choose **Connect Telegram**.
 5. Enter your phone number.
@@ -49,67 +96,64 @@ merge links without intentionally replacing your curation.
 API ID/Hash identify your Telegram application; they do not log you in. The Connect
 flow establishes your local account session. There are no shared project API
 credentials. Refresh reads up to 200 recent messages (or a smaller configured limit).
-Telegram Desktop Saved Messages JSON exports can also be imported through Settings.
-Follow the export instructions there; manual Telethon scripts are not needed.
+
+## Optional AI
+
+No AI account or key is needed. Without one, imports are sorted by built-in keyword
+rules and the app never contacts an AI provider.
+
+To get suggestions for shelves, tags, clean titles and one-line summaries, open
+**Settings → AI & previews** and add a key for any of these (each offers a free tier):
+
+| Provider | Where to get a key |
+| --- | --- |
+| Google Gemini | [Google AI Studio](https://aistudio.google.com/apikey) |
+| Groq | [Groq console](https://console.groq.com/keys) |
+| OpenRouter | [OpenRouter keys](https://openrouter.ai/keys) (uses free models by default) |
+| NVIDIA NIM | [build.nvidia.com](https://build.nvidia.com/settings/api-keys) |
+| Local | An OpenAI-compatible server on your PC, such as [Ollama](https://ollama.com) |
+
+Use **Test** to check a key. Providers are tried in order, so if one is rate-limited
+the next one answers. Suggestions are shown for review — nothing is saved until you
+accept it, and your own edits are never overwritten. When AI is used, the title,
+link and text of the links being tidied are sent to that provider.
 
 ## Local data and privacy
 
-There is no central Super Bookmark Manager account. The packaged application stores
-its SQLite database, local configuration and Telegram session on your machine.
+There is no central Super Bookmark Manager account. The installed app keeps its
+SQLite library, thumbnail cache, settings, AI keys (`ai.json`) and Telegram session
+in `%LOCALAPPDATA%\SuperBookmarkManager\`.
 
-**Super Bookmark Manager retains the legacy `%LOCALAPPDATA%\SavedPostsDashboard\`
-user-data directory for compatibility with existing installations.** No migration is
-needed. `SAVED_POSTS_DB_PATH` can explicitly select another database.
+Windows user-local file permissions protect these files; this is **not an encrypted
+credential vault**. Verification codes and 2FA passwords are not stored. Keys,
+sessions and the thumbnail cache are excluded from the repository, installer
+payloads and library backups. Anyone with access to your Windows account or its
+files may still obtain sensitive information.
 
-API ID/Hash are stored locally in `config.json`; the Telegram session is stored in
-`session.session`. Windows user-local filesystem permissions protect these files;
-this is **not an encrypted credential vault**. Verification codes and 2FA passwords
-are not persisted. Session and credential files are excluded from repository source,
-installer payloads and library backups. Anyone with access to your Windows account
-or its files may still obtain sensitive information.
-
-User-created backups are local library exports. Restore creates a separate database
-for an explicit switch; it does not silently replace your active library. Saved Views
-and display preferences are browser-local, tied to the browser profile and site
-address, and excluded from library backups.
+Backups are local library exports. Restore creates a separate database for an
+explicit switch; it does not silently replace your active library. Saved views and
+display preferences live in your browser profile and are not part of backups.
 
 ## Network activity
 
-Telegram connection, authorization testing, logout and refresh contact Telegram when
-you explicitly invoke them. Newly imported links may trigger metadata enrichment,
-which contacts saved-link hosts and permitted redirects/images to obtain previews.
-Opening a saved link visits its site. Automatic categorization during browser and
-Telegram imports uses local keywords and requires no AI-provider API key. The manual
-Categorize, Bulk categorize and category-suggestion controls can contact a configured
-provider/proxy, which can receive link content. Provider setup is not exposed in Settings.
-This is local-first, **not offline-only** or zero-network.
+The app is local-first, **not offline-only**:
 
-## Optional AI-assisted categorization
-
-Super Bookmark Manager does not require an AI-provider account, API key, LiteLLM or
-a proxy. Normal browser and Telegram imports use built-in deterministic categorization.
-Advanced/developer installations may configure the existing provider-compatible backend.
-Manual Categorize and Bulk categorize fall back to the built-in classifier when optional
-provider infrastructure is unavailable or returns an unusable response. The installer
-does not bundle provider SDKs. Provider setup is intentionally absent from Settings in v0.1.0.
-
-Bulk categorize operates on legacy backend records. Category suggestions are optional,
-read-only proposals for new shelves from unfiled legacy records; without a provider,
-they return no proposals. They do not change the deterministic import classifier.
+- New links may be enriched with previews, which contacts the saved sites (and
+  permitted redirects/images). Opening a link visits its site.
+- Telegram is contacted only when you connect, test, log out or refresh.
+- AI providers are contacted only when you add a key and run Test or a tidy-up.
 
 ## Uninstall
 
 Uninstall **Super Bookmark Manager** in Windows Settings → Apps. Program files and
-shortcuts are removed; user data is retained by default. For complete removal, stop
-the application, keep any wanted backups, and manually remove
-`%LOCALAPPDATA%\SavedPostsDashboard\`. Separately remove any database path you selected
-with `SAVED_POSTS_DB_PATH`, exported backups and browser site data if desired.
+shortcuts are removed; your data is kept. For complete removal, quit the app, keep
+any backups you want, and delete `%LOCALAPPDATA%\SuperBookmarkManager\` (and
+`%LOCALAPPDATA%\SavedPostsDashboard\` if you used v0.1.0).
 
 ## Building from source
 
-See [BUILDING.md](BUILDING.md) for developer prerequisites, exact build commands,
-outputs and the limits of same-machine clean-source verification. Windows is the
-verified packaged-release platform.
+See [BUILDING.md](BUILDING.md) for prerequisites, build commands and outputs.
+Windows is the verified packaged-release platform.
 
 ## Security
 
@@ -119,12 +163,11 @@ See [SECURITY.md](SECURITY.md) before sharing logs, screenshots or bug reports.
 
 Help make **browser-b0X** better.
 
--🐛 **Found a bug?** Submit a structured [Bug Report](https://github.com/browser-b0x/super-bookmark-manager/issues/new/choose)
--💡 **Have an idea or question?** Start a discussion in [GitHub Discussions](https://github.com/browser-b0x/super-bookmark-manager/discussions)
--🤝 **Want to contribute?** Pull requests and improvements are always welcome.
+- 🐛 **Found a bug?** Submit a structured [Bug Report](https://github.com/browser-b0x/super-bookmark-manager/issues/new/choose)
+- 💡 **Have an idea or question?** Start a discussion in [GitHub Discussions](https://github.com/browser-b0x/super-bookmark-manager/discussions)
+- 🤝 **Want to contribute?** Pull requests and improvements are always welcome.
 
-
-##  Support the project
+## Support the project
 
 <p align="center">
   <a href="https://ko-fi.com/browserb0x">

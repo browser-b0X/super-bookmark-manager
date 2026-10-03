@@ -27,22 +27,56 @@ SOURCE_PATTERNS = {
 }
 
 URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
+_SOURCE_DOMAINS = {
+    "instagram": ("instagram.com", "instagr.am"), "x.com": ("twitter.com", "x.com"),
+    "youtube": ("youtube.com", "youtu.be"), "reddit": ("reddit.com", "redd.it"), "tiktok": ("tiktok.com",),
+    "facebook": ("facebook.com", "fb.com"), "linkedin": ("linkedin.com",), "pinterest": ("pinterest.com",),
+}
 
 
 def detect_source(url: Optional[str]) -> str:
+    """Match on the hostname itself: netflix.com is not x.com."""
     if not url:
         return "text"
-    for source, pattern in SOURCE_PATTERNS.items():
-        if pattern.search(url):
+    from urllib.parse import urlsplit
+    try:
+        host = (urlsplit(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return "other"
+    for source, domains in _SOURCE_DOMAINS.items():
+        if any(host == d or host.endswith("." + d) for d in domains):
             return source
     return "other"
 
 
-def extract_first_url(text: Optional[str]) -> Optional[str]:
+def _trim_url(url: str) -> str:
+    """Drop punctuation that ends a sentence or wraps a link: `(see https://a.b/c).`"""
+    while url and url[-1] in ".,;:!?'\"":
+        url = url[:-1]
+    while url.endswith(")") and url.count(")") > url.count("("):
+        url = url[:-1]
+    while url.endswith("]") and url.count("]") > url.count("["):
+        url = url[:-1]
+    return url
+
+
+def extract_first_url(text: Optional[str], entities=None) -> Optional[str]:
+    """Prefer Telegram's own link entities; fall back to scanning plain text."""
+    for entity in entities or []:
+        url = getattr(entity, "url", None)
+        if isinstance(url, str) and url.lower().startswith(("http://", "https://")):
+            return url
+    for entity in entities or []:
+        if type(entity).__name__ == "MessageEntityUrl" and text:
+            offset, length = getattr(entity, "offset", None), getattr(entity, "length", None)
+            if isinstance(offset, int) and isinstance(length, int):
+                candidate = text[offset:offset + length]
+                if candidate.lower().startswith(("http://", "https://")):
+                    return _trim_url(candidate)
     if not text:
         return None
     urls = URL_RE.findall(text)
-    return urls[0] if urls else None
+    return _trim_url(urls[0]) if urls else None
 
 
 # ── Main fetch ─────────────────────────────────────────────────────────────────
@@ -81,8 +115,10 @@ async def fetch_saved_messages():
         if storage.post_exists(msg.id):
             continue
 
-        text = msg.text or msg.message or ""
-        url = extract_first_url(text)
+        # msg.message is the plain text the entity offsets refer to; msg.text is
+        # Telethon's markdown rendering (`[label](url)`), which corrupts URLs.
+        text = msg.message or ""
+        url = extract_first_url(text, getattr(msg, "entities", None))
         source = detect_source(url)
         date_utc = msg.date.astimezone(timezone.utc).isoformat() if msg.date else ""
 

@@ -20,6 +20,7 @@ interface TgMessage {
   date?: string;
   text?: string | (string | TgEntity)[];
   text_entities?: TgEntity[];
+  preview?: unknown;
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -40,6 +41,16 @@ function isMessage(value: unknown): value is TgMessage {
   return (value.text === undefined || typeof value.text === "string"
       || (Array.isArray(value.text) && value.text.every(part => typeof part === "string" || isEntity(part))))
     && (value.text_entities === undefined || (Array.isArray(value.text_entities) && value.text_entities.every(isEntity)));
+}
+
+// A preview only decorates the exact link it was resolved for, and only when the
+// refresh actually cached bytes behind the local /thumb route.
+function previewThumbnail(msg: TgMessage, canonical: string): string | undefined {
+  const preview = msg.preview;
+  if (!isObject(preview) || typeof preview.url !== "string" || typeof preview.thumbnail !== "string") return undefined;
+  if (!preview.thumbnail.startsWith("/thumb/")) return undefined;
+  try { return new URL(preview.url).href === canonical ? preview.thumbnail : undefined; }
+  catch { return undefined; }
 }
 
 function extractText(msg: TgMessage): string {
@@ -68,6 +79,15 @@ function extractUrls(msg: TgMessage): Set<string> {
     }
   }
   return urls;
+}
+
+/** Telegram Desktop gives `date_unixtime` (UTC seconds) and a zone-less local `date`. */
+function exportInstant(msg: { date?: string; date_unixtime?: unknown }): string | undefined {
+  const unix = typeof msg.date_unixtime === "string" ? Number(msg.date_unixtime) : NaN;
+  if (Number.isFinite(unix) && unix > 0) return new Date(unix * 1000).toISOString();
+  if (typeof msg.date !== "string") return undefined;
+  const parsed = new Date(msg.date); // zone-less ISO is parsed as local time
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
 export function parseTelegramExport(raw: string): ImportResult {
@@ -108,8 +128,10 @@ export function parseTelegramExport(raw: string): ImportResult {
         sourceMessageId: messageId,
         telegramMessage: { id: messageId, date: msg.date, text },
         excerpt: text || undefined,
-        createdAt: msg.date ?? post.createdAt,
-        thumbnailUrl: undefined,
+        // Desktop exports write local wall-clock time without a zone; compare
+        // only real UTC instants with the rest of the library.
+        createdAt: exportInstant(msg) ?? post.createdAt,
+        thumbnailUrl: previewThumbnail(msg, canonical),
       });
     }
     if (!eligible) result.skipped++;

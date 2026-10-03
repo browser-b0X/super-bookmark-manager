@@ -15,21 +15,6 @@ const RESERVED = new Set(["other", "uncategorized"]);
 
 interface Suggestion { name: string; reason: string; example_count: number }
 
-/**
- * Mirror a new shelf into SQLite. The classifier is reuse-only, so a category that
- * exists only in the browser store is one it will never file anything into.
- * Failure is non-fatal — the app is usable with the backend down.
- */
-async function persistShelf(name: string): Promise<void> {
-  try {
-    await fetch("/api/categories", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
-  } catch { /* local-only is an acceptable degraded state */ }
-}
-
 function SortableRow({ cat, count }: { cat: Category; count: number }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: cat.id });
   const renameCategory = useLibrary(s => s.renameCategory);
@@ -111,7 +96,6 @@ export default function CategoryManager({ onClose }: { onClose: () => void }) {
 
   const add = (name: string) => {
     const cat = addCategory(name);
-    if (cat) void persistShelf(cat.name);
     return cat;
   };
 

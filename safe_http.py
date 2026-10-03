@@ -18,7 +18,9 @@ from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 TOTAL_TIMEOUT = 8.0
 CONNECT_TIMEOUT = 2.0
 DNS_TIMEOUT = 2.0
-HTML_LIMIT = 512 * 1024
+# An anonymous Instagram post shell measures ~637 KB; below that it is a
+# deterministic too_large, not a size guard.
+HTML_LIMIT = 1024 * 1024
 IMAGE_LIMIT = 4 * 1024 * 1024
 MAX_REDIRECTS = 3
 ERROR_CODES = frozenset({"invalid_url", "blocked_url", "dns_failure", "timeout",
@@ -28,8 +30,11 @@ ERROR_CODES = frozenset({"invalid_url", "blocked_url", "dns_failure", "timeout",
 
 
 class SafeHTTPError(Exception):
-    def __init__(self, code):
+    def __init__(self, code, status=None):
         self.code = code if code in ERROR_CODES else "internal_error"
+        # HTTP status of an http_error, so callers can tell a gone page (404/410)
+        # from a temporary server fault (5xx).
+        self.status = status if isinstance(status, int) else None
         super().__init__(self.code)
 
 
@@ -231,7 +236,10 @@ def _request(target, address, deadline, limit, headers):
             active_socket.append(sock)
             sock.settimeout(min(CONNECT_TIMEOUT, remaining(deadline)))
             sock.do_handshake()
-        sock.settimeout(min(CONNECT_TIMEOUT, remaining(deadline)))
+        # Only the TCP connect and TLS handshake are held to CONNECT_TIMEOUT. A
+        # slow server may take several seconds to send its first byte; that is
+        # what the overall deadline is for.
+        sock.settimeout(remaining(deadline))
         connection = _PinnedConnection(target.host, target.port)
         connection.sock = sock
         request_headers = {"Host": target.authority, "User-Agent": "SavedPostsMetadata/1.0",
@@ -261,12 +269,12 @@ def _request(target, address, deadline, limit, headers):
         if response.status in (301, 302, 303, 307, 308):
             return Response(target.url, response.status, response_headers, b"")
         if not 200 <= response.status < 300:
-            raise SafeHTTPError("http_error")
+            raise SafeHTTPError("http_error", response.status)
         body = bytearray()
         wire_size = 0
         decoder = zlib.decompressobj(16 + zlib.MAX_WBITS) if encoding == "gzip" else None
         while not response.isclosed():
-            sock.settimeout(min(CONNECT_TIMEOUT, remaining(deadline)))
+            sock.settimeout(remaining(deadline))
             chunk = response.read(min(65536, limit + 1 - wire_size))
             remaining(deadline)
             if not chunk:
@@ -311,11 +319,25 @@ def _request(target, address, deadline, limit, headers):
             sock.close()
 
 
+def _request_any(target, addresses, deadline, limit, headers):
+    """Try each validated address in turn: a broken IPv6 route must not sink a
+    dual-stack site. Only connection-level failures move on to the next one."""
+    last = None
+    for address in addresses[:4]:
+        try:
+            return _request(target, address, deadline, limit, headers)
+        except SafeHTTPError as exc:
+            if exc.code != "network_error" or time.monotonic() >= deadline:
+                raise
+            last = exc
+    raise last or SafeHTTPError("network_error")
+
+
 def get(url, *, deadline=None, limit=HTML_LIMIT, headers=None):
     deadline = deadline if deadline is not None else time.monotonic() + TOTAL_TIMEOUT
     for hop in range(MAX_REDIRECTS + 1):
         target, addresses = validate_url(url, deadline)
-        response = _request(target, addresses[0], deadline, limit, headers)
+        response = _request_any(target, addresses, deadline, limit, headers)
         remaining(deadline)
         if response.status not in (301, 302, 303, 307, 308):
             return response

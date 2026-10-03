@@ -102,6 +102,80 @@ def _library_same_origin(origin: str) -> bool:
         return False
 
 
+# Hosts this local server answers to. Anything else is a DNS-rebinding attempt:
+# a page on evil.example re-pointed at 127.0.0.1 sends `Host: evil.example`,
+# and every Origin-vs-Host comparison would otherwise pass.
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+# Routes that already apply their own Origin/content-type rules with
+# route-specific responses; the generic guard below covers everything else.
+_SELF_GUARDED = {"api_telegram_auth", "api_telegram_config", "api_library", "api_backup",
+                 "api_import_firefox", "api_telegram_refresh", "api_enrich"}
+
+
+def _allowed_hosts() -> set:
+    extra = {h.strip().lower() for h in os.environ.get("SBM_ALLOWED_HOSTS", "").split(",") if h.strip()}
+    return _LOOPBACK_HOSTS | extra
+
+
+@app.before_request
+def _local_boundary():
+    try:
+        hostname = (urlsplit("//" + request.host).hostname or "").lower()
+    except ValueError:
+        hostname = ""
+    if hostname not in _allowed_hosts():
+        return jsonify(ok=False, error="This server only answers on its local address."), 403
+    if request.method in ("GET", "HEAD", "OPTIONS") or request.endpoint in _SELF_GUARDED:
+        return None
+    origin = request.headers.get("Origin")
+    if origin is not None and not _library_same_origin(origin):
+        return jsonify(ok=False, error="Cross-origin requests are not allowed."), 403
+    if request.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
+        return jsonify(ok=False, error="Cross-origin requests are not allowed."), 403
+    # A cross-site <form> can only send text/plain or form encodings; requiring
+    # JSON for any body closes that path for every mutating route.
+    has_body = (request.content_length or 0) > 0 or request.headers.get("Transfer-Encoding")
+    if request.path.startswith("/api/") and has_body and request.mimetype != "application/json":
+        return jsonify(ok=False, error="Requests with a body require application/json."), 415
+    return None
+
+
+class _BadBody(Exception):
+    pass
+
+
+@app.errorhandler(_BadBody)
+def _bad_body(exc):
+    return jsonify(ok=False, error=str(exc) or "Expected a JSON object."), 400
+
+
+def _json_object() -> dict:
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise _BadBody("Expected a JSON object.")
+    return data
+
+
+def _text(data: dict, key: str, default: str = "") -> str:
+    value = data.get(key, default)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise _BadBody(f"{key} must be a string.")
+    return value
+
+
+def _msg_id(data: dict) -> int:
+    value = data.get("tg_msg_id")
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise _BadBody("missing tg_msg_id")
+    try:
+        return int(value)
+    except ValueError:
+        raise _BadBody("tg_msg_id must be an integer.") from None
+
+
 @app.after_request
 def _telegram_config_no_store(response):
     # Includes automatic HEAD/OPTIONS and framework-generated method errors.
@@ -166,8 +240,9 @@ def api_telegram_auth():
             return jsonify(ok=True, **telegram_auth.disconnect(data["mode"]))
         return invalid()
     except telegram_auth.AuthError as exc:
-        # Fixed safe message per code; contains no user-supplied values.
-        return jsonify(ok=False, code=exc.code, error=str(exc)), exc.status
+        # Fixed safe message and bounded class/stage identifier; no secret values.
+        return jsonify(ok=False, code=exc.code, error=str(exc),
+                       **({"diagnostic": exc.diagnostic} if exc.diagnostic else {})), exc.status
     except (BadRequest, ValueError, RecursionError):
         return invalid()
     except Exception:
@@ -235,13 +310,17 @@ def api_library():
         return jsonify({"ok": False, "error": "Library writes require application/json."}), 415
     try:
         if request.method == "GET":
-            return jsonify(storage.get_library())
-        result = storage.save_library(request.get_json())
+            since = request.args.get("since", "0")
+            return jsonify(storage.get_library(int(since) if since.isdigit() else 0))
+
+        def strict_number(token):
+            raise BadRequest("Non-standard JSON number.")
+        result = storage.save_library(json.loads(request.get_data(), parse_constant=strict_number))
         return jsonify({"ok": True, **result})
-    except BadRequest:
-        return jsonify({"ok": False, "error": "Malformed JSON library request."}), 400
     except storage.LibraryValidationError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
+    except (BadRequest, ValueError, RecursionError):
+        return jsonify({"ok": False, "error": "Malformed JSON library request."}), 400
     except storage.LibraryConflictError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 409
     except sqlite3.Error:
@@ -325,14 +404,12 @@ def api_telegram_refresh():
 @app.route("/api/reclassify", methods=["POST"])
 def api_reclassify():
     """Allow manual re-categorization from the UI (used by drag-and-drop)."""
-    data = request.get_json()
-    tg_msg_id = data.get("tg_msg_id")
-    new_category = data.get("category", "uncategorized")
-    if tg_msg_id:
-        # Only update category, preserve existing summary/tags
-        storage.set_post_category(tg_msg_id, new_category)
-        return jsonify({"ok": True})
-    return jsonify({"ok": False, "error": "missing tg_msg_id"}), 400
+    data = _json_object()
+    tg_msg_id = _msg_id(data)
+    new_category = _text(data, "category", "uncategorized") or "uncategorized"
+    # Only update category, preserve existing summary/tags
+    storage.set_post_category(tg_msg_id, new_category)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/categories", methods=["GET"])
@@ -376,8 +453,8 @@ def api_categories_suggestions():
 @app.route("/api/categories", methods=["POST"])
 def api_categories_add():
     """Add a new category."""
-    data = request.get_json()
-    name = data.get("name", "").strip()
+    data = _json_object()
+    name = _text(data, "name").strip()
     if not name:
         return jsonify({"ok": False, "error": "missing name"}), 400
     try:
@@ -399,8 +476,8 @@ def api_categories_delete(name):
 @app.route("/api/categories/<name>/rename", methods=["POST"])
 def api_categories_rename(name):
     """Rename a category."""
-    data = request.get_json()
-    new_name = data.get("name", "").strip()
+    data = _json_object()
+    new_name = _text(data, "name").strip()
     if not new_name:
         return jsonify({"ok": False, "error": "missing name"}), 400
     renamed = storage.rename_category(name, new_name)
@@ -412,16 +489,16 @@ def api_categories_rename(name):
 @app.route("/api/edit", methods=["POST"])
 def api_edit():
     """Edit a post's title, summary, category, and tags."""
-    data = request.get_json()
-    tg_msg_id = data.get("tg_msg_id")
-    if not tg_msg_id:
-        return jsonify({"ok": False, "error": "missing tg_msg_id"}), 400
-    title = data.get("title", "")
-    summary = data.get("summary", "")
-    category = data.get("category", "other")
+    data = _json_object()
+    tg_msg_id = _msg_id(data)
+    title = _text(data, "title")
+    summary = _text(data, "summary")
+    category = _text(data, "category", "other") or "other"
     tags = data.get("tags", [])
     if isinstance(tags, str):
         tags = [t.strip() for t in tags.split(",") if t.strip()]
+    if not isinstance(tags, list) or any(not isinstance(t, str) for t in tags):
+        raise _BadBody("tags must be a list of strings.")
     storage.update_post(tg_msg_id, title, summary, category, tags)
     return jsonify({"ok": True})
 
@@ -429,10 +506,7 @@ def api_edit():
 @app.route("/api/delete", methods=["POST"])
 def api_delete():
     """Delete a post from the dashboard."""
-    data = request.get_json()
-    tg_msg_id = data.get("tg_msg_id")
-    if not tg_msg_id:
-        return jsonify({"ok": False, "error": "missing tg_msg_id"}), 400
+    tg_msg_id = _msg_id(_json_object())
     deleted = storage.delete_post(tg_msg_id)
     return jsonify({"ok": deleted})
 
@@ -442,12 +516,12 @@ def api_delete():
 @app.route("/api/tasks", methods=["GET", "POST"])
 def api_tasks():
     if request.method == "POST":
-        data = request.get_json()
-        title = (data.get("title") or "").strip()
+        data = _json_object()
+        title = _text(data, "title").strip()
         if not title:
             return jsonify({"ok": False, "error": "missing title"}), 400
-        tid = storage.add_task(title, data.get("priority", "normal"),
-                               data.get("due", ""), data.get("category", ""))
+        tid = storage.add_task(title, _text(data, "priority", "normal") or "normal",
+                               _text(data, "due"), _text(data, "category"))
         return jsonify({"ok": True, "id": tid})
     return jsonify(storage.list_tasks())
 
@@ -457,8 +531,18 @@ def api_task(task_id):
     if request.method == "DELETE":
         storage.delete_task(task_id)
         return jsonify({"ok": True})
-    data = request.get_json()
-    storage.update_task(task_id, **data)
+    data = _json_object()
+    fields = {}
+    for key in ("title", "priority", "due", "category"):
+        if key in data:
+            fields[key] = _text(data, key)
+    if "title" in fields and not fields["title"].strip():
+        raise _BadBody("title must not be empty.")
+    if "done" in data:
+        if not isinstance(data["done"], bool):
+            raise _BadBody("done must be a boolean.")
+        fields["done"] = int(data["done"])
+    storage.update_task(task_id, **fields)
     return jsonify({"ok": True})
 
 
@@ -467,8 +551,11 @@ def api_task(task_id):
 @app.route("/api/notes", methods=["GET", "POST"])
 def api_notes():
     if request.method == "POST":
-        data = request.get_json()
-        storage.save_note(data.get("content", ""), data.get("pinned"))
+        data = _json_object()
+        pinned = data.get("pinned")
+        if pinned is not None and not isinstance(pinned, (bool, int)):
+            raise _BadBody("pinned must be a boolean.")
+        storage.save_note(_text(data, "content"), None if pinned is None else int(pinned))
         return jsonify({"ok": True})
     return jsonify(storage.get_note())
 
@@ -478,11 +565,11 @@ def api_notes():
 @app.route("/api/captures", methods=["GET", "POST"])
 def api_captures():
     if request.method == "POST":
-        data = request.get_json()
-        content = (data.get("content") or "").strip()
+        data = _json_object()
+        content = _text(data, "content").strip()
         if not content:
             return jsonify({"ok": False, "error": "missing content"}), 400
-        cid = storage.add_capture(data.get("type", "note"), content)
+        cid = storage.add_capture(_text(data, "type", "note") or "note", content)
         # If it's a task capture, also create an actual task
         if data.get("type") == "task":
             storage.add_task(content)
@@ -500,11 +587,11 @@ def api_capture_delete(capture_id):
 
 @app.route("/api/layout", methods=["GET", "POST"])
 def api_layout():
-    key = request.args.get("key", "main") if request.method == "GET" else (request.get_json() or {}).get("key", "main")
     if request.method == "POST":
-        data = request.get_json()
-        storage.save_layout(data.get("key", "main"), json.dumps(data.get("layout", {})))
+        data = _json_object()
+        storage.save_layout(_text(data, "key", "main") or "main", json.dumps(data.get("layout", {})))
         return jsonify({"ok": True})
+    key = request.args.get("key", "main")
     raw = storage.get_layout(key)
     return jsonify({"layout": json.loads(raw) if raw else {}})
 
@@ -518,13 +605,20 @@ def api_activity():
 
 # ── Metadata enrichment (MetadataProvider backend) ────────────────────────────
 
+_ENRICH_TEXT_FIELDS = ("siteName", "author", "publishedAt", "lang", "canonicalUrl", "finalUrl", "faviconUrl", "linkStatus")
+
+
 @app.route("/api/enrich", methods=["POST"])
 def api_enrich():
     """Anonymous metadata only; no storage writes or raw network errors."""
     from safe_http import ERROR_CODES
 
-    def failure(code, status):
-        return jsonify(ok=False, title="", summary="", thumbnail="", status="failed", error=code), status
+    def failure(code, status, extra=None):
+        response = jsonify(ok=False, title="", summary="", thumbnail="", status="failed", error=code, **(extra or {}))
+        if code == "busy":
+            # Tell the client when to come back instead of letting it guess.
+            response.headers["Retry-After"] = "5"
+        return response, status
 
     origin = request.headers.get("Origin")
     if origin is not None and not _library_same_origin(origin):
@@ -557,8 +651,20 @@ def api_enrich():
         if status == "failed":
             code = error or "internal_error"
             http_status = {"invalid_url": 400, "blocked_url": 400, "busy": 429, "timeout": 504}.get(code, 502)
-            return failure(code, http_status)
-        return jsonify(ok=True, **fields, status=status, error=error)
+            detail = {k: meta[k] for k in ("httpStatus",) if isinstance(meta.get(k), int)}
+            if meta.get("linkStatus") == "gone":
+                detail["linkStatus"] = "gone"
+            return failure(code, http_status, detail)
+        extra = {}
+        for key in _ENRICH_TEXT_FIELDS:
+            value = meta.get(key)
+            if isinstance(value, str) and value:
+                extra[key] = value[:4096]
+        for key in ("wordCount", "readingMinutes", "httpStatus"):
+            value = meta.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                extra[key] = value
+        return jsonify(ok=True, **fields, status=status, error=error, **extra)
     except Exception:
         return failure("internal_error", 502)
 
@@ -570,17 +676,64 @@ def api_refresh_ig_thumbs():
     return jsonify({"ok": True, "repaired": repaired})
 
 
-# ── Auto-categorization (LiteLLM proxy -> local LLM -> keywords) ─────────────
+# ── Auto-categorization (AI provider chain -> keywords) ───────────────────────
 
 @app.route("/api/categorizer/status")
 def api_categorizer_status():
-    """Proxy health so the UI can enable/disable auto-categorize actions."""
-    import categorizer
+    """Whether AI categorizing is available, for older callers."""
+    import ai_providers
+    state = ai_providers.status()
     return jsonify({
-        "proxy_online": categorizer.proxy_available(),
-        "proxy_url": config.LITELLM_PROXY_URL,
+        "proxy_online": state["available"],
+        "providers": state["ready"],
         "categories": storage.get_categories(),
     })
+
+
+# ── AI providers (keys live in the user profile, never in responses) ─────────
+
+@app.route("/api/ai/providers")
+def api_ai_providers():
+    import ai_providers
+    return jsonify(ok=True, **ai_providers.status())
+
+
+@app.route("/api/ai/providers/<name>", methods=["POST"])
+def api_ai_provider_update(name):
+    import ai_providers
+    data = _json_object()
+    allowed = {"key", "clearKey", "model", "enabled", "baseUrl"}
+    if not set(data) <= allowed:
+        return jsonify(ok=False, error="Unknown setting."), 400
+    try:
+        state = ai_providers.update(name, data)
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    except Exception:
+        return jsonify(ok=False, error="Couldn't save AI settings to your profile folder."), 500
+    return jsonify(ok=True, **state)
+
+
+@app.route("/api/ai/providers/<name>/test", methods=["POST"])
+def api_ai_provider_test(name):
+    import ai_providers
+    try:
+        result = ai_providers.test(name)
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    return jsonify(**result, status=ai_providers.status())
+
+
+@app.route("/api/ai/suggest", methods=["POST"])
+def api_ai_suggest():
+    """Shelf/tag/title suggestions for a batch of library links. Read-only."""
+    import ai_library
+    data = _json_object()
+    try:
+        items, shelves, jobs = ai_library.validate_request(data)
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    return jsonify(ok=True, **ai_library.suggest(items, shelves, jobs, ai_library.validate_spread(data)))
 
 
 @app.route("/api/categorize", methods=["POST"])
@@ -600,9 +753,8 @@ def api_categorize():
     if not content:
         return jsonify({"ok": False, "error": "missing content"}), 400
     result = categorizer.categorize_content(content[:4000], keywords_only=data.get("keywords_only", False))
-    tg_msg_id = data.get("tg_msg_id")
-    if tg_msg_id:
-        categorizer.apply_classification(int(tg_msg_id), result)
+    if data.get("tg_msg_id"):
+        categorizer.apply_classification(_msg_id(data), result)
     return jsonify({"ok": True, **result})
 
 
@@ -611,7 +763,7 @@ def api_categorize_unprocessed():
     """Batch-classify posts: fresh never-seen ones, or (untagged=true)
     everything still parked in 'uncategorized'/'other' — the Bulk sweep."""
     import categorizer
-    data = request.get_json(silent=True) or {}
+    data = _json_object() if request.content_length else {}
     try:
         batch = min(int(data.get("batch_size", 500)), 2000)
     except (TypeError, ValueError):
@@ -627,7 +779,18 @@ def serve_thumb(code):
     import re as _re
     if not _re.fullmatch(r"[A-Za-z0-9_-]{2,64}", code):
         abort(404)
-    return send_from_directory(metadata_fetcher.THUMB_CACHE_DIR, code, mimetype="image/jpeg")
+    path = os.path.join(metadata_fetcher.THUMB_CACHE_DIR, code)
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(16)
+    except OSError:
+        abort(404)
+    # The bytes decide the type: cached previews may be PNG, WebP, GIF or ICO.
+    kind = metadata_fetcher.sniff_image(head) or "application/octet-stream"
+    response = send_from_directory(metadata_fetcher.THUMB_CACHE_DIR, code, mimetype=kind, max_age=86400)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    return response
 
 
 # ── SPA serving (React app from frontend/dist) ────────────────────────────────
@@ -651,6 +814,16 @@ def spa(path):
     index = os.path.join(SPA_DIR, "index.html")
     if not os.path.isfile(index):
         return command_center()  # SPA not built yet — graceful fallback
+    public = app.config.get("PUBLIC_RUNTIME_META")
+    if public:
+        from flask import make_response
+        with open(index, encoding="utf-8") as source:
+            html = source.read()
+        identity, token = public  # generated hexadecimal values, never user input
+        html = html.replace("<head>", f'<head><meta name="sbm-profile" content="{identity}"><meta name="sbm-instance" content="{token}">', 1)
+        response = make_response(html)
+        response.headers["Cache-Control"] = "no-store"
+        return response
     return send_from_directory(SPA_DIR, "index.html")
 
 
@@ -709,14 +882,9 @@ def _gpu():
 
 
 def _llm_state():
-    base = config.LLM_BASE_URL.replace("/v1", "")
-    try:
-        req = urllib.request.Request(f"{base}/health", headers={"User-Agent": "dashboard"})
-        with urllib.request.urlopen(req, timeout=1) as resp:
-            data = json.loads(resp.read().decode())
-            return {"online": data.get("status") == "ok", "endpoint": base}
-    except Exception:
-        return {"online": False, "endpoint": base}
+    import ai_providers
+    state = ai_providers.status()
+    return {"online": state["available"], "providers": state["ready"]}
 
 
 @app.route("/api/system")

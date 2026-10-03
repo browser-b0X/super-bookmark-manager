@@ -39,8 +39,8 @@ const invalid = [
   ['', /empty/],
   ['<html><a href="https://example.invalid/no-export">Not an export</a></html>', /not a Netscape/],
   ['<!DOCTYPE NETSCAPE-Bookmark-file-1><DL><A HREF="https://example.invalid/truncated">Broken', /malformed/],
-  [wrap('<A HREF="https://example.invalid/valid">Valid first</A><A HREF="https://">Invalid second</A>'), /invalid URL/],
-  [wrap('<A>Missing URL</A>'), /incomplete link/],
+  
+  [wrap('<A>Missing URL</A>'), /No HTTP\(S\).*1 malformed/],
   [wrap(''), /No bookmarks/],
   [wrap('<A HREF="file:///synthetic-only">Local file</A>'), /No HTTP\(S\).*1 unsupported/],
   [wrap('<A HREF="https://example.invalid/unclosed">Unclosed'), /malformed/],
@@ -114,6 +114,15 @@ try {
     assert.match(result.error, pattern);
     assert.equal(result.posts.length, 0);
   }
+  // An unusable entry is skipped and counted; valid entries in the same file still import.
+  const mixed = await unit.evaluate(raw => c2.parseBookmarkHtml(raw), wrap('<A HREF="https://example.invalid/valid">Valid first</A><A HREF="https://">Invalid second</A><A>No URL</A>'));
+  assert.equal(mixed.error, undefined);
+  assert.deepEqual(mixed.posts.map(p => p.url), ['https://example.invalid/valid']);
+  assert.equal(mixed.malformed, 2);
+  // Bookmark dates and folders survive the import.
+  const dated = await unit.evaluate(raw => c2.parseBookmarkHtml(raw), wrap('<DT><H3>Bookmarks bar</H3><DL><p><DT><H3>Recipes</H3><DL><p><DT><A HREF="https://example.invalid/soup" ADD_DATE="1700000000">Soup</A></DL><p></DL><p>'));
+  assert.deepEqual(dated.posts[0].folderPath, ['Bookmarks bar', 'Recipes']);
+  assert.equal(dated.posts[0].createdAt, new Date(1700000000 * 1000).toISOString());
   // Preserve distinct fragments/query values and avoid the old 32-bit URL hash collision.
   const edgeUrls = ['https://example.invalid/page#a', 'https://example.invalid/page#b',
     'https://example.invalid/?tag=a&tag=b', 'https://example.invalid/?tag=b',

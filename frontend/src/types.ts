@@ -3,11 +3,20 @@
 
 export type Platform =
   | "instagram" | "x" | "youtube" | "github" | "reddit"
-  | "tiktok" | "web" | "pdf" | "other";
+  | "tiktok" | "facebook" | "threads" | "linkedin" | "pinterest" | "bluesky"
+  | "web" | "pdf" | "other";
 
 export type PostStatus = "inbox" | "to-review" | "in-progress" | "reference" | "archived";
-export type MetadataStatus = "pending" | "enriched" | "partial" | "failed";
-export type Source = "telegram" | "manual" | "browser" | "import" | "api";
+/** `none`: the site answered but offers no preview data; retrying will not help. */
+export type MetadataStatus = "pending" | "enriched" | "partial" | "failed" | "none";
+
+/**
+ * Where a displayed field came from. Enrichment may refresh `fetched` and
+ * `derived` values but never overwrites `user` edits or titles from the
+ * owner's own bookmark `file`.
+ */
+export type FieldSource = "file" | "fetched" | "user" | "derived" | "ai";
+export type Source = "telegram" | "whatsapp" | "manual" | "browser" | "import" | "api";
 
 export interface SavedPost {
   id: string;                 // stable: tg msg id when known, else slug
@@ -38,12 +47,38 @@ export interface SavedPost {
 
   userNotes?: string;
   aiSummary?: string;
+  /** The title before an accepted AI clean-up, so it can be restored. */
+  originalTitle?: string;
+  /** Place in the owner's own order ("My order"); lower comes first. */
+  position?: number;
 
   createdAt: string;
   updatedAt: string;
   lastOpenedAt?: string;
   metadataStatus: MetadataStatus;
   metadataError?: string;
+
+  /** Folder names from the browser export, outermost first. */
+  folderPath?: string[];
+  /** Import run that created this post (for history and undo). */
+  importBatchId?: string;
+
+  fieldSources?: Partial<Record<"title" | "description" | "thumbnailUrl", FieldSource>>;
+  siteName?: string;
+  author?: string;
+  publishedAt?: string;
+  lang?: string;
+  faviconUrl?: string;
+  /** Where the link ended up after redirects, when different. */
+  finalUrl?: string;
+  linkStatus?: "ok" | "redirected" | "gone" | "error";
+  httpStatus?: number;
+  wordCount?: number;
+  readingMinutes?: number;
+  enrichedAt?: string;
+  metadataAttempts?: number;
+  /** Earliest time a failed enrichment may be retried automatically. */
+  metadataRetryAt?: string;
 }
 
 export interface Category {

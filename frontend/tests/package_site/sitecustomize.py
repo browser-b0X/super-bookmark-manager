@@ -127,6 +127,8 @@ if Path(sys.argv[0]).name == "package_start.py" and os.environ.get("PACKAGE_FIXT
 
             @app.before_request
             def allowed():
+                if request.path == '/api/ai/providers' and request.method == 'GET':
+                    return jsonify(ok=True, providers=[], ready=[], available=False)
                 if request.path.startswith('/api/') and request.path not in ('/api/library','/api/categories','/api/stats','/api/categorize','/api/telegram/refresh','/api/backup/export','/api/backup/preview','/api/backup/restore'):
                     BLOCKED.append('unexpected API '+request.path)
                     return jsonify(error='Forbidden fixture API'),503

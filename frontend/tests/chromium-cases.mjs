@@ -7,7 +7,8 @@ export const malformed = [
   ['missing-url',wrap([{type:'url',name:'Missing'}])],
   ['unsupported-only',wrap([node('javascript:alert(1)')])],
   ['null-child',wrap([null])], ['bad-url',wrap([node('https://')])],
-  ['partial-invalid',wrap([node('https://native.example.invalid/must-not-import'),{type:'url'}])],
   ['bad-name',wrap([{type:'url',url:'https://example.invalid',name:42}])],
   ['empty-folders',wrap([])], ['unknown-node',wrap([{type:'unknown'}])],
 ];
+// One unusable entry is skipped and counted; the valid entries still import.
+export const partial = wrap([node('https://native.example.invalid/partial-ok'),{type:'url'},node('https://')]);

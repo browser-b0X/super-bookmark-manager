@@ -27,6 +27,12 @@ class ConfigValidationError(ConfigError):
 
 
 def config_path() -> Path:
+    public = os.environ.get("SUPER_BOOKMARK_MANAGER_DATA_DIR")
+    if public:
+        path = Path(public)
+        if not path.is_absolute():
+            raise ConfigError()
+        return path / "config.json"
     root = os.environ.get("LOCALAPPDATA")
     base = Path(root) if root else Path.home() / ".local" / "share"
     if not base.is_absolute():

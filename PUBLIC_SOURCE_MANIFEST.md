@@ -1,19 +1,18 @@
 # Super Bookmark Manager — public source manifest
 
-Exact curated source set: **159 files**, extended from the reviewed142-file
-hygiene baseline with license, public documentation, pinned build requirements and
-upstream notices. The legacy BAT is renamed. Only these files may enter the future
-fresh public initial history; this is not permission to commit or publish.
+Exact curated source set for the public repository: **207 files** (v0.2.0).
+Only these files may enter the public branch. Listing a file here is not by itself
+permission to commit, push or publish.
 
-Exclude `.git`, `.verify`, internal agent/master records, recovery history, personal
-config/credentials, databases/sessions, backups/exports/profiles, caches/logs,
-node_modules, virtual environments and generated dist/spec/build files. No local
-excluded data is deleted. The ignored Groq secret must not be opened/copied/hashed.
+Exclude `.git`, `.verify`, internal agent/handoff/audit records, logo working files,
+recovery history, personal config/credentials (`config.json`, `ai.json`, `.env`),
+databases/sessions, backups/exports/profiles, caches (including `thumb_cache/`) and
+logs, node_modules, virtual environments and generated dist/spec/build files. No local
+excluded data is deleted. Ignored secret files must not be opened, copied or hashed.
 
 Frontend/standalone/installer outputs are regenerated from source and audited
-separately. The current internal Git history is not suitable for publication unchanged.
-Legacy maintenance helpers are source history, not safe test commands; never run them
-on personal data for verification. Tests require isolated synthetic state and their
+separately. Legacy maintenance helpers are source history, not safe test commands;
+never run them on personal data. Tests require isolated synthetic state and their
 documented Python/Playwright overrides. See BUILDING.md.
 
 ## Exact files
@@ -29,6 +28,8 @@ documented Python/Playwright overrides. See BUILDING.md.
 - `SECURITY.md`
 - `THIRD_PARTY_LICENSES.md`
 - `_rerun.py`
+- `ai_library.py`
+- `ai_providers.py`
 - `app.py`
 - `categorizer.py`
 - `check_reuse_only.py`
@@ -37,43 +38,68 @@ documented Python/Playwright overrides. See BUILDING.md.
 - `fetcher.py`
 - `firefox_import.py`
 - `frontend/index.html`
-- `frontend/public/brand-logo.svg`
-- `frontend/public/favicon.svg`
-- `frontend/public/favicon.ico`
-- `packaging/app.ico`
 - `frontend/package-lock.json`
 - `frontend/package.json`
+- `frontend/public/brand-logo.svg`
+- `frontend/public/favicon.ico`
+- `frontend/public/favicon.svg`
 - `frontend/src/App.tsx`
+- `frontend/src/components/Backdrop.tsx`
 - `frontend/src/components/CommandPalette.tsx`
+- `frontend/src/components/QuitApp.tsx`
 - `frontend/src/components/Shell.tsx`
 - `frontend/src/components/Sidebar.tsx`
+- `frontend/src/components/SyncIndicator.tsx`
 - `frontend/src/components/Topbar.tsx`
 - `frontend/src/components/library/AddLinkDialog.tsx`
+- `frontend/src/components/library/AiProviders.tsx`
+- `frontend/src/components/library/AiReview.tsx`
 - `frontend/src/components/library/BackupRestore.tsx`
+- `frontend/src/components/library/BookmarkImport.tsx`
 - `frontend/src/components/library/BulkBar.tsx`
+- `frontend/src/components/library/CatchUpRail.tsx`
 - `frontend/src/components/library/CategoryManager.tsx`
+- `frontend/src/components/library/CategoryPreview.tsx`
+- `frontend/src/components/library/EnrichmentProgress.tsx`
 - `frontend/src/components/library/PostDrawer.tsx`
 - `frontend/src/components/library/PostViews.tsx`
+- `frontend/src/components/library/Rediscover.tsx`
+- `frontend/src/components/library/RuntimeControl.tsx`
 - `frontend/src/components/library/SavedViews.tsx`
+- `frontend/src/components/library/SettingsLayout.tsx`
+- `frontend/src/components/library/SiteLine.tsx`
+- `frontend/src/components/library/SocialCard.tsx`
+- `frontend/src/components/library/SyncPanel.tsx`
 - `frontend/src/components/library/TelegramAccount.tsx`
 - `frontend/src/components/library/TelegramConfig.tsx`
+- `frontend/src/components/library/UnsavedChanges.tsx`
 - `frontend/src/lib/bookmarks.ts`
 - `frontend/src/lib/chromiumBookmarks.ts`
 - `frontend/src/lib/displayText.ts`
 - `frontend/src/lib/firefoxBookmarks.ts`
+- `frontend/src/lib/firefoxJson.ts`
 - `frontend/src/lib/importCategorization.ts`
+- `frontend/src/lib/importDetect.ts`
+- `frontend/src/lib/importPlan.ts`
+- `frontend/src/lib/importTriage.ts`
+- `frontend/src/lib/incremental.tsx`
+- `frontend/src/lib/libraryCounts.ts`
 - `frontend/src/lib/libraryPersistence.ts`
+- `frontend/src/lib/librarySearch.ts`
+- `frontend/src/lib/libraryStorage.ts`
 - `frontend/src/lib/metadataEnrichment.ts`
 - `frontend/src/lib/migrate.ts`
 - `frontend/src/lib/platform.ts`
 - `frontend/src/lib/providers.ts`
+- `frontend/src/lib/publicRuntime.ts`
+- `frontend/src/lib/rediscover.ts`
 - `frontend/src/lib/relatedItems.ts`
 - `frontend/src/lib/savedViews.ts`
 - `frontend/src/lib/shelves.ts`
 - `frontend/src/lib/telegram.ts`
 - `frontend/src/lib/ui.ts`
+- `frontend/src/lib/whatsapp.ts`
 - `frontend/src/main.tsx`
-- `frontend/src/pages/CatchUpPage.tsx`
 - `frontend/src/pages/LibraryPage.tsx`
 - `frontend/src/pages/LibrarySettingsPage.tsx`
 - `frontend/src/pages/NotFound.tsx`
@@ -82,16 +108,19 @@ documented Python/Playwright overrides. See BUILDING.md.
 - `frontend/src/store/prefs.ts`
 - `frontend/src/styles.css`
 - `frontend/src/types.ts`
+- `frontend/tests/ai-tidy-e2e.mjs`
+- `frontend/tests/ai_library_test.py`
+- `frontend/tests/audit-sync-e2e.mjs`
 - `frontend/tests/b1-refresh-e2e.mjs`
 - `frontend/tests/b1_fixture.py`
 - `frontend/tests/backup-e2e.mjs`
 - `frontend/tests/backup_fixture.py`
+- `frontend/tests/backup_restore_test.py`
 - `frontend/tests/bookmarks.mjs`
 - `frontend/tests/c2_bookmarks_fixture.py`
 - `frontend/tests/categorization-e2e.mjs`
 - `frontend/tests/categorization-state.mjs`
 - `frontend/tests/categorization_api.py`
-- `frontend/tests/provider_resilience.py`
 - `frontend/tests/categorization_fixture.py`
 - `frontend/tests/chromium-cases.mjs`
 - `frontend/tests/chromium-e2e.mjs`
@@ -99,8 +128,9 @@ documented Python/Playwright overrides. See BUILDING.md.
 - `frontend/tests/core-acceptance.mjs`
 - `frontend/tests/core-presentation.mjs`
 - `frontend/tests/display-text.mjs`
-- `frontend/tests/expand-card-e2e.mjs`
-- `frontend/tests/expand-card-phase3.mjs`
+- `frontend/tests/enrichment-failure-wording.mjs`
+- `frontend/tests/enrichment-provenance.mjs`
+- `frontend/tests/feed-e2e.mjs`
 - `frontend/tests/firefox-e2e.mjs`
 - `frontend/tests/firefox_backend.py`
 - `frontend/tests/firefox_cases.py`
@@ -112,11 +142,10 @@ documented Python/Playwright overrides. See BUILDING.md.
 - `frontend/tests/fixtures/landing-preview.svg`
 - `frontend/tests/fixtures/retrieval-library.json`
 - `frontend/tests/fixtures/telegram-saved-messages.json`
-- `frontend/tests/fixtures/text-readability-library.json`
-- `frontend/tests/landing-e2e.mjs`
+- `frontend/tests/import-caption-categorization.mjs`
+- `frontend/tests/import-workflow-e2e.mjs`
 - `frontend/tests/launcher.py`
 - `frontend/tests/library-e2e.mjs`
-- `frontend/tests/library-passb-e2e.mjs`
 - `frontend/tests/library-state.mjs`
 - `frontend/tests/library-sync.mjs`
 - `frontend/tests/library_api.py`
@@ -129,38 +158,55 @@ documented Python/Playwright overrides. See BUILDING.md.
 - `frontend/tests/metadata_gzip.py`
 - `frontend/tests/package_site/sitecustomize.py`
 - `frontend/tests/packaging.mjs`
+- `frontend/tests/polish-e2e.mjs`
+- `frontend/tests/provider_resilience.py`
+- `frontend/tests/quit-e2e.mjs`
 - `frontend/tests/related-items.mjs`
 - `frontend/tests/retrieval-e2e.mjs`
+- `frontend/tests/save-toast-e2e.mjs`
 - `frontend/tests/saved-views-e2e.mjs`
 - `frontend/tests/telegram-account-ui.mjs`
 - `frontend/tests/telegram-config-ui.mjs`
+- `frontend/tests/telegram-preview-thumbnail.mjs`
+- `frontend/tests/telegram-setup-handoff.mjs`
 - `frontend/tests/telegram.mjs`
 - `frontend/tests/telegram_auth_test.py`
 - `frontend/tests/telegram_config_test.py`
 - `frontend/tests/telegram_mock.py`
-- `frontend/tests/text-readability-e2e.mjs`
+- `frontend/tests/telegram_preview_thumbnails_test.py`
+- `frontend/tests/telegram_refresh_retry_test.py`
+- `frontend/tests/whatsapp-import.mjs`
 - `frontend/tsconfig.app.json`
 - `frontend/tsconfig.json`
 - `frontend/tsconfig.node.json`
 - `frontend/vite.config.ts`
 - `index.html`
 - `library_backup.py`
-- `litellm/.env.example`
-- `litellm/config.yaml`
-- `litellm/start_proxy.sh`
 - `metadata_fetcher.py`
 - `packaging/BUILD_AND_RUN.md`
 - `packaging/BUILD_INSTALLER.md`
 - `packaging/Start Super Bookmark Manager.bat`
+- `packaging/app.ico`
 - `packaging/build_installer.py`
 - `packaging/build_package.py`
 - `packaging/build_standalone.py`
 - `packaging/frontend-build.json`
 - `packaging/installer.iss`
 - `packaging/package_start.py`
+- `packaging/payload_hygiene.py`
+- `packaging/release_paths.py`
 - `packaging/requirements-build.txt`
 - `packaging/requirements-serve.txt`
 - `packaging/standalone_entry.py`
+- `packaging/tests/console_probe.py`
+- `packaging/tests/runtime_acceptance.mjs`
+- `packaging/tests/runtime_wrapper.py`
+- `packaging/tests/test_release_safety.py`
+- `packaging/tests/test_runtime_handoff.py`
+- `packaging/winget/README.md`
+- `packaging/winget/manifests/b/browser-b0X/SuperBookmarkManager/0.2.0/browser-b0X.SuperBookmarkManager.installer.yaml`
+- `packaging/winget/manifests/b/browser-b0X/SuperBookmarkManager/0.2.0/browser-b0X.SuperBookmarkManager.locale.en-US.yaml`
+- `packaging/winget/manifests/b/browser-b0X/SuperBookmarkManager/0.2.0/browser-b0X.SuperBookmarkManager.yaml`
 - `requirements.txt`
 - `run.py`
 - `safe_http.py`
@@ -173,6 +219,7 @@ documented Python/Playwright overrides. See BUILDING.md.
 - `templates/command.html`
 - `templates/index.html`
 - `test_cat.py`
+- `third_party_notices/Waitress-LICENSE.txt`
 - `third_party_notices/frontend-packages.txt`
 - `third_party_notices/inno-setup.txt`
 - `third_party_notices/python-packages.txt`

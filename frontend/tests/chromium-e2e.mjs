@@ -118,16 +118,18 @@ try {
     assert.equal(report.requests.filter(r=>r.method==='POST').length,postsBefore,name);
   }
   await nativeResult().scrollIntoViewIfNeeded();await capture('b2-import-error.png');
-  pass('15 malformed/unsupported cases: readable error, exact browser state/API/SQLite and zero POST mutation');
+  pass(`${malformed.length} malformed/unsupported cases: readable error, exact browser state/API/SQLite and zero POST mutation`);
   // Simulate an unreadable/locked selected file without accessing a live file.
   await page.evaluate(()=>{window.b2FileText=File.prototype.text;File.prototype.text=async()=>{throw Error('Synthetic locked file');};});
   await importNative(raw,/copied\/exported Bookmarks file/);assert.deepEqual(await snapshot('unreadable copy',8),before);
   await page.evaluate(()=>{File.prototype.text=window.b2FileText;delete window.b2FileText;});
   pass('unreadable selected file: copy/export guidance, no mutation or forced access');
   // Reach the actual button by Tab and activate its file chooser with Enter.
+  // Listen first: Playwright enables file-chooser interception asynchronously.
+  const chooser=page.waitForEvent('filechooser');
   let reachable=false;for(let i=0;i<160;i++){if(await nativeButton().evaluate(e=>e===document.activeElement)){reachable=true;break;}await page.keyboard.press('Tab');}
   assert.equal(reachable,true);
-  const chooser=page.waitForEvent('filechooser');await page.keyboard.press('Enter');await (await chooser).setFiles(nativeFile);
+  await page.keyboard.press('Enter');await (await chooser).setFiles(nativeFile);
   await nativeResult().filter({hasText:'3 valid unique links found, 2 new, 1 already present, 1 duplicate entries'}).waitFor();
   assert.match(await nativeResult().innerText(),/1 unsupported-scheme/);await classified();
   const first=await snapshot('native import10',10);
@@ -160,7 +162,7 @@ try {
   await page.waitForFunction(()=>document.querySelectorAll('main article').length===3);await capture('b2-library-after-import.png');
   await page.locator(`main a[href="/library/item/${programming.id}"]`).click();
   await page.getByRole('dialog',{name:'Saved post detail'}).waitFor();await page.reload();await page.getByRole('dialog',{name:'Saved post detail'}).waitFor();
-  await page.goto(base+'/');await saved(11);await page.locator('.catchup-card').first().waitFor();
+  await page.goto(base+'/');await saved(11);await page.locator('.rail-card').first().waitFor();
   assert.deepEqual((await control('calls')).calls,[]);assert.equal(report.requests.filter(r=>r.url.endsWith('/api/telegram/refresh')).length,0);
   pass('Library domain search3/detail/deep refresh and Catch Up; no automatic Telegram calls');
   await page.goto(base+'/library/settings');await saved(11);
@@ -174,7 +176,8 @@ try {
   const queued=failed.posts.find(p=>p.url.endsWith('/unavailable'));assert.ok(queued);assert.notEqual(queued.categoryMode,'automatic');assert.notEqual(queued.metadataStatus,'failed');
   assert.equal(report.requests.filter(r=>r.url.endsWith('/api/categorize')||r.url.endsWith('/api/enrich')).length,beforeUnsaved);
   report.snapshots.push({name:'provider503/write failure',browser:sorted(failed.posts),sqlite:dbFailed,pending:failed.pending});
-  await control('fail-off');await page.getByRole('button',{name:'Retry SQLite save',exact:true}).click();await classified();
+  // Any later store change also schedules a save, which may succeed before this click.
+  await control('fail-off');{const retry=page.getByRole('button',{name:'Retry SQLite save',exact:true});if(await retry.isVisible())await retry.click({timeout:2000}).catch(()=>{});}await classified();
   const recovered=await snapshot('retry12',12);for(const p of beforeFailure)assert.deepEqual(recovered.find(q=>q.id===p.id),p);
   const fallback=recovered.find(p=>p.id===queued.id);assert.deepEqual(fallback.categories,['other']);assert.equal(fallback.categoryReview,true);assert.equal(fallback.metadataStatus,'failed');
   pass('unsaved row sends no categorize/enrich; SQLite pending DB11 unchanged; Retry saves12, classifier other/review and metadata failed, no curation loss');

@@ -9,6 +9,11 @@ MAX_BOOKMARKS = 50000
 COPY_GUIDANCE = "Firefox may still be using this database. Close Firefox or make a copy of places.sqlite, then select the copy."
 
 
+# Firefox's built-in root folders are identified by GUID, not by title.
+ROOT_NAMES = {"menu________": "Bookmarks Menu", "toolbar_____": "Bookmarks Toolbar",
+              "unfiled_____": "Other Bookmarks", "mobile______": "Mobile Bookmarks"}
+
+
 class FirefoxImportError(ValueError):
     pass
 
@@ -49,15 +54,35 @@ def parse_copy(raw):
                 # Count only; never select unbookmarked history URLs or titles.
                 ignored = conn.execute("SELECT COUNT(*) FROM moz_places p WHERE NOT EXISTS "
                                        "(SELECT 1 FROM moz_bookmarks b WHERE b.type=1 AND b.fk=p.id)").fetchone()[0]
+                present = {c[1] for c in conn.execute("PRAGMA table_info(moz_bookmarks)")}
+                date_col = "b.dateAdded" if "dateAdded" in present else "NULL"
+                guid_col = "b.guid" if "guid" in present else "NULL"
+                order = "b.parent, b.position, b.id" if "position" in present else "b.parent, b.id"
+                # Folders keep the owner's organisation; dates keep when it was saved.
+                folders = {}
+                for folder_id, parent, title, guid in conn.execute(
+                        f"SELECT b.id, b.parent, b.title, {guid_col} FROM moz_bookmarks b WHERE b.type=2 ORDER BY {order}"):
+                    name = ROOT_NAMES.get(guid) or (title if isinstance(title, str) else "")
+                    folders[folder_id] = {"type": "folder", "name": "" if guid == "root________" else name,
+                                          "children": [], "_parent": parent}
+                top = {"type": "folder", "name": "", "children": []}
                 bookmarks = []
-                for place_id, url, title in conn.execute(
-                        "SELECT p.id, p.url, b.title FROM moz_bookmarks b "
-                        "LEFT JOIN moz_places p ON p.id=b.fk WHERE b.type=1 ORDER BY b.id"):
+                for place_id, url, title, parent, added in conn.execute(
+                        f"SELECT p.id, p.url, b.title, b.parent, {date_col} FROM moz_bookmarks b "
+                        f"LEFT JOIN moz_places p ON p.id=b.fk WHERE b.type=1 ORDER BY {order}"):
                     if place_id is None or not isinstance(url, str) or not url.strip() or (title is not None and not isinstance(title, str)):
                         raise FirefoxImportError("Malformed bookmark entry or invalid URL reference. No bookmarks were imported.")
-                    bookmarks.append({"type": "url", "url": url, "name": title or ""})
-                return {"roots": {"bookmarks": {"type": "folder", "children": bookmarks}},
-                        "historyIgnored": ignored, "bookmarkRows": count}
+                    node = {"type": "url", "url": url, "name": title or ""}
+                    if isinstance(added, int) and added > 0:
+                        # PRTime (µs since 1970) → Chromium time (µs since 1601).
+                        node["date_added"] = str(added + 11644473600000000)
+                    bookmarks.append(node)
+                    folders.get(parent, top)["children"].append(node)
+                for folder_id, folder in folders.items():
+                    parent = folders.get(folder.pop("_parent"))
+                    (parent if parent is not None and parent is not folder else top)["children"].append(folder)
+                return {"roots": {"bookmarks": top}, "historyIgnored": ignored, "bookmarkRows": count,
+                        "walMode": len(raw) > 19 and raw[18] == 2 and raw[19] == 2}
             finally:
                 if conn is not None:
                     conn.close()

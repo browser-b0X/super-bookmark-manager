@@ -19,7 +19,8 @@ export async function verifyPresentation({ page, browser, origin, evidenceDir, b
   const navigation = p => p.getByRole('dialog', { name: 'Mobile navigation', exact: true });
   const settled = p => p.evaluate(async () => {
     await new Promise(requestAnimationFrame);
-    await Promise.all(document.getAnimations().map(a => a.finished.catch(() => {})));
+    // The feed strip loops forever; only finite animations can settle.
+    await Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {})));
   });
   async function measured(name, detail) { report.measurements.push({ name, detail }); return detail; }
   async function shot(p, name, kind = 'integrated') {
@@ -54,11 +55,6 @@ export async function verifyPresentation({ page, browser, origin, evidenceDir, b
     }));
     assert.deepEqual(blocked, [], 'Visible core controls are unobscured');
   }
-  async function expand(p, post) {
-    await card(p, post).locator('[data-expand]').focus();
-    await p.waitForFunction(id => document.querySelector('.catchup-card.is-expanded')?.dataset.postId === id, post.id);
-    await card(p, post).scrollIntoViewIfNeeded(); await settled(p);
-  }
   async function collapseTo(p, collapsed) {
     const current = await p.evaluate(() => JSON.parse(localStorage.getItem('prefs-store-v1') || '{}').state?.sidebarCollapsed || false);
     if (current !== collapsed) await p.getByTitle(collapsed ? 'Collapse' : 'Expand', { exact: true }).click();
@@ -68,15 +64,13 @@ export async function verifyPresentation({ page, browser, origin, evidenceDir, b
   async function sidebarGeometry(p, collapsed) {
     const detail = await p.getByRole('complementary', { name: 'Navigation', exact: true }).evaluate(sidebar => {
       const rect = el => el.getBoundingClientRect().toJSON();
-      const status = sidebar.querySelector('[role="status"]'), footer = sidebar.querySelector('.sidebar-footer');
-      const overlays = [];
-      for (let node = status; node && node !== sidebar; node = node.parentElement) {
-        if (['absolute', 'fixed', 'sticky'].includes(getComputedStyle(node).position)) overlays.push(node.className);
-      }
-      return { sidebar: rect(sidebar), status: rect(status), footer: rect(footer), overlays,
+      // Save status is a floating toast outside the sidebar, so it can never resize it.
+      const status = document.querySelector('[aria-label="SQLite save status"]'), footer = sidebar.querySelector('.sidebar-footer');
+      return { sidebar: rect(sidebar), status: rect(status), footer: rect(footer), inSidebar: sidebar.contains(status),
+        statusPosition: getComputedStyle(status).position,
         main: rect(document.querySelector('main')), header: rect(document.querySelector('.shell-topbar')),
         overflow: document.documentElement.scrollWidth > innerWidth,
-        widths: [sidebar, status, footer].map(el => ({ scroll: el.scrollWidth, client: el.clientWidth })),
+        widths: [sidebar, footer].map(el => ({ scroll: el.scrollWidth, client: el.clientWidth })),
         controls: [...footer.querySelectorAll('a,button')].map(el => {
           const r = el.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
           return { title: el.title, rect: rect(el), hit: !!hit && el.contains(hit), visibility: getComputedStyle(el).visibility };
@@ -84,9 +78,9 @@ export async function verifyPresentation({ page, browser, origin, evidenceDir, b
     });
     assert.equal(detail.sidebar.width, collapsed ? 56 : 236);
     assert.equal(detail.main.x, detail.sidebar.right); assert.equal(detail.header.x, detail.sidebar.right);
-    assert.equal(detail.overflow, false); assert.deepEqual(detail.overlays, []);
-    assert.ok(detail.status.x >= detail.sidebar.x && detail.status.right <= detail.sidebar.right);
-    assert.ok(detail.status.bottom <= detail.footer.top);
+    assert.equal(detail.overflow, false);
+    assert.equal(detail.inSidebar, false); assert.equal(detail.statusPosition, 'fixed');
+    assert.ok(detail.status.x >= detail.sidebar.right, 'save toast floats clear of the sidebar');
     for (const width of detail.widths) assert.ok(width.scroll <= width.client + 1);
     assert.deepEqual(detail.controls.map(c => c.title), ['Settings', 'Toggle theme', collapsed ? 'Expand' : 'Collapse']);
     for (const c of detail.controls) {
@@ -124,7 +118,9 @@ export async function verifyPresentation({ page, browser, origin, evidenceDir, b
             // /api/stats is the backendAvailable health probe and /api/library is persistence. CategoryManager
             // is not mounted on this surface, so /api/categories never fires. Kept explicit (no /api/* wildcard,
             // no startsWith, no regex) so any unexpected route still fails loudly. Focused rerun recorded exactly these.
-            assert.ok(['/api/library', '/api/stats', '/api/telegram/config', '/api/telegram/auth'].includes(url.pathname), 'Presentation fixture must not exercise unrelated APIs');
+            // Settings > AI & previews reads provider status (no keys, no provider traffic): /api/ai/providers.
+            assert.ok(['/api/library', '/api/stats', '/api/telegram/config', '/api/telegram/auth', '/api/ai/providers'].includes(url.pathname), 'Presentation fixture must not exercise unrelated APIs');
+            if (url.pathname === '/api/ai/providers') { assert.equal(request.method(), 'GET'); return await route.fulfill({ status: 200, json: { ok: true, providers: [], ready: [], available: false } }); }
             if (url.pathname === '/api/stats') assert.equal(request.method(), 'GET');
             else assert.ok(['GET', 'POST'].includes(request.method()));
             if (unavailable) return await route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"G5 synthetic backend unavailable"}' });
@@ -159,29 +155,23 @@ export async function verifyPresentation({ page, browser, origin, evidenceDir, b
   }
 
   try {
-    await check('C7 integrated imported home: source/title/caption/state/actions and no obstruction', async () => {
+    await check('C7 integrated feed: new links ride in the strip with their triage actions', async () => {
       await page.setViewportSize({ width: 1365, height: 900 }); await page.goto(origin + '/'); await saved(8);
-      const queue = initial.filter(p => p.status === 'inbox').sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      assert.ok(queue.some(p => p.source === 'browser') && queue.some(p => p.source === 'telegram'));
-      assert.deepEqual(await cards(page).evaluateAll(els => els.map(el => el.dataset.postId)), queue.map(p => p.id));
-      const seen = [];
+      const queue = initial.filter(p => p.status === 'inbox');
+      const rail = page.getByRole('region', { name: /New to sort/ });
+      assert.ok(queue.length > 0, 'fixture has new links');
+      await rail.waitFor({ timeout: 10000 });
+      const shown = await rail.locator('article[data-rail-id]:not([aria-hidden])').evaluateAll(els => els.map(el => el.dataset.railId));
+      assert.deepEqual(shown.sort(), queue.map(p => p.id).sort());
       for (const post of queue) {
-        await expand(page, post); const target = card(page, post), text = await target.innerText();
-        assert.ok(text.includes(post.title) && text.includes(post.domain) && text.includes(post.categories[0]) && text.includes('Inbox'));
-        assert.ok(text.includes(post.source === 'browser' ? 'Browser bookmark' : 'Telegram'));
-        const summary = post.description || post.aiSummary || post.excerpt;
-        if (summary) assert.equal(await target.locator('.catchup-summary').innerText(), summary);
-        assert.equal(await target.getByRole('link', { name: 'Open original' }).getAttribute('href'), post.url);
-        assert.equal(await target.getByRole('link', { name: 'Details', exact: true }).getAttribute('href'), '/library/item/' + post.id);
-        for (const name of ['Keep', 'Later', 'Archive']) assert.equal(await target.getByRole('button', { name, exact: true }).isVisible(), true);
-        const title = await target.locator('.catchup-title').evaluate(el => ({ text: el.innerText, size: parseFloat(getComputedStyle(el).fontSize), box: el.getBoundingClientRect().toJSON() }));
-        assert.ok(title.size >= 18 && title.box.width > 0 && title.box.height > 0);
-        await unobstructed(page); seen.push({ id: post.id, source: post.source, title, caption: summary || null });
+        const target = rail.locator(`article[data-rail-id="${post.id}"]:not([aria-hidden])`);
+        for (const name of ['Keep', 'Later', 'Archive']) assert.equal(await target.getByRole('button', { name: new RegExp('^' + name) }).count(), 1);
+        assert.equal(await target.getByRole('link').first().getAttribute('href'), '/library/item/' + post.id);
       }
-      assert.equal(await page.getByRole('button', { name: /Search or jump to/ }).isVisible(), true);
-      await expand(page, queue.find(p => p.source === 'telegram')); await shot(page, 'g5-home-populated');
+      assert.equal(await page.getByRole('link', { name: /Report a bug or suggest an idea/ }).getAttribute('href'), 'https://github.com/browser-b0X/super-bookmark-manager/issues');
+      await shot(page, 'g5-home-populated');
       assert.deepEqual(sorted((await getState()).posts), initial);
-      return measured('integrated-home', seen);
+      return measured('integrated-home', shown);
     });
 
     await check('C7 integrated Library landscape, captions, hover/focus and desktop responsiveness', async () => {
@@ -189,27 +179,29 @@ export async function verifyPresentation({ page, browser, origin, evidenceDir, b
       await settled(page); assert.equal(await cards(page).count(), 8);
       await page.mouse.move(0, 0); await search(page).focus();
       const withCaption = initial.find(p => p.description || p.userNotes || p.aiSummary || p.excerpt);
-      assert.ok(withCaption); const target = card(page, withCaption), overlay = target.locator('.cell-overlay');
+      // Feed revamp: details live in a pop-up cell under the picture, never over it.
+      assert.ok(withCaption); const target = card(page, withCaption), overlay = target.locator('.tile__pop');
       assert.equal(await overlay.evaluate(el => getComputedStyle(el).opacity), '0');
       const before = await target.boundingBox(); await target.hover(); await settled(page);
-      assert.equal(await overlay.evaluate(el => getComputedStyle(el).opacity), '1');
+      await page.waitForFunction(el => getComputedStyle(el).opacity === '1', await overlay.elementHandle());
       assert.deepEqual(await target.boundingBox(), before, 'Hover does not shift the card');
       await page.mouse.move(0, 0); await search(page).focus();
-      await tabTo(page, target.locator('.cell-title')); await settled(page);
-      assert.equal(await target.locator('.cell-title').evaluate(el => el === document.activeElement && el.matches(':focus-visible')), true);
-      assert.equal(await overlay.evaluate(el => getComputedStyle(el).opacity), '1');
+      await tabTo(page, target.locator('.tile__title')); await settled(page);
+      assert.equal(await target.locator('.tile__title').evaluate(el => el === document.activeElement && el.matches(':focus-visible')), true);
+      await page.waitForFunction(el => getComputedStyle(el).opacity === '1', await overlay.elementHandle());
+      await page.mouse.move(0, 0); await search(page).focus();
       const layouts = [];
       for (const width of [1365, 1024, 768]) {
         await page.setViewportSize({ width, height: 900 }); await settled(page);
-        const detail = await page.locator('.cell-grid').evaluate(grid => ({ width: innerWidth, columns: getComputedStyle(grid).gridTemplateColumns.split(' ').length,
+        const detail = await page.locator('.tile-grid').evaluate(grid => ({ width: innerWidth, columns: getComputedStyle(grid).gridTemplateColumns.split(' ').length,
           overflow: document.documentElement.scrollWidth > innerWidth,
           cards: [...grid.querySelectorAll('article')].map(el => {
-            const image = el.querySelector('.cell-image').getBoundingClientRect(), caption = el.querySelector('.cell-caption'), title = caption.querySelector('.cell-title');
-            return { id: el.dataset.postId, ratio: image.width / image.height, title: title.textContent, caption: caption.textContent, box: el.getBoundingClientRect().toJSON(), titleBox: title.getBoundingClientRect().toJSON() };
+            const image = el.querySelector('.tile__media').getBoundingClientRect(), caption = el.querySelector('.tile__caption'), title = caption.querySelector('.tile__title');
+            return { id: el.dataset.postId, ratio: image.width / image.height, title: title.textContent, caption: el.querySelector('.tile__pop').textContent, box: el.getBoundingClientRect().toJSON(), titleBox: title.getBoundingClientRect().toJSON() };
           }) }));
         assert.equal(detail.cards.length, 8); assert.equal(detail.overflow, false); assert.ok(detail.columns >= 2);
         for (const item of detail.cards) {
-          assert.ok(Math.abs(item.ratio - 1.5) < .02); assert.ok(item.title.trim());
+          assert.ok(Math.abs(item.ratio - 4 / 3) < .02); assert.ok(item.title.trim());
           assert.ok(item.titleBox.left >= item.box.left && item.titleBox.right <= item.box.right + 1);
           assert.ok(item.caption.includes(initial.find(p => p.id === item.id).domain));
         }
@@ -264,7 +256,7 @@ export async function verifyPresentation({ page, browser, origin, evidenceDir, b
         await status(page).filter({ hasText: 'SQLite unavailable' }).waitFor();
         assert.match(await status(page).innerText(), /browser cache/); assert.doesNotMatch(await status(page).innerText(), /Library saved to SQLite/);
         assert.equal((await getState()).demo, false); assert.deepEqual(sorted((await getState()).posts), initial);
-        await shot(page, 'g5-degraded'); await page.locator('main').getByRole('link', { name: 'Library', exact: true }).click();
+        await shot(page, 'g5-degraded'); await page.getByRole('complementary', { name: 'Navigation' }).getByRole('button', { name: /^All saved/ }).click();
         await search(page).fill(initial[0].title); await settled(page); assert.equal(await cards(page).count(), 1);
         await search(page).fill(''); await settled(page); assert.equal(await cards(page).count(), 8);
       } finally { await setApiOffline(false); await page.reload(); await saved(8); }
@@ -274,59 +266,49 @@ export async function verifyPresentation({ page, browser, origin, evidenceDir, b
 
     const visualPosts = clone(initial).map((post, i) => ({ ...post, status: 'inbox', ...(i < 3 ? { thumbnailUrl: ['/__fixture/preview.svg', '/__fixture/broken.svg', '/__fixture/tiny.svg'][i] } : {}) }));
     await check('C7 local preview success/broken/tiny/missing fallbacks preserve title and actions', async () => variant('preview-variants', visualPosts, async p => {
+      await p.goto(origin + '/library'); await saved(8);
       const measurements = [];
       for (let i = 0; i < 4; i++) {
-        const post = visualPosts[i]; await expand(p, post); const target = card(p, post);
+        const post = visualPosts[i]; const target = card(p, post); await target.scrollIntoViewIfNeeded();
         if (i === 0) {
           await target.locator('img.is-loaded').waitFor();
           const image = await target.locator('img').evaluate(el => ({ naturalWidth: el.naturalWidth, naturalHeight: el.naturalHeight, fit: getComputedStyle(el).objectFit, opacity: getComputedStyle(el).opacity }));
           assert.equal(image.naturalWidth, 640); assert.ok(image.naturalHeight >= 80); assert.equal(image.fit, 'cover'); assert.equal(image.opacity, '1'); measurements.push(image);
         } else { await target.getByLabel('No content preview available').waitFor(); assert.equal(await target.locator('img').count(), 0); }
-        assert.ok((await target.locator('.catchup-title').innerText()).includes(post.title));
-        assert.equal(await target.getByRole('link', { name: 'Open original' }).isVisible(), true); await unobstructed(p);
+        assert.ok((await target.locator('.tile__title').innerText()).includes(post.title));
       }
-      await expand(p, visualPosts[0]);
       return measured('preview-variants', measurements);
     }));
 
-    for (const reducedMotion of ['no-preference', 'reduce']) await check('C7 Catch Up triage/Undo/focus ' + reducedMotion, async () => variant('triage-' + reducedMotion, visualPosts, async p => {
+    for (const reducedMotion of ['no-preference', 'reduce']) await check('C7 feed strip triage ' + reducedMotion, async () => variant('triage-' + reducedMotion, visualPosts, async p => {
+      const rail = p.getByRole('region', { name: /New to sort/ }); await rail.waitFor();
+      if (reducedMotion === 'reduce') assert.equal(await rail.locator('.rail__track').evaluate(el => getComputedStyle(el).animationName), 'none');
       const queue = [...visualPosts].sort((a, b) => b.createdAt.localeCompare(a.createdAt)), transitions = [];
-      await p.mouse.move(0, 0);
-      for (const action of ['reference', 'archived', 'to-review']) {
-        const post = queue[0]; await expand(p, post);
-        if (reducedMotion === 'reduce') {
-          const duration = await card(p, post).evaluate(el => getComputedStyle(el).transitionDuration);
-          assert.ok(duration.split(',').every(value => parseFloat(value) <= .001));
-        }
-        await tabTo(p, card(p, post).locator(`[data-triage="${action}"]`)); await p.keyboard.press('Enter');
-        await card(p, post).waitFor({ state: 'detached' }); await settled(p);
-        const focus = await p.evaluate(() => ({ id: document.activeElement?.closest('[data-post-id]')?.dataset.postId, action: document.activeElement?.getAttribute('data-triage'), inert: !!document.activeElement?.closest('[inert]') }));
-        assert.deepEqual(focus, { id: queue[1].id, action, inert: false }); assert.equal((await state(p)).posts.find(post => post.id === queue[0].id).status, action);
-        await p.getByRole('button', { name: 'Undo', exact: true }).click(); await card(p, post).waitFor(); await settled(p);
-        assert.equal(await card(p, post).locator('[data-expand]').evaluate(el => el === document.activeElement), true);
-        assert.equal((await state(p)).posts.find(post => post.id === queue[0].id).status, 'inbox'); transitions.push({ action, focus, undo: true });
+      await rail.getByRole('button', { name: 'Pause' }).click();
+      for (const [i, [action, label]] of [['reference', 'Keep'], ['archived', 'Archive'], ['to-review', 'Later']].entries()) {
+        const post = queue[i];
+        await rail.locator(`article[data-rail-id="${post.id}"]:not([aria-hidden])`).getByRole('button', { name: new RegExp('^' + label) }).click();
+        await p.waitForFunction(([id, action]) => JSON.parse(localStorage.getItem('library-store-v1')).state.posts.find(p => p.id === id)?.status === action, [post.id, action]);
+        transitions.push({ id: post.id, action });
       }
-      const withoutTime = posts => sorted(posts).map(({ updatedAt, ...post }) => post);
-      assert.deepEqual(withoutTime((await state(p)).posts), withoutTime(visualPosts));
       await measured('triage-' + reducedMotion, transitions);
     }, { reducedMotion }));
 
     await check('C7 zero-inbox retains useful Library path and eight curated records', async () => variant('zero-inbox', clone(initial).map(post => ({ ...post, status: post.status === 'inbox' ? 'reference' : post.status })), async p => {
-      await p.getByRole('heading', { name: 'All caught up', exact: true }).waitFor();
-      assert.match(await p.locator('main').innerText(), /8 saved links are still in your library/);
+      assert.equal(await p.getByRole('region', { name: /New to sort/ }).count(), 0);
       assert.doesNotMatch(await p.locator('main').innerText(), /Your library is empty/);
+      assert.equal(await cards(p).count(), initial.filter(post => post.status !== 'archived').length);
       await shot(p, 'g5-zero-inbox', 'local API presentation variant');
-      await tabTo(p, p.getByRole('link', { name: 'Browse the library', exact: true })); await p.keyboard.press('Enter');
-      assert.equal(await cards(p).count(), 8); assert.equal((await state(p)).posts.length, 8);
+      await p.goto(origin + '/library'); assert.equal(await cards(p).count(), 8); assert.equal((await state(p)).posts.length, 8);
     }));
 
     await check('C7 true empty library is distinct from retained library and sample data', async () => variant('empty-library', [], async p => {
       await p.getByRole('heading', { name: 'Your library is empty', exact: true }).waitFor();
       assert.equal((await state(p)).demo, false); assert.equal(await cards(p).count(), 0);
-      assert.doesNotMatch(await p.locator('main').innerText(), /All caught up|sample library|demo only/i);
+      assert.doesNotMatch(await p.locator('main').innerText(), /sample library|demo only/i);
       const [health] = await Promise.all([
         p.waitForResponse(response => new URL(response.url()).pathname === '/api/stats' && response.request().method() === 'GET'),
-        p.getByRole('link', { name: 'Import saved links', exact: true }).click(),
+        p.getByRole('button', { name: 'Import links', exact: true }).click(),
       ]);
       assert.equal(health.status(), 200);
       assert.equal(await p.getByLabel('Import bookmarks HTML').count(), 1); assert.equal(await p.getByLabel('Import Telegram JSON').count(), 1);
@@ -336,8 +318,7 @@ export async function verifyPresentation({ page, browser, origin, evidenceDir, b
       await p.locator('main').getByRole('status').filter({ hasText: 'Sample library' }).waitFor();
       assert.equal((await state(p)).demo, true); assert.match(await p.locator('main').innerText(), /not your imported content and are not saved to SQLite/);
       assert.match(await status(p).innerText(), /Demo only.*not saved to SQLite/);
-      assert.equal(await cards(p).count(), 5);
-      assert.match(await p.locator('.catchup-card.is-expanded .catchup-origin').innerText(), /^Sample/);
+      assert.equal(await p.getByRole('region', { name: /New to sort/ }).locator('article[data-rail-id]:not([aria-hidden])').count(), 5);
     }, { unavailable: true }));
 
     await check('C7 presentation work preserves actual integrated browser/API/SQLite state', async () => {

@@ -1,50 +1,79 @@
-# Super Bookmark Manager v0.1.0 — first public release (draft)
+# Super Bookmark Manager v0.2.0 — the feed release (draft)
 
-A local-first bookmark manager for organizing browser bookmarks and Telegram Saved
-Messages on Windows.
+A local-first feed for the links you save — browser bookmarks, Telegram Saved
+Messages and WhatsApp chats — on Windows.
 
-- Browser bookmark HTML, copied Chromium JSON and copied Firefox Places imports.
-- Telegram Saved Messages, including a built-in developer-credential and login/session workflow.
-- Automatic categorization, search/filtering, notes, tags, categories and reading-state editing.
-- Saved Views, local Related Items and Catch Up.
-- Local SQLite storage and library backup/restore.
-- Self-contained per-user Windows installer; end users need no Python or Node.
+## What's new
 
-## Optional AI-assisted categorization
+- **One feed.** Catch Up and the library are now a single page. New, unsorted links
+  drift across the top in a loop that pauses on hover; keep, save for later or
+  archive each one in place. Everything you keep sits below as picture-first tiles
+  whose details slide up on hover. Drag tiles into your own order ("My order").
+  When nothing new is waiting, Rediscover brings back a few older favourites.
+- **WhatsApp imports.** Import a chat exported from your phone (`.txt` or `.zip`,
+  "Without media") — handy with *Message yourself*.
+- **One-drop imports.** Drop any supported file in Settings → Sources; the format is
+  detected, you see a preview (choose folders, file a folder onto a shelf) and can
+  undo the import.
+- **Cards for posts without pictures.** X, TikTok, Instagram, Facebook, Threads,
+  Reddit, LinkedIn, Bluesky and YouTube links are drawn in the spirit of their
+  platform; other pages get a link-preview card (site, title, description; owner /
+  repo for GitHub). Instagram previews fall back to the public embed.
+- **Optional AI with your own free keys.** Settings → AI & previews takes keys for
+  Google Gemini, Groq, OpenRouter and NVIDIA NIM, or a local Ollama-style server,
+  with a Test button. Providers fail over in order, and a model the provider has
+  retired is replaced automatically (NVIDIA now defaults to Gemma 4 31B). The
+  tidy-up runs two batches at a time across your providers, waits out busy free
+  tiers instead of settling for keyword guesses, and says which links still need you. A review-first tidy-up suggests
+  shelves, tags, clean titles and one-line summaries; nothing is saved until you
+  accept it and your own edits are never overwritten.
+- **Search and organizing.** Operators such as `site:github.com`, `#tag`,
+  `is:later`, `shelf:` and `in:`; lists for New, All saved, Later, In progress,
+  Kept, Favorites, Unfiled and Archived; platform filters in the sidebar.
+- **Save status as a toast.** A small toast at the bottom of the page appears only
+  while links are saving or previews are loading (or when something needs you),
+  then fades. The sidebar no longer changes size.
+- **Updates take over cleanly.** Starting a newer build replaces an older copy
+  still running in the background, and the installer stops a running copy first.
+  Settings → Application shows which build is running.
+- **Quit from the sidebar.** A power button next to Settings stops the app after a
+  confirmation, saves pending changes first, and leaves a clear "stopped" page.
+- **Look and feel.** New light and dark themes with a slow geometric background
+  (still under reduced motion), a steady save indicator, Settings grouped into
+  sections, and a GitHub button in the header for bug reports and ideas.
+- **Reliability.** Faster delta sync with SQLite, one identity per URL with safe
+  duplicate repair, recoverable sync errors, preview images cached locally, and
+  safer restores.
 
-No AI-provider account, API key or proxy is required. Browser and Telegram imports
-use built-in deterministic categorization. Manual Categorize and legacy bulk
-categorization fall back to keywords when an optional provider is unavailable;
-bulk processes each post once. Advanced environment/proxy configuration remains
-optional. No provider setup fields or provider SDKs are included in the release.
-Category suggestions return no proposals when a provider is unavailable.
+## Upgrading from v0.1.0
 
-## Installation and compatibility
+v0.2.0 stores data in `%LOCALAPPDATA%\SuperBookmarkManager\`. The v0.1.0 data in
+`%LOCALAPPDATA%\SavedPostsDashboard\` is left untouched and not imported
+automatically: export a backup from v0.1.0's Settings first, then restore it in
+v0.2.0 under Settings → Backup. Quit the app before installing the upgrade.
 
-The intended release asset is `SuperBookmarkManager-Setup.exe`, accompanied by
-`SuperBookmarkManager-Setup.exe.sha256`. Launch Super Bookmark Manager from the Start
-Menu after installation. Existing `%LOCALAPPDATA%\SavedPostsDashboard\` data is retained;
-there is no data migration. Uninstall preserves this user-data directory by default.
+The program now installs into `%LOCALAPPDATA%\Programs\SuperBookmarkManager\`. Upgrading
+from an older install removes the old `...\Programs\SavedPostsDashboard\` program folder
+(program files only) and keeps your Start Menu and Desktop shortcuts working.
+
+## Installation
+
+Release assets: `SuperBookmarkManager-Setup.exe` and
+`SuperBookmarkManager-Setup.exe.sha256`. Per-user install, no admin rights, no
+Python or Node needed. Launch from the Start Menu; the app opens in your browser.
 
 ## Known limitations
 
 - The installer is unsigned and may trigger SmartScreen/antivirus warnings.
-- **SIGNING NOT PERFORMED — NO CONFIGURED CODE-SIGNING IDENTITY.**
-- B3: historical mobile blank-band cause unresolved; current controlled matrix clean.
-  The historical issue was not reproduced and is not claimed fixed.
-- Windows is the verified packaged-release platform. Same-machine clean-source and
-  isolated synthetic checks do not establish separate-machine/VM compatibility.
-- Saved Views/preferences are browser-local and excluded from library backups.
+- Windows is the verified packaged-release platform.
+- Saved views and display preferences are browser-local and not part of backups.
+- AI suggestions depend on each provider's free-tier limits and model availability.
 
 ## Proposed GitHub metadata
 
-Repository: `super-bookmark-manager`  
-Description: `A local-first bookmark manager for organizing browser bookmarks and Telegram Saved Messages on Windows.`  
-Topics: `bookmark-manager`, `bookmarks`, `local-first`, `telegram`, `read-it-later`, `sqlite`, `windows`  
-Version: `v0.1.0`  
+Description: `A local-first feed for links saved from browsers, Telegram and WhatsApp — previews, shelves, search and optional AI tidying. Windows.`  
+Topics: `bookmark-manager`, `bookmarks`, `local-first`, `telegram`, `whatsapp`, `read-it-later`, `sqlite`, `windows`  
+Version: `v0.2.0`  
 License: MIT; copyright 2026 browser-b0X.
 
-Future publication must initialize **fresh public history from the curated current
-public-source tree**. Do not publish the existing internal development history unchanged.
-This draft does not authorize or perform repository creation, commits, tags, uploads
-or publication. See [RELEASE_READINESS.md](RELEASE_READINESS.md) for verification status.
+See [RELEASE_READINESS.md](RELEASE_READINESS.md) for the release checklist.

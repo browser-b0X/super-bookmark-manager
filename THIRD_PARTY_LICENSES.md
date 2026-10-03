@@ -224,3 +224,5 @@ Sources: [Python license](https://docs.python.org/3.12/license.html),
 [Inno Setup license](https://jrsoftware.org/files/is/license.txt).
 Regenerate/review notices when dependency versions change. MIT/BSD/Apache notices
 and any accompanying attribution must travel with redistributed code/binaries.
+
+- Waitress 3.0.2: Zope Public License 2.1; see `third_party_notices/Waitress-LICENSE.txt`. Production WSGI serving for the packaged application.

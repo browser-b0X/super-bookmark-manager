@@ -12,21 +12,21 @@
 ;   - UNSIGNED (no configured code-signing identity)
 ;
 ; Writable data boundary:
-;   The app writes user data to %LOCALAPPDATA%\SavedPostsDashboard\ (a DIFFERENT path
+;   The app writes user data to %LOCALAPPDATA%\SuperBookmarkManager\ (a DIFFERENT path
 ;   from the install dir under ...\Programs\...). The uninstaller removes only files it
 ;   installed under {app}; it never touches the user-data directory, so the SQLite DB,
 ;   thumbnail cache, backups and any owner-supplied Telegram session survive uninstall.
 ;
-; First public release candidate. Compilation does not publish or tag a release.
+; Release candidate. Compilation does not publish or tag a release.
 
 #ifndef StandaloneDir
-  #define StandaloneDir "..\dist-standalone\SuperBookmarkManager"
+  #define StandaloneDir "..\dist-standalone-v0.2.0\SuperBookmarkManager"
 #endif
 #ifndef OutputDir
-  #define OutputDir "..\dist-installer"
+  #define OutputDir "..\dist-installer-v0.2.0"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.2.0"
 #endif
 
 #define MyAppName "Super Bookmark Manager"
@@ -41,7 +41,10 @@ AppVersion={#AppVersion}
 AppVerName={#MyAppName} {#AppVersion}
 ; Project-neutral local metadata. No legitimate publisher/signing identity is claimed.
 AppPublisher=Super Bookmark Manager (local build)
-DefaultDirName={autopf}\SavedPostsDashboard
+DefaultDirName={autopf}\SuperBookmarkManager
+; Builds up to v0.1.x installed into ...\Programs\SavedPostsDashboard. Do not reuse that
+; folder on upgrade: install into the new one and remove the old program files below.
+UsePreviousAppDir=no
 DefaultGroupName=Super Bookmark Manager
 ; Per-user, no elevation. Command-line override is allowed; no interactive UAC prompt.
 PrivilegesRequired=lowest
@@ -70,6 +73,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "telegramsetup"; Description: "Configure Telegram developer keys in Settings on launch (optional; not login)"; GroupDescription: "Optional first-run setup:"; Flags: unchecked
 
+[InstallDelete]
+; Old program folder from v0.1.x installs only (program files, never user data: the
+; v0.1.x data folder is %LOCALAPPDATA%\SavedPostsDashboard, outside Programs). Guarded
+; by IsLegacyProgramDir so nothing else with that name is touched.
+Type: filesandordirs; Name: "{autopf}\SavedPostsDashboard"; Check: IsLegacyProgramDir
+
 [Files]
 ; Copy the verified standalone runtime tree verbatim. ignoreversion so a same-version
 ; reinstall refreshes application files; user data lives outside {app} and is unaffected.
@@ -84,6 +93,51 @@ Name: "{autodesktop}\Super Bookmark Manager"; Filename: "{app}\{#MyAppExeName}";
 Filename: "{app}\{#MyAppExeName}"; Parameters: "{code:LaunchParameters}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+function LegacyProgramDir(): String;
+begin
+  Result := ExpandConstant('{autopf}\SavedPostsDashboard');
+end;
+
+// True only for a folder our own earlier installer created: it holds our executable
+// and an Inno uninstaller, and none of the files the app keeps user data in.
+function HasLegacyProgram(): Boolean;
+var
+  Dir: String;
+begin
+  Dir := LegacyProgramDir();
+  Result := FileExists(Dir + '\{#MyAppExeName}') and FileExists(Dir + '\unins000.exe')
+    and not FileExists(Dir + '\saved_posts.db') and not FileExists(Dir + '\config.json')
+    and not FileExists(Dir + '\session.session') and not DirExists(Dir + '\thumb_cache');
+end;
+
+function IsLegacyProgramDir(): Boolean;
+begin
+  Result := HasLegacyProgram() and (CompareText(LegacyProgramDir(), ExpandConstant('{app}')) <> 0);
+end;
+
+// A copy that is still running (possibly from the old folder) would keep serving
+// the old version and lock its files. Stop it before installing; its library is
+// already in SQLite, and edits not yet saved stay in the browser and sync on the
+// next start.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  if Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#MyAppExeName}', '', SW_HIDE,
+          ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
+    Sleep(1500);
+end;
+
+// An existing Desktop shortcut would point at the removed folder; keep it by
+// re-creating it in the new location.
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = wpSelectTasks) and HasLegacyProgram()
+     and FileExists(ExpandConstant('{autodesktop}\Super Bookmark Manager.lnk')) then
+    WizardSelectTasks('desktopicon');
+end;
+
 function LaunchParameters(Param: String): String;
 begin
   if WizardIsTaskSelected('telegramsetup') then
@@ -94,4 +148,4 @@ end;
 
 // NOTE: No [UninstallDelete] section. The uninstaller removes only what it installed under
 // {app} (the install dir) plus the per-user uninstall entry and shortcuts. It deliberately
-// does NOT delete %LOCALAPPDATA%\SavedPostsDashboard\ (user DB, cache, backups, session).
+// does NOT delete %LOCALAPPDATA%\SuperBookmarkManager\ (user DB, cache, backups, session).

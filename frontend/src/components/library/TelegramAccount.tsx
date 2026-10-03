@@ -130,7 +130,10 @@ export default function TelegramAccount() {
     setPhone("");
     if (!transport) {
       const code_ = data?.code;
-      setError(code_ === undefined ? MESSAGES.network : message(code_));
+      const identifier = data?.diagnostic;
+      const diagnostic = typeof identifier === "string" && /^TG1-(?:(?:CLIENT|CONNECT|REQUEST)-(?:[0-9A-F]{12}|OTHER)|RESULT-EMPTY)$/.test(identifier)
+        ? ` Diagnostic ID: ${identifier}. Share only this ID when reporting the failure.` : "";
+      setError((code_ === undefined ? MESSAGES.network : message(code_)) + diagnostic);
       if (code_ === "login_active" || code_ === "configuration") setStatus(toStatus(data) ?? status);
       return;
     }

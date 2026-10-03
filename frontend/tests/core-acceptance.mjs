@@ -54,7 +54,8 @@ const posts = async () => (await getState()).posts;
 const status = () => page.getByRole('status', { name: 'SQLite save status' });
 const drawer = () => page.getByRole('dialog', { name: 'Saved post detail' });
 const searchBox = () => page.getByPlaceholder('Search… ( / )');
-const filters = () => page.getByRole('navigation', { name: 'Library filters' });
+// Filters live in the main sidebar since the feed revamp; shelves are links, lists are buttons.
+const filters = () => { const nav = page.getByRole('complementary', { name: 'Navigation' }); return { getByRole: (_role, opts) => nav.getByRole('button', opts).or(nav.getByRole('link', opts)) }; };
 
 async function check(name, test) {
   if (retained.has(name)) return;
@@ -261,8 +262,8 @@ try {
     const wrap = body => `<!DOCTYPE NETSCAPE-Bookmark-file-1><DL><p>${body}</DL><p>`;
     const invalid = [['', /empty/], ['<html><a href="https://example.invalid/no-export">Not an export</a></html>', /not a Netscape/],
       ['<!DOCTYPE NETSCAPE-Bookmark-file-1><DL><A HREF="https://example.invalid/truncated">Broken', /malformed/],
-      [wrap('<A HREF="https://example.invalid/valid">Valid first</A><A HREF="https://">Invalid second</A>'), /invalid URL/],
-      [wrap('<A>Missing URL</A>'), /incomplete link/], [wrap(''), /No bookmarks/],
+      
+      [wrap('<A>Missing URL</A>'), /No HTTP\(S\).*1 malformed/], [wrap(''), /No bookmarks/],
       [wrap('<A HREF="file:///synthetic-only">Local file</A>'), /No HTTP\(S\).*1 unsupported/],
       [wrap('<A HREF="https://example.invalid/unclosed">Unclosed'), /malformed/]];
     const expected = sorted(await posts()), reports = [];
@@ -286,7 +287,7 @@ try {
       const text = typeof message.text === 'string' ? message.text : message.text.map(t => typeof t === 'string' ? t : t.text).join('');
       assert.deepEqual(p.telegramMessage, { id: String(message.id), date: message.date, text });
       assert.equal(p.sourceMessageId, String(message.id));
-      if (i !== 1) { assert.equal(p.excerpt, text); assert.equal(p.createdAt, message.date); assert.equal(p.source, 'telegram'); }
+      if (i !== 1) { assert.equal(p.excerpt, text); assert.equal(p.createdAt, await page.evaluate(d => new Date(d).toISOString(), message.date)); /* zone-less export time is local wall-clock */ assert.equal(p.source, 'telegram'); }
     }
     assert.equal(initial.filter(p => p.source === 'telegram').length, 3);
     assert.equal(initial.filter(p => p.telegramMessage).length, 4);
@@ -336,7 +337,8 @@ try {
       }
       return results;
     }, initial[0]);
-    assert.ok(invalidWrites.every(r => r.status === 400)); assert.deepEqual(await snapshot(), before);
+    // Per-item contract: SQLite saves nothing for these and names the reason.
+    assert.deepEqual(invalidWrites.map(r => [r.status, r.body.rejected?.[0]?.reason]), [[200, 'shelf_limit'], [200, 'unknown_shelf']]); assert.deepEqual(await snapshot(), before);
     await output('category-bounds.json', { shelves: before.shelves, invalidWrites, calls });
     return 'six exact topical matches, two honest other/review; keyword-only requests, no provider calls; nine topical shelves; over-bound/manual and invented/automatic writes rejected atomically';
   });
@@ -387,7 +389,7 @@ try {
     // message (metadataEnrichment.ts:30; proven by metadata-e2e.mjs:246/394). 'partial' is reserved
     // for a SUCCESSFUL fetch that returned no metadata, never for an errored 503.
     assert.equal(disposable.metadataStatus, 'failed'); assert.equal(disposable.metadataError, 'Metadata unavailable. The saved link is unchanged; retry later.');
-    assert.match(await dialog.innerText(), /metadata: failed — Metadata unavailable/);
+    assert.match(await dialog.innerText(), /preview: failed — Metadata unavailable/);
     const beforeCancel = sorted(await posts());
     await dialog.getByRole('button', { name: 'Delete', exact: true }).click(); await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     assert.deepEqual(sorted(await posts()), beforeCancel); await saved(9);
@@ -427,7 +429,7 @@ try {
     const after = timeline.slice(boundary), click = after.find(e => e.event === 'click' && e.ariaLabel === 'Retry SQLite save');
     const writes = after.filter(e => e.event === 'request' && e.method === 'POST');
     assert.ok(click); assert.deepEqual(click.pending, { [first.url]: pendingPost }); assert.equal(writes.length, 1);
-    assert.ok(writes[0].at >= click.at); assert.deepEqual(writes[0].payload, { posts: [pendingPost], deletedUrls: [] });
+    assert.ok(writes[0].at >= click.at); { const { since: _since, ...payload } = writes[0].payload; /* delta-sync revision */ assert.deepEqual(payload, { posts: [pendingPost], deletedUrls: [] }); }
     expected = retryExpected; await compare('retry-comparison.json', expected, ['https://example.invalid/disposable']);
     await page.reload(); await compare('retry-after-reload.json', expected, ['https://example.invalid/disposable']);
     return 'real SQLite abort retained pending note; explicit Retry precedes one exact POST; only A note/timestamp changes';
@@ -469,7 +471,7 @@ try {
   await check('C6 category favorite archive status filters and clear to eight', async () => {
     for (const [name, label, matches] of [['category', /^other /, expected.filter(p => p.categories.includes('other'))],
       ['favorite', /^Favorites /, expected.filter(p => p.favorite)], ['archive', /^Archived /, expected.filter(p => p.status === 'archived')],
-      ['status', /^Reference /, expected.filter(p => p.status === 'reference')]]) {
+      ['status', /^Kept /, expected.filter(p => p.status === 'reference')]]) {
       await library(); await filters().getByRole('button', { name: label }).click(); await expectResults(matches); retrieval.push({ name, ids: matches.map(p => p.id) });
     }
     await library(); await filters().getByRole('button', { name: /^Favorites / }).click(); await searchBox().fill('cuminledger'); await expectResults([first]);
@@ -523,7 +525,7 @@ try {
   });
   await check('G5 fixture isolation and runtime errors', async () => {
     assert.deepEqual(errors, []); assert.deepEqual(denied, []);
-    assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/telegram/config'].includes(r.path)));
+    assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers'].includes(r.path)));
     assert.deepEqual((await snapshot()).blocked, []);
     return 'zero uncaught browser errors, forbidden API calls, outbound requests or fixture guard violations';
   });

@@ -3,6 +3,7 @@ import { libraryUrl, useLibrary } from "../store/library";
 import { needsCategory } from "./shelves";
 import { syncLibrary, useLibraryPersistence } from "./libraryPersistence";
 import { enrichSavedPost } from "./metadataEnrichment";
+import { titleFromUrl } from "./platform";
 
 const active = new Set<string>();
 const queue: { id: string; enrich: boolean }[] = [];
@@ -15,9 +16,15 @@ async function classify(id: string) {
   const timer = setTimeout(() => controller.abort(), 4000);
   let category = "other";
   try {
-    // Saved title/URL are link-specific. Telegram captions can describe several
-    // links, so use that wider text only when the link itself has no title.
-    const content = [post.title, post.url, post.description, !post.title ? post.excerpt : undefined].filter(Boolean).join("\n");
+    // Saved title/URL are link-specific. A title derived from the URL slug carries
+    // no topic information, so an opaque link can only be classified from its
+    // caption. Any other title came from the file or a fetch and still wins alone:
+    // one caption can describe several links, so it must not reclassify them.
+    const urlDerivedTitle = post.title === titleFromUrl(post.canonicalUrl || post.url);
+    // Links in the caption belong to other posts (one message can carry several);
+    // this post's own URL is already included above.
+    const caption = urlDerivedTitle ? post.excerpt?.replace(/https?:\/\/\S+/g, " ").trim() : undefined;
+    const content = [post.title, post.url, post.description, caption].filter(Boolean).join("\n");
     const response = await fetch("/api/categorize", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content, keywords_only: true }), signal: controller.signal,

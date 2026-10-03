@@ -30,10 +30,11 @@ by Vite. The production frontend is written to `frontend/dist/`.
 Open `http://127.0.0.1:5001`. Stop with Ctrl+C. Source mode defaults to
 `saved_posts.db` beside `run.py`; use `SAVED_POSTS_DB_PATH` before launch to select a
 different database. Never run test/maintenance utilities against a personal library.
-The packaged application instead uses the compatibility directory
-`%LOCALAPPDATA%\SavedPostsDashboard\`. Settings provides Telegram configuration and
-login; no credentials are needed to build. Optional provider dependencies in root
-`requirements.txt` are not required for the supported keyword-fallback bundle.
+The v0.2.0 packaged application uses `%LOCALAPPDATA%\SuperBookmarkManager\`.
+It never imports the legacy SavedPostsDashboard directory, source DB override,
+inherited Telegram/provider keys, or old browser storage. Legacy files remain intact. Settings provides Telegram configuration and
+login, and AI provider keys; no credentials are needed to build. The release version
+is set once in `packaging/release_paths.py` (`VERSION`).
 
 ## Standalone and installer
 
@@ -42,10 +43,10 @@ login; no credentials are needed to build. Optional provider dependencies in roo
 .\.venv\Scripts\python.exe packaging/build_installer.py
 ```
 
-The standalone output is `dist-standalone/SuperBookmarkManager/SuperBookmarkManager.exe`
+The standalone output is `dist-standalone-v0.2.0/SuperBookmarkManager/SuperBookmarkManager.exe`
 plus its `_internal/` folder. Keep them together. Python and Telethon are bundled;
 end users need no system Python. The build includes project/third-party notices and
-generates `dist-standalone/build-receipt.json` with hashes of every payload file.
+generates `dist-standalone-v0.2.0/build-receipt.json` with hashes of every payload file.
 
 Brand artwork lives in `frontend/public/brand-logo.svg`; the simplified
 `frontend/public/favicon.svg` supplies the small icon design. The checked-in
@@ -54,11 +55,16 @@ icons (16, 20, 24, 32, 48, 64, 128 and 256 pixels). PyInstaller embeds `app.ico`
 in the executable; Inno Setup uses it for the installer. Windows shortcuts and
 the uninstall entry use the executable's icon.
 
+Both builders refuse to replace existing candidate output directories. Existing
+v0.1.0 artifacts stay in their original directories. Payload path scans reject
+databases, sessions, credential files, .env files and personal caches/profiles before
+reading/hashing them; installer inputs are rescanned before compilation.
+
 The installer wrapper verifies the receipt and current source frontend/assets before
 calling Inno Setup. It refuses changed or missing files. A receipt proves build-input
 integrity, not behavioral acceptance: run synthetic runtime tests before release.
 The compiler is discovered in the standard per-user/system location or on PATH.
-Output: `dist-installer/SuperBookmarkManager-Setup.exe` and its `.sha256` file.
+Output: `dist-installer-v0.2.0/SuperBookmarkManager-Setup.exe` and its `.sha256` file.
 
 The per-user installer needs no elevation, offers an optional Desktop shortcut and
 Telegram Settings launch, and preserves user data on uninstall. Its stable AppId and
@@ -84,20 +90,56 @@ Do not use `_rerun.py`, `test_cat.py`, `check_reuse_only.py` or
 The older installed-Python folder builder is retained historical tooling, not the
 release build path above.
 
-## Advanced provider configuration (optional)
+## Public runtime lifecycle and isolated verification
 
-**Optional — not required for normal application use.** The existing developer
-configuration recognizes `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`,
-`LITELLM_PROXY_URL` and `LITELLM_PROXY_KEY`. A separately operated proxy may use
-`GROQ_API_KEY`, `GEMINI_API_KEY` and `MISTRAL_API_KEY`. These names do not imply
-that their SDKs are bundled. Root `requirements.txt` includes OpenAI for the optional
-source/developer direct-compatible-client path; release build requirements omit it.
+The public executable uses PyInstaller windowed mode and Waitress 3.0.2, bound
+only to 127.0.0.1. It opens the browser automatically. Reopening its shortcut
+opens the same running instance. If its preferred port (initially 5001) is occupied,
+it selects a free loopback port and remembers it. No existing process is stopped.
+Closing the browser leaves the server running; Library settings → Quit Super
+Bookmark Manager saves this tab first and refuses to quit if SQLite writes fail.
+Finish imports and save other tabs before quitting.
 
-Manual classification can use the configured provider and falls back to keywords on
-provider unavailability. Normal imports bypass providers. No provider credential UI
-is included in v0.1.0. Keep advanced configuration out of source, shared logs and release
-artifacts. The legacy `--fetch-only` command still requires its separate Telegram and
-metadata workflow; its categorization stage can run without an AI provider.
+SQLite, Telegram config/session, thumbnail cache and a browser-storage identity
+belong to the public data directory. Browser preferences remain browser-local and
+are namespaced by that identity. A different port/browser profile has separate
+preferences; SQLite links survive. Reinstall/uninstall preserves the public and
+legacy data directories. No migration is performed or offered in this release.
+
+For an explicitly isolated test profile set `LOCALAPPDATA` to a new disposable
+directory; the app creates its SuperBookmarkManager child. Advanced explicit
+overrides are `SUPER_BOOKMARK_MANAGER_DATA_DIR` (absolute, never a legacy directory)
+and `SUPER_BOOKMARK_MANAGER_PORT` (0 requests any free port). Legacy
+`SAVED_POSTS_DB_PATH`/`SAVED_POSTS_PORT` are deliberately ignored by the public entry.
+Source launch behavior is unchanged. Do not point these tests at personal state.
+
+```powershell
+py -3.12 -B packaging/tests/test_release_safety.py
+$env:SBM_TEST_PYTHON=(Resolve-Path .venv/Scripts/python.exe).Path
+$env:SBM_TEST_PLAYWRIGHT='C:/path/to/disposable/node_modules/playwright'
+node packaging/tests/runtime_acceptance.mjs
+node packaging/tests/runtime_acceptance.mjs (Resolve-Path dist-standalone-v0.2.0/SuperBookmarkManager/SuperBookmarkManager.exe).Path
+```
+
+Use an absolute executable argument. The runtime test creates synthetic profiles,
+starts only owned servers, intercepts external browser requests, and uses a synthetic
+browser dispatch handler plus fresh Edge contexts. It tests occupied ports,
+duplicate launch, populated legacy browser cache, failed-save Quit, restart and
+native console/listener state. Test Python is for instrumentation only; the public
+executable carries its own Python. Actual default-browser shell association and
+a separate Windows user/VM install require an additional clean-machine check.
+
+## AI providers (optional)
+
+Shelf, tag and title suggestions use free API keys the owner adds in
+**Settings > AI & previews** (Google Gemini, Groq, OpenRouter, NVIDIA NIM, or a local
+OpenAI-compatible server such as Ollama). Keys are stored in `ai.json` next to the
+Telegram configuration in the user profile (`%LOCALAPPDATA%\SavedPostsDashboard`,
+or the packaged data folder), never in the project folder, and are never returned
+to the browser. Source mode also honours `GROQ_API_KEY`, `GEMINI_API_KEY`,
+`OPENROUTER_API_KEY`, `NVIDIA_API_KEY` and `LLM_BASE_URL`; the packaged entry ignores inherited
+provider variables. No SDK or proxy is required: providers are called through
+their OpenAI-compatible HTTP endpoints. Without a key, local keyword rules are used.
 
 ## Release boundary
 
@@ -115,3 +157,8 @@ changing the CSS despite identical source and lockfile. Use `npm ci` and remove 
 the export's generated `frontend/dist` before each comparison build.
 The simulation does not claim a separate-machine/VM test or byte-for-byte identical executable
 builds across machines. No signing identity is configured; release candidates are unsigned.
+
+For a subsequent candidate without replacing an earlier one, set
+`$env:SBM_BUILD_CANDIDATE="v0.2.0-r2"` before both build commands. Only
+`v0.2.0` or `v0.2.0-rN` (positive integer) is accepted; outputs and compiler
+scratch paths use that suffix. Clear the variable to use the initial candidate paths.

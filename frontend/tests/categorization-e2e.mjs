@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
-import { mkdtemp, writeFile, appendFile, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, appendFile, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
+await mkdir(join(root, '.verify/g3-c5-categorization-20260917'), { recursive: true });
 const evidence = await mkdtemp(join(root, '.verify/g3-c5-categorization-20260917/e2e-'));
 const db = join(evidence, 'fixture.sqlite');
 const python = process.env.C5_PYTHON;
@@ -212,7 +213,7 @@ try {
   pass('failed category writes remain visibly pending across reload; SQLite transaction unchanged; retry and fresh browser retain manual correction and all 8 records');
   assert.deepEqual(errors, []);
   assert.deepEqual(denied, []);
-  assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/telegram/config'].includes(r.path)));
+  assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers'].includes(r.path)));
   assert.deepEqual((await control('snapshot')).result.blocked, []);
   pass('no uncaught browser errors, metadata/model calls, personal data or external requests; shelf count stays nine topical plus reserved');
 } catch (error) {

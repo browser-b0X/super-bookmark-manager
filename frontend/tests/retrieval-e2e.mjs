@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
-import { mkdtemp, writeFile, appendFile, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, appendFile, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
+await mkdir(join(root, '.verify/g4-c6-retrieval-20260917'), { recursive: true });
 const evidence = await mkdtemp(join(root, '.verify/g4-c6-retrieval-20260917/e2e-'));
 const db = join(evidence, 'fixture.sqlite');
 const python = process.env.C6_PYTHON;
@@ -101,7 +102,8 @@ const cooking = byPath('/cooking'), programming = byPath('/programming');
 const results = [], externalTargets = [];
 let expectedExternal;
 const searchBox = () => page.getByPlaceholder('Search… ( / )');
-const filters = () => page.getByRole('navigation', { name: 'Library filters' });
+// Filters live in the main sidebar since the feed revamp; shelves are links, lists are buttons.
+const filters = () => { const nav = page.getByRole('complementary', { name: 'Navigation' }); return { getByRole: (_role, opts) => nav.getByRole('button', opts).or(nav.getByRole('link', opts)) }; };
 const drawer = () => page.getByRole('dialog', { name: 'Saved post detail' });
 async function check(name, test) {
   if (process.env.C6_CHECK && name !== process.env.C6_CHECK && name !== 'fixture isolation and runtime errors') return;
@@ -182,7 +184,7 @@ try {
     ['category filter', /^other /, seed.filter(p => p.categories.includes('other'))],
     ['favorite filter', /^Favorites /, [cooking]],
     ['archive filter', /^Archived /, [cooking]],
-    ['status filter', /^Reference /, [programming]],
+    ['status filter', /^Kept /, [programming]],
   ]) await check(name, async () => {
     await library(); await filters().getByRole('button', { name: label }).click(); await expectResults(expected);
     return expected.map(p => p.title).join(', ');
@@ -273,7 +275,7 @@ try {
   });
   await check('fixture isolation and runtime errors', async () => {
     assert.deepEqual(errors, []); assert.deepEqual(denied, []);
-    assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/telegram/auth', '/api/telegram/config'].includes(r.path)));
+    assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers'].includes(r.path)));
     assert.deepEqual((await control('snapshot')).result.blocked, []);
     return 'no provider/personal/external network access or uncaught browser errors';
   });

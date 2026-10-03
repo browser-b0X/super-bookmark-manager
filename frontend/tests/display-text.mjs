@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 
 const cases = [
   ['ampersand', 'Research &amp; Development', 'Research & Development'],
@@ -55,5 +55,6 @@ try {
   assert.deepEqual(results.filter(r => r.status === 'FAIL'), []);
 } finally {
   await browser.close();
+  await mkdir(new URL('../../.verify/g4-c7-text-fix-20260921/', import.meta.url), { recursive: true });
   await writeFile(new URL('../../.verify/g4-c7-text-fix-20260921/display-text-results.json', import.meta.url), JSON.stringify({ results, errors, requests, browserClosed: !browser.isConnected() }, null, 2));
 }

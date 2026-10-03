@@ -110,6 +110,8 @@ def isolate_routes():
         idle = dict(ok=True, credentials_configured=False, session_exists=False,
                     authorized=False, login_step=None, expires_in=None)
         return jsonify(idle)
+    if request.path == "/api/ai/providers" and request.method == "GET":
+        return jsonify(ok=True, providers=[], ready=[], available=False)
     if request.path.startswith("/api/") and (request.method, request.path) not in (
             ("GET", "/api/library"), ("POST", "/api/library"), ("GET", "/api/stats")):
         BLOCKED.append("unexpected API " + request.method + " " + request.path)

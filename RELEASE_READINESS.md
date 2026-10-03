@@ -1,5 +1,56 @@
 # Super Bookmark Manager — release readiness
 
+## v0.2.0 — status 2026-10-02
+
+**Source ready; Windows build, install check and publication remain.**
+
+The `public-release` branch is built on top of the published `main` (no private
+history) and contains exactly the files listed in PUBLIC_SOURCE_MANIFEST.md. It
+replaces the root `index.html` splash page, removes the retired LiteLLM proxy files
+and the v0.1.0 Catch Up page, and updates README/PRODUCT/SECURITY/BUILDING for the
+feed, WhatsApp import, optional AI providers and the new data directory.
+
+Checks run on the public tree (Linux, synthetic data only):
+
+- Secret/cache scan: no API keys (only a labelled synthetic test key), no
+  `thumb_cache`, databases, sessions, `ai.json`/`config.json`, logs, `.verify`,
+  internal records or machine-specific paths.
+- TypeScript clean; frontend builds.
+- Python: library API, categorization, Firefox, metadata (backend, gzip),
+  provider resilience, AI library, Telegram config, preview thumbnails, refresh
+  retry, backup/restore, release safety (with PyInstaller stubbed).
+- Browser: core presentation and acceptance, feed, polish, import workflow,
+  WhatsApp, Chromium/Firefox imports, library, retrieval, categorization, metadata,
+  backup, Telegram refresh, audit sync, enrichment provenance and the unit suites.
+  Some browser tests are timing-sensitive here (Firefox, library, backup); they pass
+  on rerun.
+
+Not verifiable here, or known before this release:
+
+- `telegram_auth_test.py` session checks need Windows ACLs; run on Windows.
+- `telegram-account-ui`/`telegram-config-ui` need a Vite dev server, and
+  `bookmarks.mjs`/`telegram-setup-handoff.mjs` need their own fixture server.
+- `telegram.mjs` (stale API mocks) and `saved-views-e2e.mjs` (request count)
+  already failed on v0.1.0; they are not release blockers.
+
+### Release checklist (owner)
+
+1. On Windows: `npm.cmd --prefix frontend ci`, `npm.cmd --prefix frontend run build`,
+   then `packaging/build_standalone.py` and `packaging/build_installer.py`
+   (outputs `dist-installer-v0.2.0/`).
+2. Install on a clean Windows user (or VM); check first launch, Settings → AI & previews
+   (Test with a real key), an import, Quit, reinstall and uninstall.
+3. Push `public-release` and merge it into `main` (GitHub Pages serves `index.html`).
+4. Create release `v0.2.0` with `SuperBookmarkManager-Setup.exe` and its `.sha256`,
+   using RELEASE_NOTES_DRAFT.md.
+5. Optional: fill the WinGet hash and submit (packaging/winget/README.md).
+
+**SIGNING NOT PERFORMED — NO CONFIGURED CODE-SIGNING IDENTITY.**
+
+---
+
+## Earlier history (v0.1.x)
+
 **SUPER BOOKMARK MANAGER GITHUB READINESS PASS — PUBLICATION ONLY REMAINS**
 
 Owner decisions: public name **Super Bookmark Manager**, repository slug

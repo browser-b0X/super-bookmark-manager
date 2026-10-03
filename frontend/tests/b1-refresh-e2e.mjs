@@ -55,8 +55,15 @@ async function snapshot(name, count) {
 }
 const result = () => page.getByRole('status', { name: 'Telegram refresh result' });
 const button = () => page.getByRole('button', { name: 'Refresh Telegram Saved Messages', exact: true });
+const footerTop = () => page.evaluate(() => Math.round(document.querySelector('.sidebar-footer')?.getBoundingClientRect().top ?? -1));
 async function refresh(pattern) {
+  // The sidebar must not jump while the refresh saves to SQLite.
+  const before = await footerTop(); const tops = new Set([before]);
+  let sampling = true;
+  const sampler = (async () => { while (sampling) { tops.add(await footerTop()); await page.waitForTimeout(25); } })();
   await button().click(); await result().filter({ hasText: pattern }).waitFor();
+  await page.waitForTimeout(400); sampling = false; await sampler;
+  assert.deepEqual([...tops], [before], 'sidebar footer moved during refresh');
   assert.equal(await button().isEnabled(), true);
   return await result().innerText();
 }
@@ -127,7 +134,7 @@ try {
   const expected={cooking:'food-drink',programming:'technology',exercise:'health-fitness',art:'arts-culture'};
   for(const [path,category] of Object.entries(expected)){
     const p=first.find(p=>p.url==='https://live.example.invalid/'+path); assert.ok(p); assert.deepEqual(p.categories,[category]);
-    assert.equal(p.source,'telegram'); assert.ok(p.sourceMessageId); assert.equal(p.createdAt,'2026-09-24T00:00:00+00:00'); assert.ok(p.telegramMessage.text);
+    assert.equal(p.source,'telegram'); assert.ok(p.sourceMessageId); assert.equal(p.createdAt,'2026-09-24T00:00:00.000Z'); assert.ok(p.telegramMessage.text); // createdAt is a UTC instant since the audit
   }
   assert.equal(new Set(first.map(p=>p.id)).size,12);
   assert.ok(!first.some(p=>p.url.includes('outside-window')||p.url.startsWith('ftp:')));
@@ -157,7 +164,10 @@ try {
   await snap('refresh-pending-failure.png');
   assert.equal(report.requests.filter(r=>r.url.endsWith('/api/categorize')||r.url.endsWith('/api/enrich')).length,beforeUnsaved);
   pass('SQLite failure stays pending, DB12 unchanged; unsaved new item13 sends no categorize/enrich request');
-  await control('fail-off'); await page.getByRole('button',{name:'Retry SQLite save',exact:true}).click();
+  await control('fail-off');
+  // Any later store change also schedules a sync, which may succeed before the click.
+  const retry=page.getByRole('button',{name:'Retry SQLite save',exact:true});
+  if(await retry.isVisible()) await retry.click({timeout:2000}).catch(()=>{});
   await page.waitForFunction(()=>JSON.parse(localStorage.getItem('library-store-v1')).state.posts.find(p=>p.url.includes('/provider-failure'))?.categoryMode==='automatic');
   const recovered=await snapshot('retry-saved',13);
   const fallback=recovered.find(p=>p.id===queued.id); assert.deepEqual(fallback.categories,['other']); assert.equal(fallback.categoryReview,true); assert.equal(fallback.metadataStatus,'failed');
@@ -174,7 +184,7 @@ try {
   await dialog.getByTitle('Close',{exact:true}).click(); await search.fill('');
   await page.waitForFunction(()=>document.querySelectorAll('main article').length===13);
   const calls=(await control('calls')).calls.length;
-  await page.goto(base+'/'); await saved(13); await page.locator('.catchup-card').first().waitFor();
+  await page.goto(base+'/'); await saved(13); await page.locator('.rail-card').first().waitFor();
   assert.equal((await control('calls')).calls.length,calls);
   assert.deepEqual(await snapshot('sanity-end',13),recovered);
   pass('Retry/reload durable13; Library title search/detail note/reset and Catch Up; no auto Telegram');

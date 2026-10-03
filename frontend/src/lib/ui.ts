@@ -1,6 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import {
-  Camera, Globe, FileText, Github, Hash, Link2, Music2, Twitter, Youtube,
+  AtSign, Camera, Cloud, Facebook, Globe, FileText, Github, Hash, Link2, Linkedin, Music2, Pin, Twitter, Youtube,
 } from "lucide-react";
 import type { Platform, PostStatus } from "../types";
 
@@ -11,6 +11,11 @@ export const PLATFORM_META: Record<Platform, { label: string; color: string; ico
   github:    { label: "GitHub",    color: "#a78bfa", icon: Github },
   reddit:    { label: "Reddit",    color: "#ff8f50", icon: Hash },
   tiktok:    { label: "TikTok",    color: "#3ddad7", icon: Music2 },
+  facebook:  { label: "Facebook",  color: "#4f8ef7", icon: Facebook },
+  threads:   { label: "Threads",   color: "#c9c9d2", icon: AtSign },
+  linkedin:  { label: "LinkedIn",  color: "#3b9ce0", icon: Linkedin },
+  pinterest: { label: "Pinterest", color: "#e8414b", icon: Pin },
+  bluesky:   { label: "Bluesky",   color: "#4aa8ff", icon: Cloud },
   pdf:       { label: "PDF",       color: "#ffb454", icon: FileText },
   web:       { label: "Web",       color: "#8f8f9d", icon: Globe },
   other:     { label: "Other",     color: "#63636f", icon: Link2 },

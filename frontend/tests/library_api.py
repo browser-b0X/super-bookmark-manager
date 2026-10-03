@@ -122,8 +122,12 @@ class LibraryApiTests(unittest.TestCase):
             conn.close()
 
     def test_00_empty_api_contract(self):
-        self.assertEqual(self.get(), {"posts": [], "deletedUrls": [], "legacyRows": []})
-        self.assertEqual(self.save(), {"ok": True, "posts": [], "deletedUrls": [], "legacyRows": []})
+        snapshot = self.get()
+        self.assertEqual({k: snapshot[k] for k in ("posts", "deletedUrls", "legacyRows")}, {"posts": [], "deletedUrls": [], "legacyRows": []})
+        self.assertIn("other", snapshot["categories"])
+        saved = self.save()
+        self.assertEqual({k: saved[k] for k in ("ok", "posts", "deletedUrls", "legacyRows", "rejected")},
+                         {"ok": True, "posts": [], "deletedUrls": [], "legacyRows": [], "rejected": []})
 
     def test_full_payload_survives_update_reinit_and_module_reload(self):
         first, second = post(), post(2, source="telegram", userNotes="Second note", status="reference")
@@ -146,24 +150,29 @@ class LibraryApiTests(unittest.TestCase):
         original = post()
         self.save([original])
         candidate = post(id="reimport-id", categories=["uncategorized"], userNotes="", favorite=False, title="Reimport title")
-        self.assertEqual(self.save([candidate])["posts"], [original])
+        result = self.save([candidate])
+        self.assertEqual(result["posts"], [original])
+        self.assertEqual([r["reason"] for r in result["rejected"]], ["duplicate_url"])
         self.assertEqual(self.get()["posts"], [original])
 
-    def test_id_collision_rolls_back_whole_transaction(self):
+    def test_id_collision_rejects_only_that_item(self):
         original = post()
         self.save([original])
+        result = self.save([post(2), post(3, id=original["id"])], ["https://example.invalid/never-seen"])
+        # One colliding item never blocks the rest of the delta.
+        self.assertEqual([p["id"] for p in result["posts"]], [original["id"], "fixture-2"])
+        self.assertEqual(result["rejected"], [{"url": post(3)["url"], "id": original["id"], "reason": "id_conflict",
+                                               "error": "This ID already belongs to a different link."}])
+        self.assertIn("https://example.invalid/never-seen", result["deletedUrls"])
         before = self.get()
-        self.save([post(2), post(3, id=original["id"])], ["https://example.invalid/never-seen"], expected=409)
-        self.assertEqual(self.get(), before)
-        # Conflict also applies when the incoming URL already exists with another ID.
-        self.save([post(2)])
-        before = self.get()
-        self.save([post(2, id=original["id"])], expected=409)
+        result = self.save([post(2, id=original["id"])])
+        self.assertEqual(result["rejected"][0]["reason"], "id_conflict")
         self.assertEqual(self.get(), before)
 
     def test_batch_id_collision_is_not_silent_loss(self):
-        self.save([post(), post(2, id=post()["id"])], expected=409)
-        self.assertEqual(self.get()["posts"], [])
+        result = self.save([post(), post(2, id=post()["id"])])
+        self.assertEqual(result["posts"], [post()])
+        self.assertEqual([(r["url"], r["reason"]) for r in result["rejected"]], [(post(2)["url"], "id_conflict")])
 
     def test_tombstones_win_and_reserve_existing_identity(self):
         original = post()
@@ -173,14 +182,17 @@ class LibraryApiTests(unittest.TestCase):
         self.assertEqual(result["posts"], [])
         self.assertEqual(set(result["deletedUrls"]), {original["url"], never})
         tombstones = {row["url"]: row for row in self.rows("SELECT * FROM library_items")}
-        self.assertEqual(tombstones[original["url"]]["id"], original["id"])
+        # A tombstone keeps the URL but releases the ID, so a variant spelling
+        # that maps to the same client ID can still be saved later.
+        self.assertIsNone(tombstones[original["url"]]["id"])
         self.assertIsNone(tombstones[original["url"]]["document"])
         self.assertIsNone(tombstones[never]["id"])
         self.assertEqual(tombstones[never]["deleted"], 1)
-        self.save([post(id="different-reimport-id"), post(2, url=never)])
+        result = self.save([post(id="different-reimport-id"), post(2, url=never)])
+        self.assertEqual({r["reason"] for r in result["rejected"]}, {"deleted"})
         storage.init_db()
         self.assertEqual(self.get()["posts"], [])
-        self.save([post(3, id=original["id"])], expected=409)
+        self.assertEqual(self.save([post(3, id=original["id"])])["posts"], [post(3, id=original["id"])])
 
     def test_invalid_entire_batch_has_no_mutation(self):
         self.save([post()])
@@ -201,10 +213,24 @@ class LibraryApiTests(unittest.TestCase):
         }
         for key in ["canonicalUrl", "sourceMessageId", "title", "description", "excerpt", "thumbnailUrl", "userNotes", "aiSummary", "lastOpenedAt", "metadataError"]:
             bad_fields[key] = [None, 1]
+        invalid_items = []
         for key, values in bad_fields.items():
             for value in values:
-                invalid.append({"posts": [post(2), post(3, **{key: value})], "deletedUrls": [post()["url"]]})
+                invalid_items.append(post(3, **{key: value}))
+        for key in required:
+            item = post(3)
+            del item[key]
+            invalid_items.append(item)
+        invalid = [body for body in invalid if not (isinstance(body, dict) and len(body.get("posts", [])) == 2)]
         invalid.extend({"posts": [post(2)], "deletedUrls": [value]} for value in [1, "ftp://example.invalid/x", "http://", "https://[broken"])
+        invalid.extend({"posts": [], "deletedUrls": [], "categoryOps": value} for value in [{}, [{"op": "explode"}], [{"op": "rename", "from": "a"}]])
+        for item in invalid_items:
+            with self.subTest(item=item):
+                # A malformed item is rejected alone; the rest of the delta commits.
+                result = self.save([item])
+                self.assertEqual([r["reason"] for r in result["rejected"]], ["invalid"])
+                self.assertTrue(result["rejected"][0]["error"])
+                self.assertEqual(self.get(), before)
         for body in invalid:
             with self.subTest(body=body):
                 response = self.client.post("/api/library", data=json.dumps(body), content_type="application/json")
@@ -229,7 +255,7 @@ class LibraryApiTests(unittest.TestCase):
         for index, url in enumerate(urls):
             storage.insert_post(98000 + index, "2026-09-17T12:00:00Z", "Legacy text", url, "other", '{"fixture":true}')
         before = self.rows("SELECT * FROM saved_posts ORDER BY id")
-        schema = self.rows("SELECT name, sql FROM sqlite_master WHERE name != 'library_items' ORDER BY name")
+        schema = self.rows("SELECT name, sql FROM sqlite_master WHERE name NOT IN ('library_items', 'idx_library_ident') ORDER BY name")
         self.assertEqual(self.get()["legacyRows"], before[:2])
         self.save([post()])
         self.assertEqual(self.get()["legacyRows"], before[1:2])
@@ -237,7 +263,7 @@ class LibraryApiTests(unittest.TestCase):
         self.assertEqual(self.get()["legacyRows"], [])
         storage.init_db()
         self.assertEqual(self.rows("SELECT * FROM saved_posts ORDER BY id"), before)
-        self.assertEqual(self.rows("SELECT name, sql FROM sqlite_master WHERE name != 'library_items' ORDER BY name"), schema)
+        self.assertEqual(self.rows("SELECT name, sql FROM sqlite_master WHERE name NOT IN ('library_items', 'idx_library_ident') ORDER BY name"), schema)
         self.assertTrue(storage.post_exists(98000))
         self.assertEqual(len(storage.search_posts()), 5)
 
@@ -286,6 +312,157 @@ class LibraryApiTests(unittest.TestCase):
                 response = self.client.get("/api/library", headers={"Origin": origin})
                 self.assertEqual(response.status_code, 403)
                 self.assertTrue(response.get_json()["error"])
+
+    # ── Audit fixes: one URL identity, recoverable sync, shelf ops, host guard ──
+
+    def test_delete_matches_any_spelling_and_backup_export_still_works(self):
+        raw = post(url="https://Example.invalid", canonicalUrl="https://example.invalid")
+        self.save([raw])
+        # The browser sends new URL(u).href, which differs from the stored string.
+        result = self.save(deleted=["https://example.invalid/"])
+        self.assertEqual(result["posts"], [])
+        self.assertEqual(len(self.rows("SELECT * FROM library_items")), 1)
+        response = self.client.post("/api/backup/export", json={"confirm": True})
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+
+    def test_readd_variant_after_delete_is_not_wedged(self):
+        first = post(url="https://www.example.invalid/page/", id="same-client-id")
+        self.save([first])
+        self.save(deleted=[first["url"]])
+        variant = post(url="https://www.example.invalid/page", id="same-client-id")
+        unrelated = post(9)
+        result = self.save([variant, unrelated])
+        # The tombstone owns the URL spelling, not the ID: both items save.
+        self.assertEqual(sorted(p["id"] for p in result["posts"]), ["fixture-9", "same-client-id"])
+        self.assertEqual(result["rejected"], [])
+
+    def test_undelete_clears_tombstone_for_explicit_readd(self):
+        original = post()
+        self.save([original])
+        self.save(deleted=[original["url"]])
+        self.assertEqual(self.save([original])["rejected"][0]["reason"], "deleted")
+        response = self.client.post("/api/library", json={"posts": [original], "deletedUrls": [], "undeleteUrls": [original["url"]]})
+        self.assertEqual(response.get_json()["posts"], [original])
+        self.assertEqual(response.get_json()["deletedUrls"], [])
+
+    def test_purge_removes_without_tombstone_so_reimport_works(self):
+        original = post()
+        self.save([original])
+        response = self.client.post("/api/library", json={"posts": [], "deletedUrls": [], "purgeUrls": [original["url"]]})
+        self.assertEqual(response.get_json()["posts"], [])
+        self.assertEqual(response.get_json()["deletedUrls"], [])
+        self.assertEqual(self.save([original])["posts"], [original])
+
+    def test_delta_sync_returns_only_changes_after_a_revision(self):
+        first, second = post(), post(2)
+        rev = self.save([first, second])["rev"]
+        self.assertGreater(rev, 0)
+        edited = post(2, userNotes="changed", updatedAt="2026-09-18T00:00:00Z")
+        response = self.client.post("/api/library", json={"posts": [edited], "deletedUrls": [first["url"]], "since": rev}).get_json()
+        self.assertEqual(response["posts"], [edited])
+        self.assertEqual(response["deletedUrls"], [first["url"]])
+        self.assertEqual(response["since"], rev)
+        later = response["rev"]
+        self.assertEqual(self.client.get(f"/api/library?since={later}").get_json()["posts"], [])
+        purge = self.client.post("/api/library", json={"posts": [], "deletedUrls": [], "purgeUrls": [edited["url"]], "since": later}).get_json()
+        self.assertEqual(purge["purgedUrls"], [edited["url"]])
+        # Counter never goes backwards even when the newest row disappears.
+        self.assertGreater(purge["rev"], later)
+        # A revision from another database (larger than ours) yields a full snapshot.
+        full = self.client.get("/api/library?since=999999").get_json()
+        self.assertNotIn("since", full)
+
+    def test_stale_write_is_rejected_not_applied(self):
+        newer = post(userNotes="Tab A note", updatedAt="2026-09-18T12:00:00Z")
+        self.save([newer])
+        stale = post(favorite=False, userNotes="", updatedAt="2026-09-17T12:00:00Z")
+        result = self.save([stale])
+        self.assertEqual(result["rejected"][0]["reason"], "stale")
+        self.assertEqual(self.get()["posts"], [newer])
+
+    def test_category_ops_rename_and_delete_keep_server_in_step(self):
+        self.save([post(categories=["travel"], categoryMode="manual")])
+        response = self.client.post("/api/library", json={
+            "posts": [post(categories=["trips"], categoryMode="manual", updatedAt="2026-09-18T00:00:00Z")],
+            "deletedUrls": [], "categoryOps": [{"op": "rename", "from": "travel", "to": "trips"}]})
+        body = response.get_json()
+        self.assertEqual(body["rejected"], [])
+        self.assertIn("trips", body["categories"])
+        self.assertNotIn("travel", body["categories"])
+        # Renaming then adding up to the cap never wedges later saves.
+        names = [f"shelf-{i}" for i in range(3)]
+        ops = [{"op": "add", "name": n} for n in names]
+        body = self.client.post("/api/library", json={"posts": [], "deletedUrls": [], "categoryOps": ops}).get_json()
+        self.assertEqual(len([c for c in body["categories"] if c not in ("other", "uncategorized")]), 12)
+        filed = post(2, categories=["shelf-2"], categoryMode="manual")
+        self.assertEqual(self.save([filed])["rejected"], [])
+        body = self.client.post("/api/library", json={"posts": [], "deletedUrls": [], "categoryOps": [{"op": "delete", "name": "shelf-0"}]}).get_json()
+        self.assertNotIn("shelf-0", body["categories"])
+        over = post(3, categories=["thirteenth", "fourteenth"], categoryMode="manual")
+        self.assertEqual(self.save([over])["rejected"][0]["reason"], "shelf_limit")
+
+    def test_adopted_legacy_rows_stop_blocking_export(self):
+        storage.insert_post(99001, "2026-09-17T12:00:00Z", "dup", "https://www.example.invalid/watch?v=1&si=a", "other", "{}")
+        self.assertEqual(len(self.get()["legacyRows"]), 1)
+        self.assertEqual(self.client.post("/api/backup/export", json={"confirm": True}).status_code, 400)
+        response = self.client.post("/api/library", json={"posts": [], "deletedUrls": [],
+                                                          "adoptedUrls": ["https://www.example.invalid/watch?v=1&si=a"]})
+        self.assertEqual(response.get_json()["legacyRows"], [])
+        self.assertEqual(self.client.post("/api/backup/export", json={"confirm": True}).status_code, 200)
+
+    def test_init_repairs_rows_written_before_identity_matching(self):
+        conn = sqlite3.connect(DB)
+        try:
+            with conn:
+                conn.execute("INSERT INTO library_items (url, id, document) VALUES (?, ?, ?)",
+                             ("https://example.invalid", "live", json.dumps(post(url="https://example.invalid", id="live"))))
+                conn.execute("INSERT INTO library_items (url, id, deleted) VALUES (?, ?, 1)", ("https://example.invalid/", "kept-id"))
+                conn.execute("INSERT INTO library_items (url, id, document) VALUES (?, ?, ?)",
+                             ("https://Twin.invalid/a", "old", json.dumps(post(url="https://Twin.invalid/a", id="old", updatedAt="2026-01-01T00:00:00Z", tags=["older"], userNotes="old note", favorite=True))))
+                conn.execute("INSERT INTO library_items (url, id, document) VALUES (?, ?, ?)",
+                             ("https://twin.invalid/a", "new", json.dumps(post(url="https://twin.invalid/a", id="new", updatedAt="2026-02-01T00:00:00Z", tags=["newer"], userNotes="", favorite=False))))
+                conn.execute("UPDATE library_items SET ident = NULL")
+        finally:
+            conn.close()
+        storage.init_db()
+        snapshot = self.get()
+        self.assertEqual([p["id"] for p in snapshot["posts"]], ["new"])
+        # The removed twin's curation is folded into the survivor, never dropped.
+        survivor = snapshot["posts"][0]
+        self.assertEqual((survivor["tags"], survivor["userNotes"], survivor["favorite"]), (["newer", "older"], "old note", True))
+        self.assertEqual(len(snapshot["deletedUrls"]), 1)
+        self.assertEqual(self.rows("SELECT id FROM library_items WHERE deleted = 1"), [{"id": None}])
+        self.assertEqual(self.client.post("/api/backup/export", json={"confirm": True}).status_code, 200)
+
+    def test_dns_rebinding_host_is_refused(self):
+        rebound = {"Host": "evil.invalid:5001", "Origin": "http://evil.invalid:5001", "Sec-Fetch-Site": "same-origin"}
+        for method, path in (("get", "/api/library"), ("post", "/api/telegram/refresh"), ("post", "/api/backup/export"), ("get", "/api/telegram/auth")):
+            with self.subTest(path=path):
+                response = getattr(self.client, method)(path, headers=rebound, json={"confirm": True})
+                self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.client.get("/api/library", headers={"Host": "127.0.0.1:5001"}).status_code, 200)
+
+    def test_cross_site_form_post_cannot_trigger_mutations(self):
+        for path in ("/api/categorize/unprocessed", "/api/refresh-instagram-thumbs", "/api/edit", "/api/tasks"):
+            with self.subTest(path=path):
+                response = self.client.post(path, data='{"untagged": true}', content_type="text/plain")
+                self.assertEqual(response.status_code, 415)
+                response = self.client.post(path, json={}, headers={"Origin": "https://evil.invalid"})
+                self.assertEqual(response.status_code, 403)
+                response = self.client.post(path, json={}, headers={"Sec-Fetch-Site": "cross-site"})
+                self.assertEqual(response.status_code, 403)
+
+    def test_legacy_routes_reject_non_object_bodies_with_400(self):
+        for path, body in (("/api/reclassify", []), ("/api/reclassify", {"tg_msg_id": "abc"}), ("/api/edit", None),
+                           ("/api/delete", {"tg_msg_id": {}}), ("/api/tasks", ["x"]), ("/api/categories", {"name": 5})):
+            with self.subTest(path=path, body=body):
+                response = self.client.post(path, data=json.dumps(body), content_type="application/json")
+                self.assertEqual(response.status_code, 400)
+                self.assertFalse(response.get_json()["ok"])
+        tid = self.client.post("/api/tasks", json={"title": "t"}).get_json()["id"]
+        self.assertEqual(self.client.patch(f"/api/tasks/{tid}", json={"done": "no"}).status_code, 400)
+        self.assertEqual(self.client.patch(f"/api/tasks/{tid}", json={"title": None}).status_code, 400)
+        self.assertEqual(self.client.patch(f"/api/tasks/{tid}", json={"done": True}).status_code, 200)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ import { randomBytes, randomInt } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -12,7 +12,7 @@ import tailwindcss from '@tailwindcss/vite';
 // No real backend, providers, saved browser profile, traces or credential output.
 // Set TELEGRAM_UI_PLAYWRIGHT_MODULE to reuse another installed Playwright runtime.
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const evidence = join(root, '.verify/b6-installer-telegram-setup-20260925');
+const evidence = process.env.TELEGRAM_UI_EVIDENCE || join(root, '.verify/b6-installer-telegram-setup-20260925');
 const run = process.argv.includes('--red') ? 'red' : 'green';
 const report = { phase: run, checks: [], status: 'FAIL', cleanup: {} };
 const canaries = [String(randomInt(10000000, 99999999)), randomBytes(16).toString('hex'), randomBytes(16).toString('hex')];
@@ -81,6 +81,7 @@ try {
       }
       if (url.pathname === '/api/library' && request.method() === 'GET') return await json({ posts: [], deletedUrls: [], legacyRows: [] });
       if (url.pathname === '/api/stats' && request.method() === 'GET') return await json({ total: 0, categories: {} });
+      if (url.pathname === '/api/ai/providers' && request.method() === 'GET') return await json({ ok: true, providers: [], ready: [], available: false });
       if (url.pathname.startsWith('/api/')) { observations.unexpectedApi++; return await route.abort(); }
       return await route.continue();
     } catch { await route.abort().catch(() => {}); }
@@ -165,6 +166,8 @@ try {
   releaseRequest(); releaseRequest = undefined; mode = 'ok';
   await result.filter({ hasText: /saved/i }).waitFor(); await status('Yes', 'Yes');
   check(stored.api_id === apiId && stored.api_hash === apiHash && posts === 1, 'exact explicit save payload');
+  check(await panel.getByText('Configure Telegram Saved Messages refresh now?', { exact: true }).count() === 0, 'saved credentials remove unanswered setup question');
+  await panel.getByText('Developer credentials are configured. Use the Telegram Account section below to connect or check your account.', { exact: true }).waitFor();
   await button('Update credentials').click(); await emptyFields();
   await button('Save').click(); await result.filter({ hasText: /saved/i }).waitFor();
   check(stored.api_id === apiId && stored.api_hash === apiHash, 'blank values preserve stored credentials');
@@ -260,7 +263,7 @@ try {
   if (context) { await context.close(); report.cleanup.contextClosed = true; }
   if (browser) { await browser.close(); report.cleanup.browserClosed = true; }
   if (vite) { await vite.close(); report.cleanup.viteClosed = true; }
-  if (cache) { await rm(cache, { recursive: true, force: true }); report.cleanup.temporaryCacheRemoved = true; }
+  if (cache) { assert.ok(resolve(cache).startsWith(resolve(tmpdir()) + sep + 'telegram-config-ui-'), 'cache cleanup must stay inside owned temp directory'); await rm(cache, { recursive: true, force: true }); report.cleanup.temporaryCacheRemoved = true; }
   report.observations = observations;
   await writeFile(join(evidence, `telegram-ui-${run}.json`), JSON.stringify(report, null, 2) + '\n');
 }

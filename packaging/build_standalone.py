@@ -6,7 +6,7 @@ Exact equivalent command (run from the repository root with the build interprete
 
 This wraps PyInstaller so the argument list stays version-controlled and free of
 shell-quoting problems (the repository path contains spaces). Output is written to
-dist-standalone/SuperBookmarkManager/ and never touches the source tree or personal data.
+dist-standalone-v<version>/SuperBookmarkManager/ and never touches the source tree or personal data.
 
 Bundler model: PyInstaller --onedir (one-folder). Telegram refresh includes Telethon;
 optional LLM providers, cryptg and the fetch-only module remain excluded.
@@ -16,13 +16,15 @@ import hashlib
 import json
 
 import PyInstaller.__main__
+from payload_hygiene import scan
+from release_paths import CANDIDATE
 
 ROOT = Path(__file__).resolve().parents[1]
 
 LOCAL_MODULES = [
     "config", "storage", "app", "metadata_fetcher", "safe_http",
     "library_backup", "firefox_import", "telegram_refresh",
-    "categorizer", "taxonomy", "telegram_config", "telegram_auth", "telethon",
+    "categorizer", "ai_providers", "ai_library", "taxonomy", "telegram_config", "telegram_auth", "telethon", "waitress",
 ]
 FLASK_HIDDEN = [
     "flask", "werkzeug", "jinja2", "itsdangerous", "click", "blinker", "markupsafe",
@@ -35,13 +37,13 @@ def build_args():
         str(ROOT / "packaging" / "standalone_entry.py"),
         "--onedir",
         "--name", "SuperBookmarkManager",
-        "--console",
+        "--windowed",
         "--icon", str(ROOT / "packaging" / "app.ico"),
         "--noconfirm",
         "--clean",
-        "--distpath", str(ROOT / "dist-standalone"),
-        "--workpath", str(ROOT / "packaging" / "build-standalone"),
-        "--specpath", str(ROOT / "packaging"),
+        "--distpath", str(ROOT / f"dist-standalone-{CANDIDATE}"),
+        "--workpath", str(ROOT / "packaging" / f"build-standalone-{CANDIDATE}"),
+        "--specpath", str(ROOT / "packaging" / f"build-standalone-{CANDIDATE}"),
         "--paths", str(ROOT),
         # Immutable bundled assets (Windows uses ';' as the add-data separator).
         "--add-data", f"{ROOT / 'frontend' / 'dist'};frontend/dist",
@@ -59,6 +61,12 @@ def build_args():
 
 
 def main():
+    # Fail before bundling or hashing any forbidden input artifact.
+    for path in (ROOT / "frontend/dist", ROOT / "templates", ROOT / "third_party_notices"):
+        scan(path)
+    output = ROOT / f"dist-standalone-{CANDIDATE}"
+    if output.exists():
+        raise SystemExit("Candidate output already exists; choose a new empty output before rebuilding.")
     args = build_args()
     print("PyInstaller args:")
     for arg in args:
@@ -66,7 +74,8 @@ def main():
     PyInstaller.__main__.run(args)
     # Record every output byte from this build, independent of machine-specific EXE hashes.
     # The installer verifies this complete receipt plus the current frontend/assets.
-    bundle = ROOT / "dist-standalone" / "SuperBookmarkManager"
+    bundle = ROOT / f"dist-standalone-{CANDIDATE}" / "SuperBookmarkManager"
+    scan(bundle)
     receipt = {p.relative_to(bundle).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
                for p in sorted(bundle.rglob("*")) if p.is_file()}
     (bundle.parent / "build-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")

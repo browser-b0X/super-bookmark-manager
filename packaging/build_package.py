@@ -9,7 +9,7 @@ from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ["run.py", "app.py", "config.py", "storage.py", "metadata_fetcher.py",
-           "categorizer.py", "fetcher.py", "telegram_refresh.py", "taxonomy.py", "library_backup.py", "telegram_config.py"]
+           "categorizer.py", "ai_providers.py", "ai_library.py", "fetcher.py", "telegram_refresh.py", "taxonomy.py", "library_backup.py", "telegram_config.py"]
 EXCLUDED = ["*.db", "*.sqlite", "*-wal", "*-shm", "*.bak", "restored-libraries/", "backups/",
             "*.session*", ".env*", "credentials", "API key values", "browser profiles", "thumb_cache/",
             "caches/", "personal exports", ".verify/", ".git/", "docs/recovery/", "node_modules/", "__pycache__/", "*.pyc"]

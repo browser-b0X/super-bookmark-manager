@@ -110,7 +110,7 @@ try {
       await c4.useLibrary.persist.rehydrate();
       return JSON.parse(localStorage.getItem('library-store-v1'));
     }, [a, b]);
-    assert.equal(result.version, 3);
+    assert.equal(result.version, 6);
     assert.deepEqual(result.state.posts, [a, b]);
     assert.deepEqual(result.state.pending, { [a.url]: a, [b.url]: b });
     assert.deepEqual(result.state.deletedUrls, []);

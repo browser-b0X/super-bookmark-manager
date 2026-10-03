@@ -1,6 +1,9 @@
 import { useEffect, useState, type Ref } from "react";
 import { useLocation, useParams } from "react-router-dom";
-import { Menu, Search } from "lucide-react";
+import { Github, Menu, Search } from "lucide-react";
+
+/** Where people report bugs and suggest ideas. */
+export const PROJECT_URL = "https://github.com/browser-b0X/super-bookmark-manager";
 import { useLibrary } from "../store/library";
 
 function Clock() {
@@ -28,10 +31,12 @@ export default function Topbar({ onOpenPalette, onOpenNavigation, drawerOpen, me
   const params = useParams();
   const categories = useLibrary(s => s.categories);
 
-  let title = "Catch up";
-  let sub = "Bookmarks & Telegram · your saved links";
+  let title = "Feed";
+  let sub = "New links on top, your library below";
   if (location.pathname.startsWith("/library/settings")) {
     title = "Library Settings"; sub = "Import, sync and providers";
+  } else if (location.pathname.startsWith("/library/item/")) {
+    title = "Saved link"; sub = "Details, notes and shelf";
   } else if (location.pathname.startsWith("/library")) {
     title = "Saved Posts";
     sub = "Library";
@@ -66,6 +71,10 @@ export default function Topbar({ onOpenPalette, onOpenNavigation, drawerOpen, me
         <Search size={14} /> Search or jump to… <span className="kbd ml-auto">Ctrl K</span>
       </button>
       <Clock />
+      <a className="icon-btn shell-github" href={`${PROJECT_URL}/issues`} target="_blank" rel="noreferrer noopener"
+        title="Report a bug or suggest an idea on GitHub" aria-label="Report a bug or suggest an idea on GitHub">
+        <Github size={17} aria-hidden="true" />
+      </a>
     </header>
   );
 }

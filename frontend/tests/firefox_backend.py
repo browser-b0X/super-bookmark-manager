@@ -34,9 +34,21 @@ class FirefoxTests(unittest.TestCase):
         data = result.json
         self.assertEqual(data['historyIgnored'], 3)
         self.assertEqual(data['bookmarkRows'], 5)
-        entries = data['roots']['bookmarks']['children']
+        entries, paths = [], []
+
+        def walk(node, path):
+            for child in node['children']:
+                if child['type'] == 'folder':
+                    walk(child, path + ([child['name']] if child['name'] else []))
+                else:
+                    entries.append(child)
+                    paths.append(path)
+        walk(data['roots']['bookmarks'], [])
         self.assertEqual([r['url'] for r in entries], [OVERLAP, NEW, UNTITLED, NEW, 'javascript:alert(1)'])
         self.assertEqual(entries[2]['name'], '')
+        # Folder organisation is kept; Firefox's root folders get readable names.
+        self.assertEqual(set(map(tuple, paths)), {('Bookmarks Toolbar', 'Nested')})
+        self.assertFalse(data['walMode'])
         self.assertNotIn('history-only.invalid', result.get_data(as_text=True))
         self.assertNotIn('History title', result.get_data(as_text=True))
 

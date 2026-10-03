@@ -77,7 +77,8 @@ try {
     const m = fixture.messages[messageIndex];
     const text = typeof m.text === 'string' ? m.text : m.text.map(p => typeof p === 'string' ? p : p.text).join('');
     assert.equal(parsed.posts[i].excerpt, text);
-    assert.equal(parsed.posts[i].createdAt, m.date);
+    // createdAt is a UTC instant (date_unixtime when present); the export's local date stays in telegramMessage.
+    assert.equal(parsed.posts[i].createdAt, m.date_unixtime ? new Date(Number(m.date_unixtime) * 1000).toISOString() : new Date(m.date).toISOString());
     assert.deepEqual(parsed.posts[i].telegramMessage, { id: String(m.id), date: m.date, text });
   }
   pass('fixture: 5 messages → 4 distinct links; two links share message 97001 but have distinct IDs; 1 duplicate, 1 linkless; labeled target and full source metadata retained');

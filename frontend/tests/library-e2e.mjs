@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
-import { mkdtemp, writeFile, appendFile, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, appendFile, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
+await mkdir(join(root, '.verify/g2-c4-durability-20260917'), { recursive: true });
 const evidence = await mkdtemp(join(root, '.verify/g2-c4-durability-20260917/e2e-'));
 const db = join(evidence, 'fixture.sqlite');
 const python = process.env.C4_PYTHON;
@@ -275,7 +276,9 @@ try {
   assert.deepEqual(click.pending, { [first.url]: pendingPost });
   assert.equal(writes.length, 1);
   assert.ok(writes[0].at >= click.at, 'The successful write must follow the explicit Retry click');
-  assert.deepEqual(writes[0].payload, { posts: [pendingPost], deletedUrls: [] });
+  // `since` is the delta-sync revision (audit F8); the write itself is exactly the pending post.
+  const { since: _since, ...payload } = writes[0].payload;
+  assert.deepEqual(payload, { posts: [pendingPost], deletedUrls: [] });
   assert.deepEqual(sorted(retried.posts), retryExpected);
   assert.equal(new Set(retried.posts.map(post => post.id)).size, 8);
   assert.equal(new Set(retried.posts.map(post => post.url)).size, 8);
@@ -317,7 +320,7 @@ try {
   assert.deepEqual(denied, []);
   // /api/enrich is an accepted first-party endpoint (import-time metadata enrichment): same-origin,
   // deterministic fixture response, not a provider/personal/external request. Explicit allowlist only.
-  assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth'].includes(r.path)
+  assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/ai/providers'].includes(r.path)
     || (r.path === '/api/telegram/config' && r.method === 'GET')));
   pass('no uncaught browser errors, provider requests, personal data or external requests');
 } catch (error) {

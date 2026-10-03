@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
@@ -130,7 +131,23 @@ def restore_backup(raw, confirmed_sha256):
             raise BackupError("Restored database did not match the backup; nothing was published.")
         # Reading above can enable WAL. Last connection has closed/checkpointed.
         # Hard-link creation is atomic and fails if the destination already exists.
-        os.link(temporary, destination)
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            raise
+        except OSError:
+            # FAT32/exFAT, some network and cloud-synced folders have no hard
+            # links: fall back to an exclusive-create copy (never overwrites).
+            with open(temporary, "rb") as source, open(destination, "xb") as target:
+                try:
+                    shutil.copyfileobj(source, target)
+                    target.flush()
+                    os.fsync(target.fileno())
+                except BaseException:
+                    # Never leave a half-written database where a restore is expected.
+                    target.close()
+                    destination.unlink(missing_ok=True)
+                    raise
         return {"path": str(destination), "recordCount": d["recordCount"], "mode": "new-database"}
     finally:
         for path in [temporary, Path(str(temporary) + "-wal"), Path(str(temporary) + "-shm")]:

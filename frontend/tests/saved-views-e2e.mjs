@@ -112,7 +112,7 @@ try{
   assert.deepEqual(await snapshot('management',8),baseline);assert.equal(report.requests.filter(r=>r.method==='POST'&&r.url.endsWith('/api/library')).length,1);
   pass('keyboard save/apply/rename/update confirmation/cancel/delete/Escape/focus; duplicate/blank feedback; manual edit never rewrites view; Clear8; zero Library writes');
   const retained=await definitions();await page.reload();await saved(8);assert.deepEqual(await definitions(),retained);
-  await page.goto(base+'/');await page.locator('.catchup-card').first().waitFor();await page.goto(base+'/library');await saved(8);assert.deepEqual(await definitions(),retained);
+  await page.goto(base+'/');await page.locator('.rail-card').first().waitFor();await page.goto(base+'/library');await saved(8);assert.deepEqual(await definitions(),retained);
   await stop();await start();await page.reload();await saved(8);assert.deepEqual(await definitions(),retained);assert.deepEqual(await snapshot('backend-restart',8),baseline);
   pass('reload/navigation/backend restart same-origin retains definitions and exact8; no cross-profile persistence claim');
   for(const width of [1365,1024,768,390]){

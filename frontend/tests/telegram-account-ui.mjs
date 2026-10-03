@@ -3,7 +3,7 @@ import { randomBytes, randomInt } from 'node:crypto';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -13,12 +13,13 @@ import tailwindcss from '@tailwindcss/vite';
 // no saved browser profile, no credential output. Set TELEGRAM_UI_PLAYWRIGHT_MODULE
 // to reuse another installed Playwright runtime.
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const evidence = join(root, '.verify/telegram-login-session-20260927');
+const evidence = process.env.TELEGRAM_UI_EVIDENCE || join(root, '.verify/telegram-login-session-20260927');
 const run = process.argv.includes('--red') ? 'red' : 'green';
 const report = { phase: run, checks: [], status: 'FAIL', cleanup: {} };
 const canaries = [String(randomInt(10000000, 99999999)), randomBytes(12).toString('hex'), randomBytes(10).toString('hex')];
 const [apiId, apiHash] = canaries;
-const phone = '+1555' + String(randomInt(1000000, 9999999));
+// The final digit selects the mock scenario: reserve 2 for 2FA and 9 for network failure.
+const phone = '+1555' + String(randomInt(100000, 999999)) + '1';
 const phone2fa = phone.slice(0, -1) + '2';
 const phoneNet = phone.slice(0, -1) + '9';
 const goodCode = '111111';
@@ -84,6 +85,7 @@ try {
         // start
         if (body.action === 'start' && (keys === 'action,phone' || keys === 'action,phone,restart')) {
           if (!creds) return await send(err('configuration', 409));
+          if (fault.startsWith('start-')) return await send({ __status: 400, ok: false, code: 'unknown', error: phone, diagnostic: fault === 'start-valid' ? 'TG1-REQUEST-0123456789AB' : phone });
           const digits = String(body.phone).replace(/[\s\-.()]/g, '');
           if (!/^\+?[0-9]{7,15}$/.test(digits)) return await send(err('invalid_phone', 400));
           if (String(body.phone).endsWith('9')) return await send(err('network', 503));
@@ -129,6 +131,7 @@ try {
       }
       if (url.pathname === '/api/library' && request.method() === 'GET') return await send({ posts: [], deletedUrls: [], legacyRows: [] });
       if (url.pathname === '/api/stats' && request.method() === 'GET') return await send({ total: 0, categories: {} });
+      if (url.pathname === '/api/ai/providers' && request.method() === 'GET') return await send({ ok: true, providers: [], ready: [], available: false });
       if (url.pathname.startsWith('/api/')) { observations.unexpectedApi++; return await route.abort(); }
       return await route.continue();
     } catch { await route.abort().catch(() => {}); }
@@ -182,6 +185,19 @@ try {
   await alert.filter({ hasText: /international form/i }).waitFor();
   check(observations.protocolErrors === beforeStart, 'invalid phone never submitted');
   await noSecret('phone');
+  pass(stage);
+
+  stage = 'unexpected start shows only validated non-sensitive identifier';
+  for (const value of ['start-valid', 'start-hostile']) {
+    fault = value;
+    await panel.getByLabel('Telegram phone number', { exact: true }).fill(phone);
+    await button('Continue').click();
+    await alert.filter({ hasText: /Telegram login failed/ }).waitFor();
+    check((await alert.innerText()).includes('Diagnostic ID: TG1-REQUEST-0123456789AB') === (value === 'start-valid'), 'only strict-format identifier displayed');
+    await noSecret('start-diagnostic');
+    check(session.exists === false && login === null, 'failed start never claims a session');
+  }
+  fault = '';
   pass(stage);
 
   stage = 'valid phone starts login and requests code';
@@ -329,7 +345,7 @@ try {
   if (context) { await context.close(); report.cleanup.contextClosed = true; }
   if (browser) { await browser.close(); report.cleanup.browserClosed = true; }
   if (vite) { await vite.close(); report.cleanup.viteClosed = true; }
-  if (cache) { await rm(cache, { recursive: true, force: true }); report.cleanup.temporaryCacheRemoved = true; }
+  if (cache) { assert.ok(resolve(cache).startsWith(resolve(tmpdir()) + sep + 'telegram-account-ui-'), 'cache cleanup must stay inside owned temp directory'); await rm(cache, { recursive: true, force: true }); report.cleanup.temporaryCacheRemoved = true; }
   report.observations = observations;
   await writeFile(join(evidence, `telegram-account-ui-${run}.json`), JSON.stringify(report, null, 2) + '\n');
 }

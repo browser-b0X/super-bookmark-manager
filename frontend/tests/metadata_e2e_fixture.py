@@ -130,6 +130,8 @@ def isolate_routes():
         return jsonify(ok=True, checked=1, limit=200, malformed=0, export={"messages": [
             {"id": 81004, "type": "message", "date": "2026-09-24T12:00:00",
              "text": "Synthetic refresh caption " + BASE_URL + "/refresh"}]})
+    if request.path == "/api/ai/providers" and request.method == "GET":
+        return jsonify(ok=True, providers=[], ready=[], available=False)
     allowed = {"/api/library", "/api/enrich", "/api/stats", "/api/backup/export", "/api/backup/preview"}
     if FIREFOX:
         allowed.add("/api/import/firefox")

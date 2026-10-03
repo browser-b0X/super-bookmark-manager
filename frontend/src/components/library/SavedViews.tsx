@@ -21,7 +21,7 @@ export default function SavedViews({ criteria, onApply }: { criteria: LibraryFil
     <button ref={trigger} className="btn" onClick={() => { setMessage(""); setConfirm(null); dialog.current?.showModal(); }}>Saved Views</button>
     <dialog ref={dialog} aria-labelledby="saved-views-title" onClose={() => trigger.current?.focus()}
       className="m-auto max-h-[85vh] w-[min(480px,calc(100vw-24px))] overflow-y-auto rounded-xl border p-5 text-[var(--text)] backdrop:bg-black/50"
-      style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+      style={{ background: "var(--surface-solid)", borderColor: "var(--border)" }}>
       <div className="flex items-center justify-between gap-3">
         <h2 id="saved-views-title" className="font-semibold">Saved Views</h2>
         <button className="btn" onClick={close}>Close</button>

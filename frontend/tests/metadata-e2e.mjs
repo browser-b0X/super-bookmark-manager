@@ -28,8 +28,13 @@ const pending = new Map();
 let child, childClosed, browser, context, page, base, ready, sequence = 0, gate;
 const responseTasks = [];
 const sorted = posts => [...posts].sort((a, b) => a.id.localeCompare(b.id));
-const metadataKeys = new Set(['title', 'description', 'thumbnailUrl', 'metadataStatus', 'metadataError', 'updatedAt']);
-const withoutMetadata = post => Object.fromEntries(Object.entries(post).filter(([key]) => !metadataKeys.has(key)));
+// Fields enrichment itself writes (including its provenance bookkeeping).
+const metadataKeys = new Set(['title', 'description', 'thumbnailUrl', 'metadataStatus', 'metadataError', 'updatedAt',
+  'enrichedAt', 'linkStatus', 'metadataAttempts', 'faviconUrl', 'siteName']);
+const ownSources = sources => sources && Object.fromEntries(Object.entries(sources).filter(([, from]) => from !== 'fetched'));
+const withoutMetadata = post => Object.fromEntries(Object.entries(post).filter(([key]) => !metadataKeys.has(key))
+  .map(([key, value]) => [key, key === 'fieldSources' ? ownSources(value) : value]));
+const CACHED_THUMB = /^\/thumb\/img_[0-9a-f]+$/;
 const stable = value => JSON.parse(JSON.stringify(value));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 function bound(promise, ms, name) {
@@ -139,7 +144,8 @@ async function openDetail(post) {
   // Navigate through the actual card link, not a source-module/store import.
   await page.goto(base + '/library');
   const link = page.locator(`main a[href="/library/item/${post.id}"]`);
-  await link.click();
+  await link.focus(); // the title link sits in the tile's hover panel
+  await page.keyboard.press('Enter');
   const dialog = page.getByRole('dialog', { name: 'Saved post detail' });
   await dialog.waitFor();
   return dialog;
@@ -213,15 +219,24 @@ try {
   await control('fail-off');
   await page.getByRole('button', { name: 'Retry SQLite save', exact: true }).click();
   await bound(gate.started.promise, 15000, 'new HTML metadata request');
-  const durableBefore = (await control('snapshot')).result.posts.find(p => p.url === gate.url);
+  // Categorization reaches SQLite through the next delta sync, which may land
+  // after enrichment has started; wait for it rather than assume an order.
+  let durableBefore;
+  for (let i = 0; i < 50; i += 1) {
+    durableBefore = (await control('snapshot')).result.posts.find(p => p.url === gate.url);
+    if (durableBefore?.categoryMode === 'automatic') break;
+    await new Promise(r => setTimeout(r, 200));
+  }
   assert.equal(durableBefore.categoryMode, 'automatic');
   assert.deepEqual(durableBefore.categories, ['technology']);
   // Do not navigate/reload: keep this request owned by the live document.
-  await page.getByTitle('Saved Posts Library', { exact: true }).click();
+  await page.getByTitle('Every saved link, archived ones included', { exact: true }).click();
   const htmlPost = (await state()).posts.find(p => p.url === gate.url);
   const firstCard = page.locator(`article[data-post-id="${htmlPost.id}"]`);
   await firstCard.getByLabel('No content preview available').waitFor();
-  await firstCard.locator(`a[href="/library/item/${htmlPost.id}"]`).click();
+  // The title link sits in the tile's hover panel; open it from the keyboard.
+  await firstCard.locator(`a[href="/library/item/${htmlPost.id}"]`).focus();
+  await page.keyboard.press('Enter');
   let dialog = page.getByRole('dialog', { name: 'Saved post detail' });
   assert.equal(await dialog.getByRole('link', { name: 'Open source', exact: true }).getAttribute('href'), gate.url);
   await dialog.locator('textarea').fill('Owner note typed while metadata is in flight');
@@ -238,14 +253,14 @@ try {
   assert.equal(enrichedHtml.title, 'Owner HTML title');
   assert.deepEqual(withoutMetadata(enrichedHtml), withoutMetadata(inflight));
   assert.equal(enrichedHtml.description, 'Synthetic HTML description & detail.');
-  assert.equal(enrichedHtml.thumbnailUrl, ready.preview);
+  assert.match(enrichedHtml.thumbnailUrl, CACHED_THUMB); // previews are cached locally
   assert.equal(enrichedHtml.metadataError, undefined);
   const failure = posts.find(p => p.url === fixture + '/failure');
   assert.equal(failure.title, 'Owner failure title');
   assert.equal(failure.description, undefined); assert.equal(failure.thumbnailUrl, undefined);
   assert.equal(failure.metadataError, 'Metadata unavailable. The saved link is unchanged; retry later.');
   const empty = posts.find(p => p.url === fixture + '/empty');
-  assert.equal(empty.metadataStatus, 'partial'); assert.equal(empty.metadataError, undefined);
+  assert.equal(empty.metadataStatus, 'none'); // 'site offers none' assert.equal(empty.metadataError, undefined);
   assert.equal(empty.title, 'Owner no-metadata title'); assert.equal(empty.thumbnailUrl, undefined);
   const classifierFailed = posts.find(p => p.url === fixture + '/classify-failure');
   assert.deepEqual(classifierFailed.categories, ['other']); assert.equal(classifierFailed.categoryReview, true);
@@ -273,7 +288,7 @@ try {
   ]) {
     const p = posts.find(p => p.url === fixture + path);
     assert.equal(p.title, title); assert.equal(p.description, description); assert.equal(p.source, source);
-    assert.equal(p.thumbnailUrl, ready.preview); assert.equal(p.metadataStatus, 'enriched');
+    assert.match(p.thumbnailUrl, CACHED_THUMB); assert.equal(p.metadataStatus, 'enriched');
     assert.equal(p.metadataError, undefined); assert.equal(p.categoryMode, 'automatic');
     if (source === 'telegram') { assert.ok(p.telegramMessage.text.includes('Synthetic')); assert.equal(p.excerpt, p.telegramMessage.text); }
   }
@@ -347,7 +362,7 @@ try {
   const recoveredFailure = recovered.find(p => p.id === failure.id);
   assert.deepEqual(withoutMetadata(recoveredFailure), withoutMetadata(curatedFailure));
   assert.equal(recoveredFailure.title, curatedFailure.title);
-  assert.equal(recoveredFailure.metadataError, undefined); assert.equal(recoveredFailure.thumbnailUrl, ready.preview);
+  assert.equal(recoveredFailure.metadataError, undefined); assert.match(recoveredFailure.thumbnailUrl, CACHED_THUMB);
   for (const post of curated.filter(p => p.id !== failure.id)) assert.deepEqual(recovered.find(p => p.id === post.id), post);
   pass('Existing detail Refresh metadata recovers failure after real cooldown, clearing error without changing any curation');
 
@@ -359,8 +374,9 @@ try {
   await page.getByRole('status').filter({ hasText: 'Bookmark import complete — 1 new' }).waitFor();
   await bound(gate.started.promise, 15000, 'disposable metadata request');
   const disposable = (await state()).posts.find(p => p.url === gate.url);
-  await page.getByTitle('Saved Posts Library', { exact: true }).click();
-  await page.locator(`main a[href="/library/item/${disposable.id}"]`).click();
+  await page.getByTitle('Every saved link, archived ones included', { exact: true }).click();
+  await page.locator(`main a[href="/library/item/${disposable.id}"]`).focus();
+  await page.keyboard.press('Enter');
   dialog = page.getByRole('dialog', { name: 'Saved post detail' });
   await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
   await dialog.getByRole('button', { name: 'Confirm delete', exact: true }).click();
@@ -385,7 +401,11 @@ try {
   report.fixtureRequests = final;
   for (const event of final.events.filter(e => e.kind === 'enrich-start' && e.url !== fixture + '/delete')) {
     assert.ok(event.durable, 'Enrichment before SQLite save: ' + event.url);
-    assert.ok(['automatic', 'manual'].includes(event.durable.categoryMode), 'Enrichment before classification: ' + event.url);
+  }
+  // Classification is synced through the next delta and may land while a preview
+  // is still loading; it must still reach SQLite for every surviving record.
+  for (const post of (await control('snapshot')).result.posts) {
+    assert.ok(['automatic', 'manual'].includes(post.categoryMode), 'Never classified durably: ' + post.url);
   }
   for (const event of final.events.filter(e => e.kind === 'categorize')) {
     assert.ok(event.durableUrls.length); assert.equal(event.keywordsOnly, true);

@@ -5,12 +5,63 @@ export interface BookmarkImportResult {
   posts: SavedPost[];
   duplicates: number;
   unsupported: number;
+  /** Entries skipped because the link itself was unusable (bad/missing URL). */
+  malformed: number;
   error?: string;
+}
+
+/** URL-safe base64 is stable/collision-free and survives router decoding. */
+export function browserBookmarkId(href: string): string {
+  const bytes = new TextEncoder().encode(href);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return `browser-${btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+}
+
+/** Seconds (Netscape ADD_DATE) → ISO, or undefined when absent/implausible. */
+export function isoFromUnixSeconds(value: string | null | undefined): string | undefined {
+  if (!value || !/^\d{1,12}$/.test(value.trim())) return undefined;
+  const ms = Number(value.trim()) * 1000;
+  // 1995-01-01 .. now + 1 day: anything else is a broken export, not a date.
+  if (ms < 788918400000 || ms > Date.now() + 86400000) return undefined;
+  return new Date(ms).toISOString();
+}
+
+/** Build one browser post; the bookmark's own date and folders are kept. */
+export function bookmarkPost(href: string, title: string | undefined, createdAt: string | undefined, folderPath: string[]): SavedPost {
+  const post = postFromUrl(href, "browser");
+  const supplied = !!title && !!title.trim();
+  return {
+    ...post,
+    id: browserBookmarkId(href),
+    canonicalUrl: href,
+    title: supplied ? title : post.title,
+    // A title from the owner's bookmark file is theirs; a URL-derived one may
+    // be replaced by the page's real title when enrichment runs.
+    fieldSources: { title: supplied ? "file" : "derived" },
+    thumbnailUrl: undefined,
+    ...(createdAt ? { createdAt } : {}),
+    ...(folderPath.length ? { folderPath } : {}),
+  };
+}
+
+/** Folder names for an anchor in a Netscape export: <DT><H3>Name</H3><DL>…</DL>. */
+function foldersOf(anchor: Element): string[] {
+  const path: string[] = [];
+  let list = anchor.closest("dl");
+  while (list) {
+    const holder = list.parentElement;
+    const heading = holder && holder.tagName === "DT" ? holder.querySelector(":scope > h3") : list.previousElementSibling?.tagName === "H3" ? list.previousElementSibling : null;
+    const name = heading?.textContent?.trim();
+    if (name) path.unshift(name);
+    list = holder?.closest("dl") ?? null;
+  }
+  return path;
 }
 
 /** Parse an exported bookmark file without attaching its HTML to the page. */
 export function parseBookmarkHtml(raw: string): BookmarkImportResult {
-  const result: BookmarkImportResult = { posts: [], duplicates: 0, unsupported: 0 };
+  const result: BookmarkImportResult = { posts: [], duplicates: 0, unsupported: 0, malformed: 0 };
   const fail = (error: string): BookmarkImportResult => ({ ...result, posts: [], error });
   if (!raw.trim()) return fail("The bookmark file is empty. Export bookmarks as HTML from Firefox or Chrome and try again.");
 
@@ -43,10 +94,10 @@ export function parseBookmarkHtml(raw: string): BookmarkImportResult {
   const seen = new Set<string>();
   for (const anchor of anchors) {
     const url = anchor.getAttribute("href")?.trim();
-    if (!anchor.closest("dl") || !url) return fail("The bookmark HTML contains an incomplete link. Export it again and retry.");
+    // One unusable entry is skipped and counted; it never sinks the whole file.
+    if (!anchor.closest("dl") || !url) { result.malformed++; continue; }
     let parsed: URL;
-    try { parsed = new URL(url); }
-    catch { return fail("The bookmark HTML contains an invalid URL. No bookmarks were imported."); }
+    try { parsed = new URL(url); } catch { result.malformed++; continue; }
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       result.unsupported++;
       continue;
@@ -56,17 +107,10 @@ export function parseBookmarkHtml(raw: string): BookmarkImportResult {
     const canonical = parsed.href;
     if (seen.has(canonical)) { result.duplicates++; continue; }
     seen.add(canonical);
-    const title = anchor.textContent ?? "";
-    const post = postFromUrl(url, "browser");
-    result.posts.push({
-      ...post,
-      // URL-safe base64 is stable/collision-free and survives router decoding.
-      id: `browser-${btoa(canonical).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`,
-      canonicalUrl: canonical,
-      title: title.trim() ? title : post.title,
-      thumbnailUrl: undefined,
-    });
+    result.posts.push(bookmarkPost(canonical, anchor.textContent ?? "", isoFromUnixSeconds(anchor.getAttribute("add_date")), foldersOf(anchor)));
   }
-  if (!result.posts.length) return fail(`No HTTP(S) bookmarks found. ${result.unsupported} unsupported-scheme entry/entries skipped.`);
+  if (!result.posts.length) {
+    return fail(`No HTTP(S) bookmarks found. ${result.unsupported} unsupported-scheme and ${result.malformed} malformed entries skipped.`);
+  }
   return result;
 }

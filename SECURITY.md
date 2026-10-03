@@ -11,7 +11,7 @@ response-time guarantee is currently established.
 
 Do not publicly attach:
 
-- `config.json`, `.env` or other API credential files;
+- `config.json`, `ai.json`, `.env` or other API credential files;
 - Telegram `.session` files or their database sidecars;
 - personal SQLite databases or backup exports;
 - screenshots containing private saved content;
@@ -23,11 +23,12 @@ private URLs, notes and saved content even though they exclude credentials/sessi
 ## Security model
 
 Super Bookmark Manager is a local-first, single-user application served on loopback.
-It has no central project account. The Windows package retains
-`%LOCALAPPDATA%\SavedPostsDashboard\` for compatibility, including local SQLite,
-configuration and Telegram session storage. No data migration is performed.
+It has no central project account. The Windows package (v0.2.0) keeps local SQLite,
+the thumbnail cache, configuration, AI keys and the Telegram session in
+`%LOCALAPPDATA%\SuperBookmarkManager\`. Data from v0.1.0 in
+`%LOCALAPPDATA%\SavedPostsDashboard\` is never read or migrated automatically.
 
-Telegram API ID/Hash and sessions stay local and use Windows user-local filesystem
+Telegram API ID/Hash, AI provider keys and sessions stay local and use Windows user-local filesystem
 permissions. This is not an encrypted credential vault or a defense against a
 compromised Windows account. Verification codes and 2FA passwords are used for the
 active login flow and are not persisted. Sessions are excluded from library backups,
@@ -35,8 +36,10 @@ installer payloads and repository source. No shared project Telegram credentials
 
 Telegram network operations are explicit: connect, test authorization, logout and
 refresh. Metadata enrichment for newly imported links contacts saved-link hosts and
-permitted preview resources as part of normal behavior. Configured providers may
-also receive link content; local keyword fallback does not require one. Browser
+permitted preview resources as part of normal behavior. AI providers are contacted
+only after the owner adds a key; they receive the title, URL and text of the links
+being tidied. Settings shows only the last four characters of a saved key, and keys
+are scrubbed from provider error messages. Local keyword categorization needs no provider. Browser
 imports read selected file copies, not live profile discovery. Do not expose the local
 server to an untrusted network or treat it as a multi-user hosted service.
 

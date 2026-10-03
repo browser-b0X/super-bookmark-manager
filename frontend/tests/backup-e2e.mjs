@@ -48,12 +48,12 @@ try{
   const deleted={...fixture[0],id:'backup-deleted',url:'https://backup.example.invalid/deleted',canonicalUrl:'https://backup.example.invalid/deleted'};
   assert.equal((await post('/api/library',{posts:[...fixture,deleted],deletedUrls:[]})).status,200);
   assert.equal((await post('/api/library',{posts:[],deletedUrls:[deleted.url]})).status,200);
-  await page.reload();const before=await snapshot('source17 + retained-ID tombstone',17);assert.deepEqual(before,sorted(fixture));
+  await page.reload();const before=await snapshot('source17 + tombstone',17);assert.deepEqual(before,sorted(fixture));
   await page.goto(base+'/library');await saved(17);
   await page.getByPlaceholder('Search… ( / )').fill('native.example.invalid/programming');await page.waitForFunction(()=>document.querySelectorAll('main article').length===2);
   await page.getByRole('button',{name:'Saved Views',exact:true}).click();const vd=page.getByRole('dialog',{name:'Saved Views',exact:true});await vd.getByLabel('View name',{exact:true}).fill('Backup dynamic native');await vd.getByRole('button',{name:'Save current',exact:true}).click();await vd.getByRole('status').filter({hasText:'View saved.'}).waitFor();await vd.getByRole('button',{name:'Close',exact:true}).click();
   const views=(await state()).views;await page.goto(base+'/library/settings');await saved(17);
-  const sourceBefore=await control('backup-snapshot');assert.deepEqual(sourceBefore.result.tombstones,[{url:deleted.url,id:deleted.id}]);
+  const sourceBefore=await control('backup-snapshot');assert.deepEqual(sourceBefore.result.tombstones,[{url:deleted.url,id:null}]); // tombstones no longer reserve an ID (audit B1)
   await page.getByRole('heading',{name:'Backup & Restore'}).scrollIntoViewIfNeeded();await shot('b6-backup-settings.png');
   const exportButton=page.getByRole('button',{name:'Export backup',exact:true});await tabTo(exportButton);
   const downloadWait=page.waitForEvent('download');await page.keyboard.press('Enter');const download=await downloadWait;const file=join(output,download.suggestedFilename());await download.saveAs(file);
@@ -108,17 +108,19 @@ try{
   await page.getByLabel('Import Telegram JSON').setInputFiles(join(fixtures,'telegram-saved-messages.json'));await page.getByRole('status',{name:'Telegram import result'}).filter({hasText:'0 new'}).waitFor();
   await page.getByLabel('Select copied Chromium Bookmarks file').setInputFiles(join(fixtures,'chromium-bookmarks.json'));await page.getByRole('status',{name:'Chromium import result'}).filter({hasText:'0 new'}).waitFor();
   await page.getByRole('button',{name:'Refresh Telegram Saved Messages',exact:true}).click();await page.getByRole('status',{name:'Telegram refresh result'}).filter({hasText:'0 new links'}).waitFor();
-  assert.deepEqual(await snapshot('all overlap reimports17',17),before);
+  // Re-importing a bookmark file may fill in a folder path the saved link lacked (audit phase 4); nothing else changes.
+  const withoutNewFolders=(posts)=>posts.map(p=>{const b=before.find(q=>q.id===p.id);if(b&&!b.folderPath&&p.folderPath){const {folderPath,...rest}=p;return rest;}return p;});
+  assert.deepEqual(withoutNewFolders(await snapshot('all overlap reimports17',17)),before);
   const enrichRequests=()=>report.requests.filter(r=>new URL(r.url).pathname==='/api/enrich');
   assert.equal(enrichRequests().length,0,'Restores and overlapping imports must not request metadata');
   const html=`<!DOCTYPE NETSCAPE-Bookmark-file-1><DL><A HREF="${deleted.url}">Deleted must stay deleted</A><A HREF="https://backup.example.invalid/new">Programming new only</A></DL>`;
   await page.getByLabel('Import bookmarks HTML').setInputFiles({name:'overlap.html',mimeType:'text/html',buffer:Buffer.from(html)});await page.getByRole('status').filter({hasText:'Bookmark import complete — 1 new'}).waitFor();
   await page.waitForFunction(()=>JSON.parse(localStorage.getItem('library-store-v1')).state.posts.find(p=>p.url==='https://backup.example.invalid/new')?.categoryMode==='automatic');
   await page.waitForFunction(()=>JSON.parse(localStorage.getItem('library-store-v1')).state.posts.find(p=>p.url==='https://backup.example.invalid/new')?.metadataStatus==='failed');
-  const after=await snapshot('new only18 tombstone preserved',18);for(const p of before)assert.deepEqual(after.find(q=>q.id===p.id),p);assert.ok(!after.some(p=>p.url===deleted.url));
+  const after=withoutNewFolders(await snapshot('new only18 tombstone preserved',18));for(const p of before)assert.deepEqual(after.find(q=>q.id===p.id),p);assert.ok(!after.some(p=>p.url===deleted.url));
   assert.deepEqual(enrichRequests(),[{url:base+'/api/enrich',method:'POST'}],'Only the genuinely new import requests metadata once');
   pass('restored HTML/Telegram/B2/B1 overlaps add0 and preserve full17; tombstone cannot resurrect; only genuine new item adds1→18');
-  await page.goto(base+'/library');await saved(18);await page.getByPlaceholder('Search… ( / )').fill('native.example.invalid/cooking');await page.waitForFunction(()=>document.querySelectorAll('main article').length===1);const unicode=before.find(p=>p.url==='https://native.example.invalid/cooking');await page.locator(`main a[href="/library/item/${unicode.id}"]`).click();await page.getByRole('dialog',{name:'Saved post detail'}).waitFor();assert.equal(await page.getByRole('dialog',{name:'Saved post detail'}).locator('textarea').inputValue(),unicode.userNotes);await page.reload();await page.getByRole('dialog',{name:'Saved post detail'}).waitFor();await page.goto(base+'/');await saved(18);await page.locator('.catchup-card').first().waitFor();
+  await page.goto(base+'/library');await saved(18);await page.getByPlaceholder('Search… ( / )').fill('native.example.invalid/cooking');await page.waitForFunction(()=>document.querySelectorAll('main article').length===1);const unicode=before.find(p=>p.url==='https://native.example.invalid/cooking');await page.locator(`main a[href="/library/item/${unicode.id}"]`).click();await page.getByRole('dialog',{name:'Saved post detail'}).waitFor();assert.equal(await page.getByRole('dialog',{name:'Saved post detail'}).locator('textarea').inputValue(),unicode.userNotes);await page.reload();await page.getByRole('dialog',{name:'Saved post detail'}).waitFor();await page.goto(base+'/');await saved(18);await page.locator('.rail-card').first().waitFor();
   await page.goto(base+'/library/settings');await saved(18);
   for(const width of [1365,768,390,320]){await page.setViewportSize({width,height:900});await page.getByRole('button',{name:'Restore backup',exact:true}).scrollIntoViewIfNeeded();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);await shot(`b6-settings-${width}.png`);}
   assert.deepEqual(report.errors,[]);assert.deepEqual(report.denied,[]);assert.deepEqual((await control('snapshot')).result.blocked,[]);
