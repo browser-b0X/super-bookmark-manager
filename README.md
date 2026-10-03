@@ -52,12 +52,6 @@ older copy that is still running, so you always get the version you installed.
 The installer is **unsigned** and may trigger Windows SmartScreen or antivirus
 warnings. Check its SHA-256 against the published checksum before running it.
 
-### Upgrading from v0.1.0
-
-v0.2.0 keeps its data in `%LOCALAPPDATA%\SuperBookmarkManager\`. Your v0.1.0 library in
-`%LOCALAPPDATA%\SavedPostsDashboard\` is left untouched and is not imported
-automatically. To bring it across, export a backup from v0.1.0's Settings before
-upgrading, then restore that file in v0.2.0 under **Settings → Backup**.
 
 ### WinGet (pending availability)
 
