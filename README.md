@@ -9,6 +9,12 @@ Messages and WhatsApp chats — on Windows.**
 [Download](https://github.com/browser-b0X/super-bookmark-manager/releases/latest) ·
 [Report a bug or suggest an idea](https://github.com/browser-b0X/super-bookmark-manager/issues)
 
+![The feed in dark mode: new links drift across the top for keep, later or archive; the picture-first library sits below](docs/screenshots/feed-dark.webp)
+
+![The library in light mode: picture tiles, with a hover panel showing the summary, shelf, tags and quick actions](docs/screenshots/library-light.webp)
+
+<sub>Screenshots show sample links, not real user data.</sub>
+
 ## Features
 
 - **One feed.** New, unsorted links drift across the top of the page; keep, save

@@ -1,6 +1,6 @@
 # Super Bookmark Manager — public source manifest
 
-Exact curated source set for the public repository: **207 files** (v0.2.0).
+Exact curated source set for the public repository: **209 files** (v0.2.0).
 Only these files may enter the public branch. Listing a file here is not by itself
 permission to commit, push or publish.
 
@@ -35,6 +35,8 @@ documented Python/Playwright overrides. See BUILDING.md.
 - `check_reuse_only.py`
 - `config.py`
 - `consolidate_categories.py`
+- `docs/screenshots/feed-dark.webp`
+- `docs/screenshots/library-light.webp`
 - `fetcher.py`
 - `firefox_import.py`
 - `frontend/index.html`
