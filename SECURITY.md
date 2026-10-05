@@ -2,10 +2,21 @@
 
 ## Reporting
 
-Prefer GitHub private vulnerability reporting when it is available on this repository.
-Otherwise contact the repository owner through a private channel you already know.
-Do not post sensitive details in a public issue. No security-report email address or
-response-time guarantee is currently established.
+Report security problems privately through GitHub:
+[Report a vulnerability](https://github.com/browser-b0X/super-bookmark-manager/security/advisories/new)
+(the **Security** tab → **Report a vulnerability**). Do not post sensitive details in a
+public issue. No security-report email address or response-time guarantee is currently
+established.
+
+## Official sources
+
+Get Super Bookmark Manager only from
+[github.com/browser-b0X/super-bookmark-manager](https://github.com/browser-b0X/super-bookmark-manager)
+(Releases) or its website,
+[browser-b0x.github.io/super-bookmark-manager](https://browser-b0x.github.io/super-bookmark-manager/).
+Check the installer's SHA-256 against the checksum published with the release. Treat a
+download from anywhere else as untrusted, and never give an unofficial copy your Telegram
+or AI keys. If you find one, please report it.
 
 ## Sensitive files
 

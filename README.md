@@ -1,13 +1,16 @@
-# Super Bookmark Manager
-
-<img src="frontend/public/brand-logo.svg" alt="Super Bookmark Manager logo" width="96" height="96" />
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-header-dark.png">
+    <img src="docs/assets/readme-header-light.png" alt="Super Bookmark Manager — Saved for a reason. Found when it matters." width="840">
+  </picture>
+</h1>
 
 **A local-first feed for the links you save — browser bookmarks, Telegram Saved
 Messages and WhatsApp chats — on Windows.**
 
 [Website](https://browser-b0x.github.io/super-bookmark-manager/) ·
 [Download](https://github.com/browser-b0X/super-bookmark-manager/releases/latest) ·
-[Report a bug or suggest an idea](https://github.com/browser-b0X/super-bookmark-manager/issues)
+[Report a bug or suggest an idea](https://github.com/browser-b0X/super-bookmark-manager/issues/new/choose)
 
 ![The feed in dark mode: new links drift across the top for keep, later or archive; the picture-first library sits below](docs/screenshots/feed-dark.webp)
 

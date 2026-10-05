@@ -1,6 +1,6 @@
 # Super Bookmark Manager — public source manifest
 
-Exact curated source set for the public repository: **209 files** (v0.2.0).
+Exact curated source set for the public repository: **217 files** (v0.2.0).
 Only these files may enter the public branch. Listing a file here is not by itself
 permission to commit, push or publish.
 
@@ -17,6 +17,9 @@ documented Python/Playwright overrides. See BUILDING.md.
 
 ## Exact files
 
+- `.github/ISSUE_TEMPLATE/bug_report.yml`
+- `.github/ISSUE_TEMPLATE/config.yml`
+- `.github/ISSUE_TEMPLATE/feature_request.yml`
 - `.gitignore`
 - `BUILDING.md`
 - `LICENSE`
@@ -35,6 +38,12 @@ documented Python/Playwright overrides. See BUILDING.md.
 - `check_reuse_only.py`
 - `config.py`
 - `consolidate_categories.py`
+- `docs/.nojekyll`
+- `docs/assets/favicon.svg`
+- `docs/assets/readme-header-dark.png`
+- `docs/assets/readme-header-light.png`
+- `docs/assets/social-preview.png`
+- `docs/index.html`
 - `docs/screenshots/feed-dark.webp`
 - `docs/screenshots/library-light.webp`
 - `fetcher.py`
@@ -182,7 +191,6 @@ documented Python/Playwright overrides. See BUILDING.md.
 - `frontend/tsconfig.json`
 - `frontend/tsconfig.node.json`
 - `frontend/vite.config.ts`
-- `index.html`
 - `library_backup.py`
 - `metadata_fetcher.py`
 - `packaging/BUILD_AND_RUN.md`

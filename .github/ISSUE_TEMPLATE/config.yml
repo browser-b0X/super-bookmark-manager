@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and discussion
+    url: https://github.com/browser-b0X/super-bookmark-manager/discussions
+    about: Ask how something works or share how you use Super Bookmark Manager.
+  - name: Report a security problem privately
+    url: https://github.com/browser-b0X/super-bookmark-manager/security/advisories/new
+    about: Please don't open a public issue for security problems.

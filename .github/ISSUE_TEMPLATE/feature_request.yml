@@ -1,0 +1,20 @@
+name: Idea or suggestion
+description: Suggest a feature or an improvement.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would make saving or finding links easier?
+      description: The situation or friction you ran into.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: How you imagine it working. Sketches and examples are welcome (made-up links, please).
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else

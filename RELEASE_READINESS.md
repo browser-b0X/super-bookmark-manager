@@ -6,7 +6,7 @@
 
 The `public-release` branch is built on top of the published `main` (no private
 history) and contains exactly the files listed in PUBLIC_SOURCE_MANIFEST.md. It
-replaces the root `index.html` splash page, removes the retired LiteLLM proxy files
+replaces the splash page (now `docs/index.html`), removes the retired LiteLLM proxy files
 and the v0.1.0 Catch Up page, and updates README/PRODUCT/SECURITY/BUILDING for the
 feed, WhatsApp import, optional AI providers and the new data directory.
 
@@ -40,7 +40,7 @@ Not verifiable here, or known before this release:
    (outputs `dist-installer-v0.2.0/`).
 2. Install on a clean Windows user (or VM); check first launch, Settings → AI & previews
    (Test with a real key), an import, Quit, reinstall and uninstall.
-3. Push `public-release` and merge it into `main` (GitHub Pages serves `index.html`).
+3. Push `public-release` and merge it into `main` (GitHub Pages serves the `docs/` folder).
 4. Create release `v0.2.0` with `SuperBookmarkManager-Setup.exe` and its `.sha256`,
    using RELEASE_NOTES_DRAFT.md.
 5. Optional: fill the WinGet hash and submit (packaging/winget/README.md).

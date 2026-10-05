@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in Super Bookmark Manager doesn't work as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please use made-up links, and never paste API keys, Telegram codes,
+        `config.json`, `ai.json`, `.session` files, your library database or a backup export.
+        For security problems use private reporting instead (see SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Settings → Sources
+        2. Import ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown in Settings → Application ("Running build"), or the release you installed.
+      placeholder: e.g. v0.2.0, build 10/3/2026 3:53 PM
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows 11, Windows 10, Other]
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser
+      placeholder: e.g. Chrome 140, Edge, Firefox 143, Brave
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options: ["Installing, starting or quitting", "The feed or library", "Importing bookmarks", "Telegram", "WhatsApp import", "Link previews", "AI providers or Tidy up with AI", "Search, shelves or tags", "Backup and restore", "Other"]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error messages
+      description: Copy the exact wording. Remove anything personal first.
+      render: text
