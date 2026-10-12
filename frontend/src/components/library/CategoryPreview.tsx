@@ -2,7 +2,8 @@ import type { CSSProperties } from "react";
 import { Bookmark, Briefcase, Clapperboard, Compass, Cpu, HeartPulse, MessagesSquare, Palette, Sparkles, Utensils, type LucideIcon } from "lucide-react";
 import type { SavedPost } from "../../types";
 import { useLibrary } from "../../store/library";
-import SocialCard, { hasWebCardText, platformOf, SOCIAL_PLATFORMS, WebCard } from "./SocialCard";
+import SocialCard, { hasWebCardText, platformOf, socialText, SOCIAL_PLATFORMS, WebCard } from "./SocialCard";
+import PlatformArt, { brandOf } from "./PlatformArt";
 
 const ART: Record<string, { label: string; icon: LucideIcon }> = {
   "food-drink": { label: "Food & drink", icon: Utensils },
@@ -26,7 +27,13 @@ export default function CategoryPreview({ post, caption: allowCaption = true }: 
   const Icon = art?.icon || Bookmark;
   const label = art?.label || (name === "uncategorized" ? "Uncategorized" : name === "other" ? "Other links" : name.replace(/[-_]/g, " "));
   const color = category?.color && /^#(?:[\da-f]{3}|[\da-f]{6})$/i.test(category.color) ? category.color : "#8f8f9d";
-  // Catch Up already prints the caption beside its artwork.
+  // Social and messaging links: the post itself when it has words to show, otherwise
+  // (and in small spots, where Catch Up prints the caption beside it) the site's artwork.
+  const brand = brandOf(post);
+  if (brand) {
+    if (allowCaption && socialText(post)) return <SocialCard post={post} color={color} brand={brand} />;
+    return <PlatformArt post={post} brand={brand} compact={!allowCaption} />;
+  }
   if (allowCaption && SOCIAL_PLATFORMS.has(platformOf(post))) return <SocialCard post={post} color={color} />;
   if (allowCaption) {
     const card = <WebCard post={post} color={color} />;

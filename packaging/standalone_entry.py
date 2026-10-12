@@ -42,13 +42,13 @@ def _quiet_streams():
 
 
 def _notify(message):
-    ctypes.windll.user32.MessageBoxW(None, message, "Super Bookmark Manager", 0x10)
+    ctypes.windll.user32.MessageBoxW(None, message, "SuperBookmarks", 0x10)
 
 
 def _open_browser(origin):
     route = "/library/settings" if "--configure-telegram" in sys.argv[1:] else "/"
     if not webbrowser.open(origin + route):
-        _notify("The browser could not be opened. Open " + origin + " in your browser. Quit is available in Library settings.")
+        _notify("The browser could not be opened. Open " + origin + " in your browser. Quit is in the app's menu (behind the logo) and in Settings.")
 
 
 def _build_id():
@@ -101,18 +101,21 @@ def _reopen(data):
                 # instead of reopening it, or the update never shows.
                 if _replace_running(opener, origin, token):
                     return REPLACED
-                _notify("An older copy of Super Bookmark Manager is still running and did not stop. "
-                        "Quit it from its sidebar power button, then open the app again.")
+                _notify("An older copy of SuperBookmarks is still running and did not stop. "
+                        "Quit it (Quit app in its menu, or its power button in the sidebar), then open the app again.")
                 return 1
         except (OSError, ValueError, KeyError):
             pass
         time.sleep(0.1)
-    _notify("Super Bookmark Manager is already starting or stopping. Please try opening it again shortly.")
+    _notify("SuperBookmarks is already starting or stopping. Please try opening it again shortly.")
     return 1
 
 
 def main():
     _quiet_streams()
+    # Check website certificates with Windows itself, like the browser does.
+    from tls_trust import use_system_trust
+    use_system_trust()
     lock = None
     server = None
     sockets = {}
@@ -139,7 +142,7 @@ def main():
                 except OSError:
                     continue
             else:
-                _notify("The previous copy of Super Bookmark Manager is taking a while to stop. Please open the app again in a moment.")
+                _notify("The previous copy of SuperBookmarks is taking a while to stop. Please open the app again in a moment.")
                 return 1
 
         # Packaged profiles deliberately ignore legacy overrides and inherited
@@ -149,11 +152,12 @@ def main():
         for key in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "LLM_API_KEY", "LLM_BASE_URL",
                     "LLM_MODEL", "LITELLM_PROXY_KEY", "LITELLM_PROXY_URL", "OPENAI_API_KEY",
                     "GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY",
-                    "OPENROUTER_API_KEY", "NVIDIA_API_KEY"):
+                    "OPENROUTER_API_KEY", "NVIDIA_API_KEY", "FREELLMAPI_KEY"):
             os.environ.pop(key, None)
         import config
         import storage
         import metadata_fetcher
+        import archive
         import app as app_module
         from flask import abort, jsonify, request
         from telegram_config import _checked_path, protect_file
@@ -161,6 +165,11 @@ def main():
 
         config.TELEGRAM_SESSION_FILE = str(data / "session.session")
         metadata_fetcher.THUMB_CACHE_DIR = str(data / "thumb_cache")
+        # Saved copies of pages live beside the library, never in the program folder.
+        archive.ARCHIVE_DIR = str(data / "archive")
+        # The optional TikTok video helper (downloaded only on request) too.
+        import video_helper
+        video_helper.HELPER_DIR = str(data / "helpers")
         app_module.SPA_DIR = str(_bundle_dir() / "frontend" / "dist")
         for name in ("saved_posts.db", "session.session", "browser-id.txt", "runtime.json"):
             _checked_path(data / name)
@@ -219,7 +228,9 @@ def main():
         except OSError:
             listener.bind(("127.0.0.1", 0))
         listener.listen(128)
-        server = create_server(app_module.app, sockets=[listener], map=sockets, threads=4,
+        # A Telegram refresh with photos and videos, a zip export or restore can hold a
+        # thread for minutes while the browser fetches previews three at a time.
+        server = create_server(app_module.app, sockets=[listener], map=sockets, threads=12,
                                expose_tracebacks=False, log_socket_errors=False)
         origin = f"http://127.0.0.1:{listener.getsockname()[1]}"
         # Protect the discovery record BEFORE writing the instance capability.
@@ -231,7 +242,7 @@ def main():
             wasyncore.loop(timeout=0.1, count=1, map=sockets)
         return 0
     except Exception:
-        _notify("Super Bookmark Manager could not start. Check that its data folder is writable and the installation is complete. Existing data has not been reset.")
+        _notify("SuperBookmarks could not start. Check that its data folder is writable and the installation is complete. Existing data has not been reset.")
         return 1
     finally:
         if server is not None:

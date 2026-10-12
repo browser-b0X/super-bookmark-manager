@@ -2,6 +2,7 @@
 import contextlib
 import importlib.util
 import io
+import html as _html
 import json
 import os
 from pathlib import Path
@@ -81,6 +82,23 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/enrich", data=" " * 17000, content_type="application/json").status_code, 413)
 
 
+    def test_pictures_missing_on_this_computer_are_reported(self):
+        # A restored backup keeps each link's /thumb/ address but not the picture file.
+        cache = ROOT / "missing-pictures"
+        cache.mkdir(exist_ok=True)
+        (cache / "kept_1").write_bytes(JPEG)
+        (cache / "empty_1").write_bytes(b"")
+        with patch.object(metadata, "THUMB_CACHE_DIR", str(cache)):
+            response = self.client.post("/api/thumbs/missing", json={"codes": ["kept_1", "gone_1", "empty_1"]})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json["missing"], ["gone_1", "empty_1"])
+            for body in ({}, {"codes": "kept_1"}, {"codes": [1]}, {"codes": ["../app.py"]}, {"codes": ["a" * 65]}, []):
+                with self.subTest(body=body):
+                    self.assertEqual(self.client.post("/api/thumbs/missing", json=body).status_code, 400)
+            self.assertEqual(self.client.post("/api/thumbs/missing", json={"codes": []}, headers={"Origin": "http://evil.invalid"}).status_code, 403)
+            self.assertEqual(self.client.post("/api/thumbs/missing", data="codes=kept_1").status_code, 415)
+
+
 class BoundaryTests(unittest.TestCase):
     def setUp(self):
         self.assertIsNotNone(safe, "Missing validated IP-pinned safe_http boundary")
@@ -116,6 +134,22 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(paths[:2], ["/article", "/preview.jpg?a=1&b=2"])
         self.assertTrue(set(paths[2:]) <= {"/favicon.ico"}, paths)
         self.assertEqual(result["status"], "ok")
+
+    def test_markup_built_to_stall_the_parser_finishes_quickly(self):
+        # An unterminated tag at the end of a page made HTMLParser.close()
+        # re-scan quadratically on Python 3.12.10 (the packaged runtime):
+        # 60 KB took 43 s, so this ~1 MB page would hold a server thread for hours.
+        body = '<title>Stall test</title><meta property="og:description" content="Kept">' + "<a " * 330000
+        self.http.html("/stall", body)
+        box = {}
+        worker = threading.Thread(target=lambda: box.setdefault("result", self.fetch("/stall")), daemon=True)
+        started = time.monotonic()
+        worker.start()
+        worker.join(20)
+        self.assertFalse(worker.is_alive(), "metadata fetch still parsing after 20 s")
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(box["result"]["title"], "Stall test")
+        self.assertEqual(box["result"]["summary"], "Kept")
 
     def test_connection_close_complete_bodies(self):
         bodies = [b"<title>Complete</title>", b"", b"<title>Complete</title>" + b" " * 70000]
@@ -189,22 +223,36 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(result["error"], "")
         self.assertEqual(result["title"], "Real caption")
 
-    def test_oversize_declared_streamed_chunked_and_encoding(self):
-        self.http.routes["/length"] = (200, {"Content-Type": "text/html", "Content-Length": str(safe.HTML_LIMIT + 1)}, b"")
-        self.http.routes["/chunked"] = (200, {"Content-Type": "text/html", "Transfer-Encoding": "chunked"}, format(safe.HTML_LIMIT + 1, "x").encode() + b"\r\n" + b"x" * (safe.HTML_LIMIT + 1) + b"\r\n0\r\n\r\n")
+    def test_oversize_pages_are_read_up_to_the_limit_for_their_preview(self):
+        # A preview needs only the start of a page (its <head>). Pages over the limit (a GitHub
+        # repository page, say) used to fail with too_large and got no preview at all.
+        head = b'<html><head><meta property="og:title" content="Big page"></head><body>'
+        big = head + b"x" * (safe.HTML_LIMIT + 1 - len(head))
+        self.http.routes["/length"] = (200, {"Content-Type": "text/html", "Content-Length": str(len(big))}, big)
+        self.http.routes["/chunked"] = (200, {"Content-Type": "text/html", "Transfer-Encoding": "chunked"}, format(len(big), "x").encode() + b"\r\n" + big + b"\r\n0\r\n\r\n")
         def stream(handler):
             handler.send_response(200)
             handler.send_header("Content-Type", "text/html")
             handler.send_header("Connection", "close")
             handler.end_headers()
-            handler.wfile.write(b"x" * (safe.HTML_LIMIT + 1))
+            handler.wfile.write(big + b"x" * safe.HTML_LIMIT)
             handler.close_connection = True
         self.http.routes["/stream"] = stream
+        # A body that stops short of what the server declared is still a broken answer.
+        self.http.routes["/short"] = (200, {"Content-Type": "text/html", "Content-Length": str(safe.HTML_LIMIT + 1)}, b"")
         self.http.routes["/gzip"] = (200, {"Content-Encoding": "gzip"}, b"fake compressed")
         for path in ("/length", "/chunked", "/stream"):
             with self.subTest(path=path):
-                self.assertEqual(self.fetch(path)["error"], "too_large")
+                result = self.fetch(path)
+                self.assertEqual((result["error"], result["title"]), ("", "Big page"))
+        self.assertEqual(self.fetch("/short")["error"], "network_error")
         self.assertEqual(self.fetch("/gzip")["error"], "network_error")
+        # Never more than the limit is kept in memory, and other callers still get too_large.
+        response = safe.get(BASE_URL + "/stream", truncate=True)
+        self.assertEqual((len(response.body), response.truncated), (safe.HTML_LIMIT, True))
+        with self.assertRaises(safe.SafeHTTPError) as raised:
+            safe.get(BASE_URL + "/stream")
+        self.assertEqual(raised.exception.code, "too_large")
 
     def test_http_error_sanitized_and_cookie_proxy_auth_absent(self):
         self.http.routes["/secret"] = (403, {}, b"PRIVATE SECRET")
@@ -253,7 +301,8 @@ class BoundaryTests(unittest.TestCase):
         class TLSContext:
             def wrap_socket(self, sock, server_hostname, do_handshake_on_connect):
                 from metadata_fixture import PlainTLSSocket
-                self_outer.assertFalse(do_handshake_on_connect)
+                # The handshake runs inside wrap_socket (see safe_http and tls_trust).
+                self_outer.assertTrue(do_handshake_on_connect)
                 seen.append(server_hostname)
                 return PlainTLSSocket(sock)
         self_outer = self
@@ -417,6 +466,10 @@ class EnrichmentDepthTests(unittest.TestCase):
         self.http.routes["/sjis"] = (200, {"Content-Type": "text/html"}, body)
         self.assertEqual(self.fetch("/sjis")["title"], "日本語のページ")
 
+    def test_a_meta_that_says_utf16_is_read_as_utf8(self):
+        page = '<meta charset="utf-16"><title>Café menu</title><p>Plain words here</p>'.encode("utf-8")
+        self.assertIn("Café menu", metadata._decode_html(page, "text/html"))
+
     def test_only_the_document_title_counts(self):
         self.http.html("/svg", '<title>My Article</title><body><svg><title>Close</title></svg><svg><title>Menu</title></svg>')
         self.assertEqual(self.fetch("/svg")["title"], "My Article")
@@ -460,6 +513,45 @@ class EnrichmentDepthTests(unittest.TestCase):
         self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
         response.close()
 
+    def test_a_picture_missing_from_this_computer_is_stored_again_by_the_next_fetch(self):
+        # After a backup is restored on a new install the link still says /thumb/<code>, without the file.
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 1500
+        self.http.routes["/img.png"] = (200, {"Content-Type": "image/png"}, png)
+        self.http.html("/restored", '<title>Restored</title><meta property="og:image" content="/img.png">')
+        first = self.fetch("/restored")["thumbnail"]
+        code = first.split("/")[-1]
+        (self.cache / code).unlink()
+        self.assertEqual(metadata.missing_thumbs([code]), [code])
+        with metadata._flight_lock:
+            metadata._recent.clear()
+        self.assertEqual(self.fetch("/restored")["thumbnail"], first, "the same address, so the link needs no change")
+        self.assertEqual((self.cache / code).read_bytes(), png)
+        self.assertEqual(metadata.missing_thumbs([code]), [])
+
+    def test_a_route_that_drops_packets_falls_back_to_the_next_address(self):
+        # A broken IPv6 route times out on connect; the IPv4 address must still be tried.
+        self.http.dns["dual.fixture.test"] = ["2606:4700:4700::1111", PUBLIC_IP]
+        self.http.html("/dual", "<title>Reached over the second address</title>")
+        fixture_connect = safe._connect
+
+        def connect(address, port, timeout):
+            if ":" in address:
+                raise socket.timeout("timed out")
+            return fixture_connect(address, port, timeout)
+        with patch.object(safe, "_connect", connect):
+            result = metadata.fetch_metadata("http://dual.fixture.test/dual")
+        self.assertEqual((result["error"], result["title"]), ("", "Reached over the second address"))
+
+    def test_large_unused_bodies_do_not_hide_gone_pages_or_redirects(self):
+        big = str(safe.HTML_LIMIT + 1)
+        self.http.routes["/gone-big"] = (404, {"Content-Length": big}, b"")
+        result = self.fetch("/gone-big")
+        self.assertEqual((result["error"], result.get("httpStatus"), result.get("linkStatus")), ("http_error", 404, "gone"))
+        self.http.routes["/moved-big"] = (301, {"Location": "/landing-big", "Content-Length": big}, b"")
+        self.http.html("/landing-big", "<title>Landing</title>")
+        result = self.fetch("/moved-big")
+        self.assertEqual((result["error"], result["title"]), ("", "Landing"))
+
     def test_gone_pages_and_redirects_are_reported(self):
         self.http.routes["/gone"] = (404, {}, b"")
         result = self.fetch("/gone")
@@ -495,18 +587,43 @@ class EnrichmentDepthTests(unittest.TestCase):
         self.assertEqual(result["summary"], "Hello world")
         self.assertEqual(result["author"], "A")
 
-    def test_reddit_json_and_arxiv_abstract(self):
+    def test_reddit_feed_and_arxiv_abstract(self):
+        # Reddit's .json now needs an API login and its page is a script shell: the post's RSS feed is read instead.
+        from unittest.mock import patch
+        import reddit_post
         self.http.dns["www.reddit.com"] = [PUBLIC_IP]
-        listing = [{"data": {"children": [{"data": {"title": "Thread", "selftext": "Body text", "author": "op",
-                    "subreddit": "python", "created_utc": 1700000000,
-                    "preview": {"images": [{"source": {"url": "http://cdn.fixture.test/r.jpg"}}]}}}]}}]
-        self.http.routes["/r/python/comments/abc/thread.json?raw_json=1&limit=1"] = (200, {"Content-Type": "application/json"}, json.dumps(listing).encode())
+        content = ('<div class="md"><p>Body &lt;b&gt;text&lt;/b&gt;</p></div> submitted by <a href="https://www.reddit.com/user/op">/u/op</a>'
+                   ' <span><a href="https://www.reddit.com/r/python/comments/abc/thread/">[link]</a></span>')
+        feed = ('<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">'
+                '<entry><author><name>/u/op</name></author><category term="python" label="r/python"/>'
+                f'<content type="html">{_html.escape(content)}</content><id>t3_abc</id>'
+                '<media:thumbnail url="http://cdn.fixture.test/r.jpg" /><published>2023-11-14T22:13:20+00:00</published>'
+                '<title>Thread</title></entry></feed>').encode()
+        json_hits = []
+        self.http.routes["/r/python/comments/abc/.rss?limit=1"] = (200, {"Content-Type": "application/atom+xml"}, feed)
+        self.http.routes["/r/python/comments/abc/thread.json?raw_json=1&limit=1"] = lambda h: json_hits.append(1)
         self.http.routes["/r.jpg"] = (200, {"Content-Type": "image/jpeg"}, JPEG)
-        with self._plain_tls():
+        with self._plain_tls(), patch.object(reddit_post, "_PICTURE_HOSTS", frozenset({"cdn.fixture.test"})), \
+                patch.object(reddit_post, "_PICTURE_SCHEMES", ("http", "https")), patch.object(reddit_post, "SPACING", 0.0):
             result = metadata.fetch_metadata("https://www.reddit.com/r/python/comments/abc/thread/")
-        self.assertEqual((result["title"], result["summary"], result["siteName"], result["author"]), ("Thread", "Body text", "r/python", "u/op"))
-        self.assertEqual(result["publishedAt"], "2023-11-14T22:13:20Z")
-        self.assertTrue(result["thumbnail"].startswith("/thumb/img_"))
+            self.assertEqual((result["title"], result["summary"], result["siteName"], result["author"]), ("Thread", "Body <b>text</b>", "r/python", "u/op"))
+            self.assertEqual(result["publishedAt"], "2023-11-14T22:13:20Z")
+            self.assertTrue(result["thumbnail"].startswith("/thumb/img_"))
+            self.assertEqual(json_hits, [], "the blocked .json address is not tried")
+            # Reddit refusing (rate limit) is "busy", so the app tries again later; a missing post is a plain failure.
+            self.http.routes["/r/python/comments/zzz/.rss?limit=1"] = (429, {"Content-Type": "text/html"}, b"slow down")
+            self.assertEqual(metadata.fetch_metadata("https://www.reddit.com/r/python/comments/zzz/x/")["error"], "busy")
+            self.http.routes["/r/python/comments/yyy/.rss?limit=1"] = (200, {"Content-Type": "application/atom+xml"}, b'<feed xmlns="http://www.w3.org/2005/Atom"></feed>')
+            missing = metadata.fetch_metadata("https://www.reddit.com/r/python/comments/yyy/x/")
+            self.assertEqual((missing["status"], missing["error"]), ("failed", "http_error"))
+            # Feed refused (Reddit may close RSS too): the embed data still gives title, author and subreddit.
+            self.http.routes["/r/python/comments/www/.rss?limit=1"] = (403, {"Content-Type": "text/html"}, b"Blocked")
+            from urllib.parse import quote
+            embed = {"title": "Embedded title", "author_name": "op", "html": '<a href="https://www.reddit.com/r/python/comments/www/x/">t</a>'}
+            self.http.routes["/oembed?url=" + quote("https://www.reddit.com/r/python/comments/www/", safe="")] = (
+                200, {"Content-Type": "application/json"}, json.dumps(embed).encode())
+            fallback = metadata.fetch_metadata("https://www.reddit.com/r/python/comments/www/x/")
+            self.assertEqual((fallback["title"], fallback["author"], fallback["siteName"]), ("Embedded title", "u/op", "r/python"))
         self.assertEqual(metadata._arxiv_abstract_url("https://arxiv.org/pdf/2401.01234v2"), "https://arxiv.org/abs/2401.01234v2")
         self.assertEqual(metadata._arxiv_abstract_url("https://arxiv.org/pdf/2401.01234.pdf"), "https://arxiv.org/abs/2401.01234")
 

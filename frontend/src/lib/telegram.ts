@@ -2,6 +2,7 @@
 // supplies its message metadata; reimports never replace existing curation.
 import type { SavedPost } from "../types";
 import { postFromUrl } from "./providers";
+import { entityTarget, linksInText } from "./textLinks";
 
 export interface ImportResult {
   posts: SavedPost[];
@@ -65,17 +66,11 @@ function extractUrls(msg: TgMessage): Set<string> {
   const parts = msg.text_entities?.length ? msg.text_entities : Array.isArray(msg.text) ? msg.text : [msg.text ?? ""];
   for (const part of parts) {
     if (typeof part !== "string" && (part.type === "text_link" || part.type === "link")) {
-      urls.add((part.href ?? part.text ?? "").trim());
+      // Links Telegram detected or labeled keep their exact target.
+      urls.add(entityTarget(part));
     } else {
-      for (const match of (typeof part === "string" ? part : part.text ?? "").matchAll(/https?:\/\/[^\s"'<>]+/gi)) {
-        // Plain-text fallback: discard sentence punctuation and unmatched closing
-        // brackets; explicit link entities above retain their exact target.
-        let url = match[0].replace(/[.,;!?]+$/, "");
-        for (const [open, close] of [["(", ")"], ["[", "]"], ["{", "}"]]) {
-          while (url.endsWith(close) && url.split(close).length > url.split(open).length) url = url.slice(0, -1);
-        }
-        urls.add(url);
-      }
+      // Plain-text fallback: sentence punctuation and unmatched closing brackets dropped.
+      for (const url of linksInText(typeof part === "string" ? part : part.text ?? "")) urls.add(url);
     }
   }
   return urls;

@@ -12,6 +12,7 @@ filesystem permissions; not an encrypted credential vault.
 """
 import asyncio
 import builtins
+import contextlib
 import hashlib
 import os
 from pathlib import Path
@@ -45,6 +46,19 @@ _CONNECT_TIMEOUT_SECONDS = 30
 _PROBE_TIMEOUT_SECONDS = 20
 
 _LOCK = threading.RLock()
+# A refresh holds the session for up to a few minutes while it downloads photos
+# and videos; a sign-in step waits this long for it, then answers "busy".
+_LOCK_WAIT_SECONDS = 3
+
+
+@contextlib.contextmanager
+def _session_lock():
+    if not _LOCK.acquire(timeout=_LOCK_WAIT_SECONDS):
+        raise AuthError("busy", 409)
+    try:
+        yield
+    finally:
+        _LOCK.release()
 _transaction = None  # {"step", "phone", "phone_code_hash", "expires_at", "created_session"}
 _auth_cache = None   # {"at", "authorized"}
 
@@ -84,6 +98,7 @@ _MESSAGES = {
     "login_active": "A Telegram login is already in progress. Cancel or restart it before trying again.",
     "login_step": "That step does not match the current login state. Check the login status and try again.",
     "configuration": "Configure the Telegram API ID and API hash first, then connect the account.",
+    "busy": "Telegram is busy with a refresh or another step. Wait for it to finish, then try again.",
     "unknown": "Telegram login failed. No session was authorized by this attempt. Try again.",
 }
 
@@ -288,7 +303,7 @@ def check_authorization():
         async with asyncio.timeout(_PROBE_TIMEOUT_SECONDS):
             return bool(await client.is_user_authorized())
 
-    with _LOCK:
+    with _session_lock():
         try:
             authorized = asyncio.run(_run_connect_step(probe, api_id, api_hash))
         except AuthError:
@@ -303,7 +318,7 @@ def check_authorization():
 
 def start_login(phone_raw, restart=False):
     global _transaction
-    with _LOCK:
+    with _session_lock():
         _expire_locked()
         if _transaction is not None:
             if restart is not True:
@@ -349,7 +364,7 @@ def _submit_secret(step, value, prepare, invalid_code, sign):
     secret = prepare(value) if isinstance(value, str) else None
     if secret is None:
         raise AuthError(invalid_code)
-    with _LOCK:
+    with _session_lock():
         _expire_locked()
         if _transaction is None or _transaction["step"] != step:
             raise AuthError("login_step", 409)
@@ -422,7 +437,7 @@ def submit_password(password):
 
 
 def cancel_login():
-    with _LOCK:
+    with _session_lock():
         _expire_locked()
         if _transaction is not None:
             _abort_locked()
@@ -435,7 +450,7 @@ def disconnect(mode="logout"):
     global _auth_cache
     if mode not in ("logout", "remove_local"):
         raise AuthError("unknown")
-    with _LOCK:
+    with _session_lock():
         _expire_locked()
         if _transaction is not None:
             _abort_locked()

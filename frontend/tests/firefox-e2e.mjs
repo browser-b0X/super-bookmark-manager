@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { importThroughField } from './importField.mjs';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createRequire } from 'node:module';
@@ -21,11 +22,13 @@ const state=()=>page.evaluate(()=>JSON.parse(localStorage.getItem('library-store
 async function settled(n){await page.getByRole('status',{name:'SQLite save status'}).filter({hasText:/^Library saved to SQLite$/}).waitFor();await page.waitForFunction(n=>{const s=JSON.parse(localStorage.getItem('library-store-v1')).state;return s.posts.length===n&&!Object.keys(s.pending).length&&s.posts.every(p=>p.categoryMode&&['enriched','failed'].includes(p.metadataStatus));},n);}
 async function snapshot(name,n){await settled(n);const local=await state();const db=(await control('snapshot')).result;const api=await page.evaluate(async()=> (await (await fetch('/api/library')).json()));assert.deepEqual(sorted(local.posts),sorted(db.posts));assert.deepEqual(sorted(api.posts),sorted(db.posts));assert.deepEqual(db.blocked,[]);assert.equal(db.legacyCount,0);report.snapshots.push({name,posts:sorted(local.posts)});return sorted(local.posts);}
 const pass=name=>{report.checks.push({name,status:'PASS'});console.log('PASS',name);};
-const input=()=>page.getByLabel('Select copied Firefox places.sqlite');
-const button=()=>page.getByRole('button',{name:'Import Firefox bookmarks database copy',exact:true});
-const result=()=>page.getByRole('status',{name:'Firefox import result'});
+// One import field since v0.3.0: a places.sqlite copy goes through the same chooser, preview and Import.
+const input=()=>page.getByLabel('Choose a file to import');
+const button=()=>page.getByRole('button',{name:'Choose a file…',exact:true});
+const result=()=>page.getByRole('status',{name:'Import result',exact:true});
 async function shot(name){await page.screenshot({path:join(output,name),animations:'disabled'});report.screenshots.push(name);}
-async function select(name,pattern){await input().setInputFiles({name:name==='valid'?'places.sqlite':name,mimeType:'application/octet-stream',buffer:await readFile(join(fixtures,name))});await result().filter({hasText:pattern}).waitFor();assert.equal(await button().isEnabled(),true);}
+// expected: a RegExp for a refused copy, or [added] / [added, alreadySaved]; inFile matches the preview's "In the file" line.
+async function select(name,expected,inFile){const r=await importThroughField(page,{name:name==='valid'?'places.sqlite':name,mimeType:'application/octet-stream',buffer:await readFile(join(fixtures,name))});if(expected instanceof RegExp){assert.ok(r.refused,r.text);assert.match(r.text,expected);}else{assert.ok(!r.refused,r.text);assert.deepEqual([r.added,r.updated].slice(0,expected.length),expected,r.text);if(inFile)assert.match(r.preview,inFile);}assert.equal(await button().isEnabled(),true);return r;}
 async function newContext(){context=await browser.newContext({viewport:{width:1365,height:900},serviceWorkers:'block'});await context.route('**/*',route=>{const url=route.request().url();if(url===ready.preview)return route.fulfill({status:200,contentType:'image/png',body:Buffer.from(ready.png,'base64')});if(new URL(url).origin!==base){report.denied.push(url);return route.abort();}return route.continue();});page=await context.newPage();page.setDefaultTimeout(15000);page.on('pageerror',e=>report.errors.push(e.message));}
 try{
   const beforeBytes=await readFile(join(fixtures,'valid'));report.copyHash=createHash('sha256').update(beforeBytes).digest('hex');
@@ -38,9 +41,9 @@ try{
   browser=await chromium.launch({headless:true,channel:'msedge'});await newContext();await page.goto(base+'/library/settings');
   await page.getByRole('status',{name:'SQLite save status'}).filter({hasText:/^Library saved to SQLite$/}).waitFor();
   await button().scrollIntoViewIfNeeded();await shot('b2-firefox-settings-control.png');
-  assert.equal(await input().getAttribute('accept'),null);assert.match(await page.locator('#firefox-import-hint').innerText(),/Only bookmarks are imported/);
+  assert.equal(await input().getAttribute('accept'),null);assert.match(await page.getByRole('region',{name:'Import links'}).innerText(),/places\.sqlite copy[\s\S]*Only the file you choose is read; no browser profile is scanned/);
   const originals=join(root,'frontend/tests/fixtures');
-  for(const [name,n] of [['firefox',3],['chromium',5]]){await page.getByLabel('Import bookmarks HTML').setInputFiles(join(originals,`bookmarks-${name}.html`));await settled(n);}
+  for(const [name,n] of [['firefox',3],['chromium',5]]){const r=await importThroughField(page,join(originals,`bookmarks-${name}.html`));assert.ok(!r.refused,r.text);await settled(n);}
   await page.getByLabel('Import Telegram JSON').setInputFiles(join(originals,'telegram-saved-messages.json'));await settled(8);
   const initial=await snapshot('HTML + Telegram8',8);
   const overlap=initial.find(p=>p.url==='https://example.invalid/programming#typescript');
@@ -55,19 +58,23 @@ try{
   const views=(await state()).views;await page.goto(base+'/library/settings');
   // 'malformed' (one bad URL among good ones) now imports the good ones; covered by chromium-unit.
   for(const name of ['empty','not-sqlite','truncated','missing-bookmarks','missing-places','schema','bad-fk','view','unsupported']){
-    await select(name,/empty|SQLite|schema|Malformed|Invalid|No HTTP/);assert.deepEqual(await snapshot(name,8),before,name);
+    // A file that is not SQLite at all now gets the one field's "isn't a bookmark export" message.
+    await select(name,/empty|SQLite|schema|Malformed|Invalid|No HTTP|isn't a bookmark export this app can read/);assert.deepEqual(await snapshot(name,8),before,name);
   }
   await result().scrollIntoViewIfNeeded();await shot('b2-firefox-import-error.png');
   pass('9 empty/non-SQLite/truncated/missing/incompatible/bad-fk/unsupported cases: controlled and zero mutation');
   await page.evaluate(()=>{window.originalArrayBuffer=File.prototype.arrayBuffer;File.prototype.arrayBuffer=async()=>{throw Error('synthetic locked file');};});
   await select('valid',/Firefox may still be using this database/);await page.evaluate(()=>{File.prototype.arrayBuffer=window.originalArrayBuffer;delete window.originalArrayBuffer;});assert.deepEqual(await snapshot('locked read',8),before);pass('Locked/unreadable selected-file simulation: guidance, no bypass or mutation');
-  await select('duplicates',/1 valid unique bookmark URLs, 0 new, 1 already present, 4 duplicate/);assert.deepEqual(await snapshot('duplicate-only',8),before);pass('Duplicate-only copied database succeeds with zero additions and no curation changes');
+  await select('duplicates',[0,1],/In the file: 4 repeated/);assert.deepEqual(await snapshot('duplicate-only',8),before);pass('Duplicate-only copied database succeeds with zero additions and no curation changes');
   // Reach through keyboard and activate the native file picker.
   // Listen first: Playwright enables file-chooser interception asynchronously.
   const chooser=page.waitForEvent('filechooser');
   let reachable=false;for(let i=0;i<180;i++){if(await button().evaluate(e=>e===document.activeElement)){reachable=true;break;}await page.keyboard.press('Tab');}
-  assert.ok(reachable);await page.keyboard.press('Enter');await(await chooser).setFiles({name:'renamed-copy-no-extension',mimeType:'application/octet-stream',buffer:beforeBytes});
-  await result().filter({hasText:'3 valid unique bookmark URLs, 2 new, 1 already present, 1 duplicate entries, 1 unsupported entries, 0 malformed entries, 3 history-only rows ignored'}).waitFor();
+  assert.ok(reachable);
+  const picked=await importThroughField(page,null,{choose:async()=>{await page.keyboard.press('Enter');await(await chooser).setFiles({name:'renamed-copy-no-extension',mimeType:'application/octet-stream',buffer:beforeBytes});}});
+  // 3 valid unique bookmark URLs: 2 new, 1 already saved; 1 repeated, 1 unsupported, 0 malformed and 3 history-only rows left out.
+  assert.ok(!picked.refused,picked.text);assert.deepEqual([picked.added,picked.updated],[2,1],picked.text);
+  assert.match(picked.preview,/In the file: 1 repeated, 1 non-web \(javascript:, file:, place:\) and 0 unreadable entries are left out\. 3 history-only rows ignored\./);
   const first=await snapshot('Firefox adds2 ->10',10);for(const old of before)assert.deepEqual(first.find(p=>p.id===old.id),old);
   const fresh=first.find(p=>p.url==='http://metadata.fixture.test/firefox?lesson=1&lesson=2#code');const untitled=first.find(p=>p.url==='http://metadata.fixture.test/classify-failure');
   assert.equal(fresh.canonicalUrl,fresh.url);assert.equal(fresh.title,'Cooking recipe supplied');assert.equal(fresh.source,'browser');assert.deepEqual(fresh.categories,['technology']);assert.equal(fresh.metadataStatus,'enriched');assert.match(fresh.description,/Firefox gzip/);assert.match(fresh.thumbnailUrl,/^\/thumb\/img_[0-9a-f]{24}$/);/* preview image is now cached locally */
@@ -76,13 +83,13 @@ try{
   pass('Keyboard/renamed copy, nested3 unique, duplicate1, overlap1, unsupported1, history3 excluded; query/fragment retained; exact prior8');
   pass('Gzip description/image and untitled-title enrichment; supplied title retained; classifier failure independent and other/review honest');
   const eventCount=(await control('events')).httpRequests.length;
-  await select('valid',/3 valid unique bookmark URLs, 0 new, 3 already present/);assert.deepEqual(await snapshot('reimport exact10',10),first);assert.equal((await control('events')).httpRequests.length,eventCount);assert.deepEqual((await state()).views,views);
+  await select('valid',[0,3]);assert.deepEqual(await snapshot('reimport exact10',10),first);assert.equal((await control('events')).httpRequests.length,eventCount);assert.deepEqual((await state()).views,views);
   pass('Reimport exact10 including curation/manual other/IDs; no new enrichment requests; views unchanged');
   await page.goto(base+'/library');await page.getByRole('button',{name:'Saved Views',exact:true}).click();const viewsDialog=page.getByRole('dialog',{name:'Saved Views',exact:true});await viewsDialog.getByLabel('Saved view',{exact:true}).selectOption({label:'Firefox dynamic'});await viewsDialog.getByRole('button',{name:'Apply view',exact:true}).click();await viewsDialog.waitFor({state:'hidden'});await page.waitForFunction(()=>document.querySelectorAll('main article').length===2);pass('Saved View dynamically contains2 Firefox records');
   const link=page.locator(`main a[href="/library/item/${fresh.id}"]`);await link.click();await page.getByRole('dialog',{name:'Saved post detail'}).waitFor();await page.reload();await page.getByRole('dialog',{name:'Saved post detail'}).waitFor();
   await page.waitForFunction(src=>[...document.images].some(img=>img.src===src&&img.complete&&img.naturalWidth===320),base+fresh.thumbnailUrl);
   await page.goto(base+'/');assert.ok(await page.getByRole('button',{name:/All saved/}).count());pass('Library result/detail direct refresh and decoded thumbnail; feed reachable');
-  await page.goto(base+'/library/settings');await select('failure',/1 valid unique bookmark URLs, 1 new/);const failed=await snapshot('failure retained11',11);assert.equal(failed.find(p=>p.url.endsWith('/failure')).metadataStatus,'failed');for(const old of first)assert.deepEqual(failed.find(p=>p.id===old.id),old);pass('Metadata503 does not roll back import or curation;11 durable');
+  await page.goto(base+'/library/settings');await select('failure',[1]);const failed=await snapshot('failure retained11',11);assert.equal(failed.find(p=>p.url.endsWith('/failure')).metadataStatus,'failed');for(const old of first)assert.deepEqual(failed.find(p=>p.id===old.id),old);pass('Metadata503 does not roll back import or curation;11 durable');
   const backup=await page.evaluate(async()=>{const r=await fetch('/api/backup/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:true})});return {code:r.status,body:await r.json()};});assert.equal(backup.code,200);report.backup=backup.body;
   await context.close();await newContext();await page.goto(base+'/library');assert.deepEqual(await snapshot('fresh browser11',11),failed);pass('Fresh browser exact11 recovery and backup export available');
   await page.goto(base+'/library/settings');for(const width of [1365,768,390,320]){await page.setViewportSize({width,height:900});await button().scrollIntoViewIfNeeded();const b=await button().boundingBox();assert.ok(b.x>=0&&b.x+b.width<=width+1);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);}

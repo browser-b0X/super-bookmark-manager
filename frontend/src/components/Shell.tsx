@@ -1,70 +1,46 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
-import Sidebar from "./Sidebar";
-import Topbar from "./Topbar";
+import TopNav from "./TopNav";
 import CommandPalette from "./CommandPalette";
 import { useLegacyMigration } from "../lib/migrate";
-import { usePrefs } from "../store/prefs";
 import SyncIndicator from "./SyncIndicator";
 import { QuitHost } from "./QuitApp";
 import Backdrop from "./Backdrop";
+import NoticeToast from "./NoticeToast";
+import { checkTelegramAtStart } from "../lib/telegramRefresh";
+import { startWhenUnsortedLinksWait } from "../lib/aiTidy";
+import { usePrefs } from "../store/prefs";
 
+/**
+ * The new look: a top bar, no sidebar. The page area plays a short transition
+ * when the section changes (not when a link's panel opens over a list), and
+ * the moving background stays behind everything.
+ */
 export default function Shell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [mobile, setMobile] = useState(() => window.matchMedia("(max-width: 720px)").matches);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  const menuRef = useRef<HTMLButtonElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
-  const railRef = useRef<HTMLElement>(null);
-  const collapsed = usePrefs(s => s.sidebarCollapsed);
   const location = useLocation();
   const migration = useLegacyMigration();
+  const lastKey = useRef("/");
+  const isPanel = location.pathname.startsWith("/library/item/");
+  const sectionKey = isPanel ? lastKey.current : location.pathname + location.search;
+  useEffect(() => { if (!isPanel) lastKey.current = sectionKey; }, [isPanel, sectionKey]);
 
-  const closeNavigation = () => {
-    dialogRef.current?.close();
-    setDrawerOpen(false);
-  };
-  const openPalette = () => {
-    closeNavigation();
-    setPaletteOpen(true);
-  };
-  const openNavigation = () => {
-    const dialog = dialogRef.current;
-    if (!mobile || !dialog || dialog.open) return;
-    dialog.showModal();
-    closeRef.current?.focus();
-    setDrawerOpen(true);
-  };
-
+  useEffect(() => { if (migration !== "demo") checkTelegramAtStart(); }, [migration]);
+  // "Keep sorting new links" (Settings > Tidy up with AI): background runs start by themselves.
+  const keepSorting = usePrefs(s => s.aiKeepSorting);
   useEffect(() => {
-    const query = window.matchMedia("(max-width: 720px)");
-    const update = () => setMobile(query.matches);
-    query.addEventListener("change", update);
-    update();
-    return () => query.removeEventListener("change", update);
-  }, []);
+    if (!keepSorting || migration === "demo") return;
+    return startWhenUnsortedLinksWait(() => usePrefs.getState().aiKeepSorting, () => usePrefs.getState().aiTidyJobs);
+  }, [keepSorting, migration]);
 
   useLayoutEffect(() => {
-    document.documentElement.style.setProperty("--sidebar-w", mobile ? "0px" : collapsed ? "56px" : "236px");
-    if (!mobile && dialogRef.current?.open) {
-      dialogRef.current.close();
-      setDrawerOpen(false);
-      railRef.current?.focus();
-    }
-  }, [mobile, collapsed]);
-
-  useEffect(() => {
-    dialogRef.current?.close();
-    setDrawerOpen(false);
-  }, [location.pathname, location.search, location.hash]);
+    document.documentElement.style.setProperty("--sidebar-w", "0px");
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        dialogRef.current?.close();
-        setDrawerOpen(false);
         setPaletteOpen(o => !o);
       }
       if (e.key === "Escape") setPaletteOpen(false);
@@ -73,33 +49,20 @@ export default function Shell() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-
   return (
     <div className="h-full">
       <Backdrop />
-      {!mobile && <Sidebar railRef={railRef} migrationStatus={migration} onOpenPalette={openPalette} />}
-      <Topbar onOpenPalette={openPalette} onOpenNavigation={openNavigation} drawerOpen={drawerOpen} menuRef={menuRef} />
-      <main
-        key={location.pathname.startsWith("/library") ? "library" : "dash"}
-        className="shell-main absolute top-[var(--topbar-h)] bottom-0 right-0 left-[var(--sidebar-w)] overflow-y-auto max-[720px]:left-0"
-        data-navigation-open={drawerOpen}
-      >
-        <Outlet />
+      <TopNav onOpenPalette={() => setPaletteOpen(true)} />
+      {migration === "demo" && <p className="demo-note" role="status">Demo data: the app's server isn't answering, so nothing you change here is saved.</p>}
+      <main className="shell-main absolute top-[var(--topbar-h)] bottom-0 right-0 left-0 overflow-y-auto">
+        <div key={sectionKey} className="page-transition">
+          <Outlet />
+        </div>
       </main>
-      <dialog
-        ref={dialogRef}
-        id="mobile-navigation"
-        aria-label="Mobile navigation"
-        onClose={() => { if (!dialogRef.current?.open) setDrawerOpen(false); }}
-        onCancel={closeNavigation}
-        onClick={e => { if (e.target === e.currentTarget) closeNavigation(); }}
-      >
-        {mobile && <Sidebar mobile migrationStatus={migration} onOpenPalette={openPalette} 
-          onNavigate={closeNavigation} onClose={closeNavigation} closeRef={closeRef} />}
-      </dialog>
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
       <QuitHost />
       <SyncIndicator />
+      <NoticeToast />
     </div>
   );
 }

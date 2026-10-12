@@ -7,7 +7,7 @@ function buildLabel(build: string): string {
   return seconds > 0 ? new Date(seconds * 1000).toLocaleString() : build;
 }
 
-/** Settings → Library & sync: the same confirmed Quit as the sidebar's power button. */
+/** Settings → Library & sync: the same confirmed Quit as Quit app in the menu behind the logo. */
 export default function RuntimeControl() {
   const [build, setBuild] = useState("");
   useEffect(() => {
@@ -19,8 +19,8 @@ export default function RuntimeControl() {
   return <section className="panel mt-5 p-5" aria-label="Application">
     <h2 className="text-[.9rem] font-semibold">Application</h2>
     <p className="mt-2 text-[.76rem] text-[var(--dim)]">Closing the browser leaves the app running in the background.
-      Quit here, or with the power button at the bottom of the sidebar, when you are finished.</p>
-    <button className="btn mt-3" onClick={requestQuit}>Quit Super Bookmark Manager</button>
+      Quit here, or with Quit app in the menu behind the logo at the top left, when you are finished.</p>
+    <button className="btn mt-3" onClick={requestQuit}>Quit SuperBookmarks</button>
     {build && <p className="mt-3 text-[.7rem] text-[var(--faint)]">Running build: {buildLabel(build)}</p>}
   </section>;
 }

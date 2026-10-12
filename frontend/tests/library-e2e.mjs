@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { importThroughField } from './importField.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
@@ -6,6 +7,7 @@ import { mkdir, mkdtemp, writeFile, appendFile, readFile } from 'node:fs/promise
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { isDeepStrictEqual } from 'node:util';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 await mkdir(join(root, '.verify/g2-c4-durability-20260917'), { recursive: true });
@@ -106,13 +108,21 @@ const posts = () => page.evaluate(() => JSON.parse(localStorage.getItem('library
 const status = () => page.getByRole('status', { name: 'SQLite save status' });
 async function saved(count) {
   await status().filter({ hasText: /^Library saved to SQLite$/ }).waitFor();
-  await page.waitForFunction(count => {
-    const state = JSON.parse(localStorage.getItem('library-store-v1') || '{}').state;
-    return state?.posts.length === count && Object.keys(state.pending).length === 0;
-  }, count);
-  const result = (await control('snapshot')).result;
+  let result, browserPosts;
+  // A background preview result can land between the SQLite snapshot and the browser read;
+  // once things are quiet the two must match exactly.
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await page.waitForFunction(count => {
+      const state = JSON.parse(localStorage.getItem('library-store-v1') || '{}').state;
+      return state?.posts.length === count && Object.keys(state.pending).length === 0;
+    }, count);
+    result = (await control('snapshot')).result;
+    browserPosts = await posts();
+    if (result.posts.length === count && isDeepStrictEqual(sorted(result.posts), sorted(browserPosts))) break;
+    await page.waitForTimeout(250);
+  }
   assert.equal(result.posts.length, count);
-  assert.deepEqual(sorted(result.posts), sorted(await posts()));
+  assert.deepEqual(sorted(result.posts), sorted(browserPosts));
   assert.deepEqual(result.blocked, []);
   assert.equal(result.legacyCount, 0);
   return result;
@@ -120,9 +130,9 @@ async function saved(count) {
 async function importAll(reimport = false) {
   await page.goto(base + '/library/settings');
   for (const name of ['firefox', 'chromium']) {
-    await page.getByLabel('Import bookmarks HTML').setInputFiles(fixture(`bookmarks-${name}.html`));
-    const expected = reimport ? '0 new, 3 already present' : name === 'firefox' ? '3 new, 0 already present' : '2 new, 1 already present';
-    await page.getByRole('status').filter({ hasText: expected }).waitFor();
+    const result = await importThroughField(page, fixture(`bookmarks-${name}.html`));
+    const expected = reimport ? [0, 3] : name === 'firefox' ? [3, 0] : [2, 1];
+    assert.deepEqual([result.added, result.updated], expected, result.text);
   }
   await page.getByLabel('Import Telegram JSON').setInputFiles(fixture('telegram-saved-messages.json'));
   await page.getByRole('status', { name: 'Telegram import result' }).filter({ hasText: reimport ? '0 new, 4 already present' : '3 new, 1 already present' }).waitFor();
@@ -137,7 +147,7 @@ async function detail(post) {
 const ninthHtml = '<!DOCTYPE NETSCAPE-Bookmark-file-1><TITLE>Fixture</TITLE><H1>Fixture</H1><DL><p><DT><A HREF="https://example.invalid/disposable">Ninth disposable</A></DL><p>';
 async function ninth() {
   await page.goto(base + '/library/settings');
-  await page.getByLabel('Import bookmarks HTML').setInputFiles({ name: 'ninth.html', mimeType: 'text/html', buffer: Buffer.from(ninthHtml) });
+  await importThroughField(page, { name: 'ninth.html', mimeType: 'text/html', buffer: Buffer.from(ninthHtml) });
 }
 
 try {
@@ -220,6 +230,11 @@ try {
   pass('reload, owned backend restart, fresh browser, all reimports and re-sync preserve every field; SQLite count 8');
 
   await ninth(); await saved(9);
+  // The new link's preview runs in the background; let it finish (and save) before taking the
+  // snapshot, or a fast fetch lands between the snapshot and the comparison.
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem('library-store-v1')).state.posts
+    .find(p => p.title === 'Ninth disposable')?.metadataStatus !== 'pending');
+  await saved(9);
   const disposable = (await posts()).find(p => p.title === 'Ninth disposable');
   dialog = await detail(disposable);
   const beforeCancel = sorted(await posts());
@@ -277,7 +292,9 @@ try {
   assert.equal(writes.length, 1);
   assert.ok(writes[0].at >= click.at, 'The successful write must follow the explicit Retry click');
   // `since` is the delta-sync revision (audit F8); the write itself is exactly the pending post.
-  const { since: _since, ...payload } = writes[0].payload;
+  // Besides the delta-sync revision, a save says which library it was made in (0: never restored).
+  const { since: _since, epoch, ...payload } = writes[0].payload;
+  assert.equal(epoch, 0);
   assert.deepEqual(payload, { posts: [pendingPost], deletedUrls: [] });
   assert.deepEqual(sorted(retried.posts), retryExpected);
   assert.equal(new Set(retried.posts.map(post => post.id)).size, 8);
@@ -320,7 +337,7 @@ try {
   assert.deepEqual(denied, []);
   // /api/enrich is an accepted first-party endpoint (import-time metadata enrichment): same-origin,
   // deterministic fixture response, not a provider/personal/external request. Explicit allowlist only.
-  assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/ai/providers'].includes(r.path)
+  assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/ai/providers', '/api/archive'].includes(r.path)
     || (r.path === '/api/telegram/config' && r.method === 'GET')));
   pass('no uncaught browser errors, provider requests, personal data or external requests');
 } catch (error) {

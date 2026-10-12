@@ -1,5 +1,7 @@
 """
-Built-in AI provider chain: Gemini -> Groq -> OpenRouter -> NVIDIA -> a local server.
+Built-in AI provider chain: FreeLLMAPI (when set up) -> Gemini -> Groq -> OpenRouter -> NVIDIA -> a
+local server. FreeLLMAPI is a router the owner runs that spreads requests over many free tiers, so
+it goes first; the others are the fallback.
 
 Every provider is called through its OpenAI-compatible chat endpoint with plain
 urllib, so there is no proxy to start and no extra package to install. A
@@ -71,19 +73,52 @@ PROVIDERS: dict[str, dict] = {
             "openai/gpt-oss": {"reasoning_effort": "low"},
         },
     },
+    # A self-hosted router (github.com/tashfeenahmed/freellmapi, MIT) that puts many
+    # providers' free tiers behind one OpenAI-compatible endpoint. The owner adds each
+    # provider's key in FreeLLMAPI's own dashboard; this app needs only its unified key.
+    "freellmapi": {
+        "label": "FreeLLMAPI", "base": "http://127.0.0.1:3001/v1", "env": "FREELLMAPI_KEY",
+        # auto:fast ranks FreeLLMAPI's models by measured speed, ignoring its chain order: a
+        # tidy-up is a short JSON answer, and the "smartest" models think for a minute first.
+        # Versions without the auto:* aliases answer "Profile 'fast' not found": plain auto then.
+        "model": "auto:fast", "fallbacks": ["auto"], "signup": "https://github.com/tashfeenahmed/freellmapi",
+        # FreeLLMAPI clamps this to what each platform accepts and drops it where there is no
+        # such knob; without it a reasoning model spent the answer budget on a title.
+        "extra": {"reasoning_effort": "low"},
+        # It fails over between its own providers for up to 45 s before answering, so a slow
+        # answer is not a dead router: wait longer, and bench it only briefly.
+        "patience": 75, "self_routing": True,
+        # It passes on only the standard request fields, so a model that thinks unless told otherwise in a
+        # field of its own (NVIDIA's Nemotron 3: chat_template_kwargs) thinks at length and its answer was
+        # cut off. Leave room for that, and end the request with the marker Nemotron's chat template adds
+        # itself when low_effort is set, which the model was trained to follow; other models simply read
+        # it as a request to keep the thinking short.
+        "thinking_room": 4000, "prompt_suffix": "\n\n{reasoning effort: low}",
+        "note": "A free router you run on this computer (Windows installer, or Docker): it spreads requests over "
+                "the free tiers of 30+ providers whose keys you add in FreeLLMAPI itself. Paste its unified key here. "
+                "Tried first when set up; a local model or one of the other providers takes over when it is busy or not running.",
+    },
     "local": {
         "label": "Local server", "base": "http://127.0.0.1:11434/v1", "env": "",
         "model": "", "signup": "https://ollama.com",
         "note": "Ollama, LM Studio or llama.cpp on this computer. Unlimited and private; no key needed.",
     },
 }
-ORDER = ("gemini", "groq", "openrouter", "nvidia", "local")
+ORDER = ("freellmapi", "gemini", "groq", "openrouter", "nvidia", "local")
+# Providers that run at an address the owner chooses (this computer or the home network).
+_ADDRESSED = ("freellmapi", "local")
 
 # Benches after a failure, in seconds. A rejected key stays benched until the
 # owner changes it (cleared on save).
 _COOLDOWN = {"rate_limited": 60, "unavailable": 30, "timeout": 30, "bad_response": 15, "key_rejected": 10**9}
 
 _state: dict[str, dict] = {name: {} for name in ORDER}
+# A provider that keeps timing out or failing is benched longer each time (30 s, 2 min,
+# 8 min, at most 10 min): otherwise a stuck provider was tried again every 30 s and held
+# up a batch for the whole call timeout each time. One answer resets it.
+_streak: dict[str, int] = {name: 0 for name in ORDER}
+_ESCALATING = ("timeout", "unavailable")
+_MAX_BENCH = 600
 # A replacement found after the configured model was retired (per session).
 _resolved: dict[str, str] = {}
 _MAX_MODEL_TRIES = 8  # the configured model, the fallbacks, then a few listed ones
@@ -91,11 +126,15 @@ _usage: dict[str, dict] = {}
 
 
 class NoProvider(RuntimeError):
-    """No configured provider could answer."""
+    """No configured provider could answer.
 
-    def __init__(self, code: str = "no_provider"):
+    `cut_off`: a provider's answer was cut off at its length limit (a model that thought until the
+    budget ran out); a request about fewer links has a shorter answer and can still work right away."""
+
+    def __init__(self, code: str = "no_provider", cut_off: bool = False):
         super().__init__(code)
         self.code = code
+        self.cut_off = cut_off
 
 
 # ── storage ──────────────────────────────────────────────────────────────────
@@ -153,7 +192,7 @@ def _read() -> dict:
             item["key"] = entry["key"]
         if _valid_model(entry.get("model")) and entry.get("model"):
             item["model"] = entry["model"]
-        if name == "local" and _valid_local_url(entry.get("baseUrl")):
+        if name in _ADDRESSED and _valid_local_url(entry.get("baseUrl")):
             item["baseUrl"] = entry["baseUrl"]
         clean[name] = item
     return {"providers": clean}
@@ -183,10 +222,16 @@ def _settings(name: str, stored: Optional[dict] = None) -> dict:
     spec = PROVIDERS[name]
     env_key = os.environ.get(spec["env"], "") if spec["env"] else ""
     key = env_key if _valid_key(env_key) else stored.get("key", "")
-    base = stored.get("baseUrl", spec["base"]) if name == "local" else spec["base"]
+    base = stored.get("baseUrl", spec["base"]) if name in _ADDRESSED else spec["base"]
     if name == "local" and os.environ.get("LLM_BASE_URL") and _valid_local_url(os.environ["LLM_BASE_URL"]):
         base = os.environ["LLM_BASE_URL"]
-    configured = bool(key) if name != "local" else bool(stored) or bool(os.environ.get("LLM_BASE_URL"))
+    if name == "local":
+        configured = bool(stored) or bool(os.environ.get("LLM_BASE_URL"))
+    elif name == "freellmapi":
+        # Its unified key, or one of its revocable address tokens (…/v1/t/<token>) for clients without headers.
+        configured = bool(key) or "/t/" in urlsplit(base).path
+    else:
+        configured = bool(key)
     return {
         "key": key, "keySource": "environment" if env_key and key == env_key else ("settings" if key else ""),
         "base": base.rstrip("/"), "model": stored.get("model") or spec["model"],
@@ -224,8 +269,8 @@ def update(name: str, changes: dict) -> dict:
                 raise ValueError("enabled must be true or false.")
             entry["enabled"] = changes["enabled"]
         if "baseUrl" in changes:
-            if name != "local":
-                raise ValueError("Only the local server has an address.")
+            if name not in _ADDRESSED:
+                raise ValueError("Only the local server and FreeLLMAPI have an address.")
             if not _valid_local_url(changes["baseUrl"]):
                 raise ValueError("Use an http:// address on this computer or your home network.")
             entry["baseUrl"] = changes["baseUrl"].rstrip("/")
@@ -234,7 +279,8 @@ def update(name: str, changes: dict) -> dict:
         else:
             data["providers"].pop(name, None)
         _write(data)
-        _state[name] = {}
+        _clear(name)
+        _resolved.pop(name, None)   # a new address or model: ask for the configured model again
         return status()
 
 
@@ -262,7 +308,7 @@ def status() -> dict:
             "configured": s["configured"], "enabled": s["enabled"], "keySource": s["keySource"],
             "keyHint": ("…" + s["key"][-4:]) if s["key"] else "",
             "model": s["model"], "defaultModel": spec["model"],
-            "baseUrl": s["base"] if name == "local" else "",
+            "baseUrl": s["base"] if name in _ADDRESSED else "",
             "state": ("off" if not s["enabled"] or not s["configured"]
                       else bench.get("reason", "ready") if until > now else "ready"),
             "retryIn": max(0, int(until - now)) if until > now and until < now + 10**8 else 0,
@@ -307,9 +353,30 @@ def _post(url: str, key: str, payload: dict, timeout: float) -> dict:
 
 def _bench(name: str, reason: str, retry_after: Optional[str] = None) -> None:
     seconds = _COOLDOWN[reason]
-    if retry_after and retry_after.isdigit():
-        seconds = min(max(int(retry_after), 5), 3600)
+    wait = _seconds(retry_after)
+    if wait is not None:
+        seconds = min(max(wait, 5), 3600)
+    elif PROVIDERS[name].get("self_routing") and reason in ("timeout", "bad_response"):
+        # A router that picks a model per request: the next one may well answer.
+        seconds = 5
+    elif reason in _ESCALATING:
+        _streak[name] = _streak.get(name, 0) + 1
+        seconds = min(seconds * 4 ** (_streak[name] - 1), _MAX_BENCH)
     _state[name] = {"until": time.time() + seconds, "reason": reason}
+
+
+def _seconds(value: Optional[str]) -> Optional[int]:
+    """A Retry-After in seconds ("30", or "7.5" as some providers send), else None."""
+    try:
+        number = float(value) if value else None
+    except ValueError:
+        return None
+    return int(number + 0.999) if number is not None and 0 <= number < 10**6 else None
+
+
+def _clear(name: str) -> None:
+    _state[name] = {}
+    _streak[name] = 0
 
 
 def _count(name: str, ok: bool, tokens: int = 0) -> None:
@@ -332,14 +399,18 @@ def chat(messages: list[dict], *, max_tokens: int = 1200, json_mode: bool = True
     stored = _read()
     now = time.time()
     tried = False
+    cut_off = False
     last = "no_provider"
     order = list(ORDER)
     if spread:
-        live = [n for n in ORDER if n != "local" and _settings(n, stored)["configured"] and _settings(n, stored)["enabled"]]
+        # FreeLLMAPI stays first (it spreads requests over its own providers) and the local
+        # server last; parallel batches start with different providers among the rest.
+        live = [n for n in ORDER if n not in ("freellmapi", "local")
+                and _settings(n, stored)["configured"] and _settings(n, stored)["enabled"]]
         if len(live) > 1:
             k = spread % len(live)
             live = live[k:] + live[:k]
-            order = live + [n for n in ORDER if n not in live]
+            order = ["freellmapi"] + live + [n for n in ORDER if n not in live and n != "freellmapi"]
     for name in order:
         if only and name != only:
             continue
@@ -361,7 +432,9 @@ def chat(messages: list[dict], *, max_tokens: int = 1200, json_mode: bool = True
             break
         tried = True
         try:
-            body, used = _complete_any(name, s, model, messages, max_tokens, json_mode, timeout, deadline)
+            patience = max(timeout, PROVIDERS[name].get("patience", 0))
+            budget = max_tokens + PROVIDERS[name].get("thinking_room", 0)
+            body, used = _complete_any(name, s, model, messages, budget, json_mode, patience, deadline)
             message = body["choices"][0]["message"]
             text = message.get("content")
             if not isinstance(text, str) or not text.strip():
@@ -371,18 +444,26 @@ def chat(messages: list[dict], *, max_tokens: int = 1200, json_mode: bool = True
                 raise ValueError("empty")
             usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
             _count(name, True, int(usage.get("total_tokens") or 0))
-            _state[name] = {}
+            _clear(name)
             if used != model:
                 _resolved[name] = used
             return text, name
         except urllib.error.HTTPError as exc:
             reason = ("rate_limited" if exc.code == 429 else "key_rejected" if exc.code in (401, 403)
                       else "unavailable")
-            _note(name, _http_detail(exc, s["key"]))
-            _bench(name, reason, exc.headers.get("Retry-After") if exc.headers else None)
-            last = reason
+            detail = _http_detail(exc, s["key"])
+            _note(name, detail)
+            if reason == "unavailable" and PROVIDERS[name].get("self_routing") and _cut_off(detail):
+                # The router is fine; the model it picked ran out of answer budget. FreeLLMAPI doesn't
+                # bench that model either, and a shorter answer (fewer links) fits: no bench here.
+                cut_off = True
+                last = "bad_response"
+            else:
+                _bench(name, reason, exc.headers.get("Retry-After") if exc.headers else None)
+                last = reason
         except (TimeoutError, urllib.error.URLError, OSError) as exc:
             reason = "timeout" if "timed out" in str(exc).lower() else "unavailable"
+            _details.pop(name, None)   # an earlier error's text would read as the reason for this one
             _bench(name, reason)
             last = reason
         except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
@@ -391,7 +472,23 @@ def chat(messages: list[dict], *, max_tokens: int = 1200, json_mode: bool = True
             _bench(name, "bad_response")
             last = "bad_response"
         _count(name, False)
-    raise NoProvider(last if tried or last != "no_provider" else "no_provider")
+    raise NoProvider(last if tried or last != "no_provider" else "no_provider", cut_off=cut_off)
+
+
+# FreeLLMAPI's names for a model answer that was cut off at the length limit (a model that thought until
+# the budget ran out; FreeLLMAPI then hands over the thinking as the answer) or that wasn't JSON.
+_CUT_OFF_CLASSES = {"format_ignored", "empty_completion"}
+
+
+def _cut_off(detail: str) -> bool:
+    """FreeLLMAPI says every model it tried cut its answer off: "(format_ignored ×1)" in its tally.
+
+    Any other failure in the tally (timeouts, server errors, rate limits) is an outage as before."""
+    tally = re.search(r"failed with upstream provider errors \(([^)]{1,300})\)", detail)
+    if not tally:
+        return False
+    classes = {part.strip().split(" ")[0] for part in tally.group(1).split(",")}
+    return classes <= _CUT_OFF_CLASSES
 
 
 def _retired(code: int, detail: str) -> bool:
@@ -400,7 +497,9 @@ def _retired(code: int, detail: str) -> bool:
         return True
     return code in (400, 422) and re.search(
         r"model.{0,60}(not (found|exist|available|supported)|deprecat|retired|end of life|no longer)"
-        r"|(unknown|invalid|unsupported) model", detail, re.I) is not None
+        r"|(unknown|invalid|unsupported) model"
+        # FreeLLMAPI versions without the auto:* aliases read auto:fast as a profile name.
+        r"|profile '[^']{1,40}' not found", detail, re.I) is not None
 
 
 _SKIP = re.compile(r"embed|vision|-vl\b|guard|reward|retriev|rerank|safety|parse|ocr|clip|whisper|tts|asr|"
@@ -440,7 +539,8 @@ def _complete_any(name: str, s: dict, model: str, messages: list[dict], max_toke
             if not _retired(exc.code, _http_detail(exc, s["key"])):
                 raise
             retired.append(current)
-            if not candidates and not discovered and name != "local":
+            # A router (FreeLLMAPI) picks its own models: never pin one of its listed ids.
+            if not candidates and not discovered and name != "local" and not PROVIDERS[name].get("self_routing"):
                 discovered = True
                 candidates = [m for m in _discovered(name, s) if m not in seen]
             if not candidates or len(seen) >= _MAX_MODEL_TRIES:
@@ -448,7 +548,9 @@ def _complete_any(name: str, s: dict, model: str, messages: list[dict], max_toke
                                   "pick a model from the provider's list.")[:300]
                 raise
             continue
-        if retired:
+        if retired and PROVIDERS[name].get("self_routing"):
+            _note(name, f"This version doesn't offer {retired[0]}; using {current} instead (a newer one tidies faster).")
+        elif retired:
             _note(name, f"{retired[0]} is no longer offered; using {current} instead.")
         return body, current
     raise NoProvider("unavailable")
@@ -456,7 +558,7 @@ def _complete_any(name: str, s: dict, model: str, messages: list[dict], max_toke
 
 def _complete(name: str, s: dict, model: str, messages: list[dict], max_tokens: int,
               json_mode: bool, timeout: float) -> dict:
-    payload = {"model": model, "messages": messages, "temperature": 0.2, "max_tokens": max_tokens,
+    payload = {"model": model, "messages": _shaped(name, messages), "temperature": 0.2, "max_tokens": max_tokens,
                **_extra(name, model)}
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
@@ -468,6 +570,16 @@ def _complete(name: str, s: dict, model: str, messages: list[dict], max_tokens: 
             payload.pop("response_format", None)
             return _post(s["base"] + "/chat/completions", s["key"], payload, timeout)
         raise
+
+
+def _shaped(name: str, messages: list[dict]) -> list[dict]:
+    """The messages as this provider gets them: its prompt_suffix ends the last one (a copy; the
+    caller's messages are left alone, so the next provider gets them as they were)."""
+    suffix = PROVIDERS[name].get("prompt_suffix", "")
+    last = messages[-1] if messages else None
+    if not suffix or not isinstance(last, dict) or last.get("role") != "user" or not isinstance(last.get("content"), str):
+        return messages
+    return [*messages[:-1], {**last, "content": last["content"] + suffix}]
 
 
 def _extra(name: str, model: str) -> dict:
@@ -523,7 +635,7 @@ def _first_local_model(base: str) -> Optional[str]:
 def list_models(name: str, base_override: Optional[str] = None) -> list[str]:
     s = _settings(name)
     base = base_override or s["base"]
-    if name != "local" and not s["key"]:
+    if name not in _ADDRESSED and not s["key"]:
         raise NoProvider("no_key")
     headers = {"User-Agent": "SuperBookmarkManager"}
     if s["key"]:
@@ -533,11 +645,13 @@ def list_models(name: str, base_override: Optional[str] = None) -> list[str]:
             data = json.loads(response.read(2_000_000).decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raise NoProvider("key_rejected" if exc.code in (401, 403) else "unavailable") from None
-    except (urllib.error.URLError, OSError, ValueError):
+    except (urllib.error.URLError, OSError, ValueError, RecursionError):
         raise NoProvider("unavailable") from None
     items = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise NoProvider("bad_response")      # e.g. {"data": 1} from a misbehaving local server
     names = []
-    for item in items or []:
+    for item in items:
         ident = item.get("id") if isinstance(item, dict) else None
         if isinstance(ident, str) and _valid_model(ident):
             names.append(ident.removeprefix("models/"))
@@ -548,7 +662,7 @@ def test(name: str) -> dict:
     """Send one tiny request to one provider and report what happened."""
     if name not in PROVIDERS:
         raise ValueError("Unknown provider.")
-    _state[name] = {}
+    _clear(name)
     _details.pop(name, None)
     _resolved.pop(name, None)
     models: list[str] = []

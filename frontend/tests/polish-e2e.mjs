@@ -106,11 +106,13 @@ try {
     await drawer.waitFor({ state: 'detached' });
     await page.getByPlaceholder('Search… ( / )').fill('');
   });
-  await check('the feed strip caps how many new links it renders at once', async () => {
+  await check('Home renders one new link at a time, however many are waiting', async () => {
     await page.goto(base + '/');
-    await page.locator('.rail-card').first().waitFor();
-    // 400 new links: the strip shows the newest 40 (plus the loop copy), the rest sit behind "See all".
-    assert.equal(await page.locator('.rail-card:not([aria-hidden])').count(), 40);
+    const deck = page.getByRole('region', { name: 'New to sort' });
+    await deck.locator('article[data-post-id]').waitFor();
+    // 400 new links: one card in the deck, three in Up next, the rest behind "See all".
+    assert.equal(await deck.locator('article[data-post-id]').count(), 1);
+    assert.equal(await page.getByRole('region', { name: 'Up next' }).getByRole('listitem').count(), 3);
     assert.match(await page.getByRole('link', { name: /See all/ }).innerText(), /See all 3\d\d/);
   });
   await check('after the first full load, sync asks only for changes', async () => {

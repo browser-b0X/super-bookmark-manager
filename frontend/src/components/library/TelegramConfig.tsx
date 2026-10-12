@@ -115,7 +115,7 @@ export default function TelegramConfig({ onConfigurationChanged }: { onConfigura
       <p>Saved config readable: <b>{yesNo(config?.config_readable)}</b></p>
     </div>
     <p className="mt-2 text-[.72rem] text-[var(--dim)]">
-      {runtimeToken ? "Keys saved here belong only to this Super Bookmark Manager profile. Inherited developer credentials are ignored."
+      {runtimeToken ? "Keys saved here belong only to this SuperBookmarks profile. Inherited developer credentials are ignored."
         : "Environment variables override saved keys. Clearing does not clear environment variables."}
       These indicators describe credential configuration only; they do not check Telegram login or session authorization.
       Saving is not login and does not start refresh.

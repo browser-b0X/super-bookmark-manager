@@ -89,6 +89,12 @@ export function libraryStorage<S>(): PersistStorage<S> {
   let scheduled = false;
   let seq = 0;
   let lastLocalSeq = 0;
+  // A cache in IndexedDB is read after the store has started. A write before that read has
+  // been applied would hold the store's empty starting library and replace the real cache,
+  // which other tabs read; the read replaces that state anyway, so such writes are dropped.
+  // The first read only: later re-reads (another tab wrote) start from a full library.
+  const read = new Set<string>();
+  const reading = new Set<string>();
 
   /** localStorage path: synchronous, exactly like the previous persist behaviour. */
   const writeLocal = (name: string, serialized: string): boolean => {
@@ -155,17 +161,28 @@ export function libraryStorage<S>(): PersistStorage<S> {
         try { return JSON.parse(raw) as StorageValue<S>; } catch { return null; }
       }
       if (raw === MARKER) useStorageHealth.setState({ backend: "indexeddb" });
+      const first = !read.has(name);
+      read.add(name);
+      if (first) reading.add(name);
       return idb<string | undefined>("readonly", s => s.get(name)).then(
         value => (typeof value === "string" ? JSON.parse(value) as StorageValue<S> : null),
         error => { reportError(error); return null; },
-      );
+      ).finally(() => {
+        // The store applies what was read in the promise callbacks that follow: writes
+        // resume one task later, from the loaded library.
+        if (first) setTimeout(() => reading.delete(name), 0);
+      });
     },
     setItem(name, value) {
+      if (reading.has(name)) return;
       latest = { name, value };
       // Small caches write synchronously (as before) so tests and quick reloads
-      // always see the latest state; large ones coalesce onto the next tick.
+      // always see the latest state. Large ones are gathered into one write a
+      // second: each is several megabytes of JSON, and writing them four times a
+      // second while an import's previews arrive kept the page busy. Leaving or
+      // hiding the tab writes at once (above), and SQLite holds every saved change.
       if (useStorageHealth.getState().backend === "local") return flush();
-      if (!scheduled) { scheduled = true; setTimeout(() => { void flush(); }, 250); }
+      if (!scheduled) { scheduled = true; setTimeout(() => { void flush(); }, 1000); }
     },
     removeItem(name) {
       try { localStorage.removeItem(name); } catch { /* ignore */ }

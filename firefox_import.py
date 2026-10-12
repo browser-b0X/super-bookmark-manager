@@ -6,6 +6,7 @@ from pathlib import Path
 
 MAX_BYTES = 64 * 1024 * 1024
 MAX_BOOKMARKS = 50000
+MAX_ROWS = 200000              # bookmarks, folders, tags and separators together
 COPY_GUIDANCE = "Firefox may still be using this database. Close Firefox or make a copy of places.sqlite, then select the copy."
 
 
@@ -48,8 +49,9 @@ def parse_copy(raw):
                     info = conn.execute(f"PRAGMA table_info({table})").fetchall()
                     if not columns.issubset({c[1] for c in info}) or not any(c[1] == "id" and c[5] == 1 for c in info):
                         raise FirefoxImportError("Incompatible Firefox bookmark schema. Export bookmarks as HTML instead.")
+                rows = conn.execute("SELECT COUNT(*) FROM moz_bookmarks").fetchone()[0]
                 count = conn.execute("SELECT COUNT(*) FROM moz_bookmarks WHERE type=1").fetchone()[0]
-                if count > MAX_BOOKMARKS:
+                if count > MAX_BOOKMARKS or rows > MAX_ROWS:
                     raise FirefoxImportError("Firefox copy exceeds the 50000 bookmark limit. Export a smaller HTML selection instead.")
                 # Count only; never select unbookmarked history URLs or titles.
                 ignored = conn.execute("SELECT COUNT(*) FROM moz_places p WHERE NOT EXISTS "
@@ -59,17 +61,33 @@ def parse_copy(raw):
                 guid_col = "b.guid" if "guid" in present else "NULL"
                 order = "b.parent, b.position, b.id" if "position" in present else "b.parent, b.id"
                 # Folders keep the owner's organisation; dates keep when it was saved.
-                folders = {}
+                folders, tag_root = {}, None
                 for folder_id, parent, title, guid in conn.execute(
                         f"SELECT b.id, b.parent, b.title, {guid_col} FROM moz_bookmarks b WHERE b.type=2 ORDER BY {order}"):
                     name = ROOT_NAMES.get(guid) or (title if isinstance(title, str) else "")
                     folders[folder_id] = {"type": "folder", "name": "" if guid == "root________" else name,
                                           "children": [], "_parent": parent}
+                    if guid == "tags________":
+                        tag_root = folder_id
+                # Firefox keeps each tag as a folder under its "tags" root, holding a second
+                # row for every tagged bookmark. Those rows are not bookmarks of their own:
+                # importing them filed copies under "tags" and dropped the real entry as a duplicate.
+                tag_folders = set()
+                if tag_root is not None:
+                    for folder_id in folders:
+                        walk, steps = folder_id, 0
+                        while walk is not None and steps < 64:
+                            if walk == tag_root:
+                                tag_folders.add(folder_id)
+                                break
+                            walk, steps = folders[walk]["_parent"] if walk in folders else None, steps + 1
                 top = {"type": "folder", "name": "", "children": []}
                 bookmarks = []
                 for place_id, url, title, parent, added in conn.execute(
                         f"SELECT p.id, p.url, b.title, b.parent, {date_col} FROM moz_bookmarks b "
                         f"LEFT JOIN moz_places p ON p.id=b.fk WHERE b.type=1 ORDER BY {order}"):
+                    if parent in tag_folders:
+                        continue
                     if place_id is None or not isinstance(url, str) or not url.strip() or (title is not None and not isinstance(title, str)):
                         raise FirefoxImportError("Malformed bookmark entry or invalid URL reference. No bookmarks were imported.")
                     node = {"type": "url", "url": url, "name": title or ""}
@@ -80,14 +98,21 @@ def parse_copy(raw):
                     folders.get(parent, top)["children"].append(node)
                 for folder_id, folder in folders.items():
                     parent = folders.get(folder.pop("_parent"))
+                    if folder_id in tag_folders:
+                        continue
                     (parent if parent is not None and parent is not folder else top)["children"].append(folder)
-                return {"roots": {"bookmarks": top}, "historyIgnored": ignored, "bookmarkRows": count,
+                return {"roots": {"bookmarks": top}, "historyIgnored": ignored, "bookmarkRows": len(bookmarks),
                         "walMode": len(raw) > 19 and raw[18] == 2 and raw[19] == 2}
             finally:
                 if conn is not None:
                     conn.close()
     except FirefoxImportError:
         raise
+    except sqlite3.OperationalError as exc:
+        if "interrupt" in str(exc).lower():
+            # The 5 s reading limit, not a locked file.
+            raise FirefoxImportError("This copy is too large to read in time. Export bookmarks as HTML instead.") from None
+        raise FirefoxImportError("Could not safely read this SQLite copy (incomplete, incompatible or unavailable). " + COPY_GUIDANCE) from None
     except (OSError, sqlite3.Error):
         # Never echo SQL, paths, arbitrary database text or history URLs.
         raise FirefoxImportError("Could not safely read this SQLite copy (incomplete, incompatible or unavailable). " + COPY_GUIDANCE) from None

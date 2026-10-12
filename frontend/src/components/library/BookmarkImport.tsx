@@ -10,6 +10,7 @@ import { chatNameFrom, parseWhatsAppChat } from "../../lib/whatsapp";
 import { applyImportOptions, planImport, type FolderNode, type ImportPlan } from "../../lib/importPlan";
 import { applyImportTriage, IMPORT_TRIAGE_LABELS } from "../../lib/importTriage";
 import { importFilePosts } from "../../lib/importCategorization";
+import { useDialog } from "../../lib/useDialog";
 import { touchedSinceImport, useLibrary, type ImportRecord } from "../../store/library";
 import { usePrefs, type ImportTriage } from "../../store/prefs";
 import { RESERVED_SHELVES } from "../../lib/shelves";
@@ -81,9 +82,11 @@ function UndoDialog({ record, onClose }: { record: ImportRecord; onClose: (messa
   const [includeTouched, setIncludeTouched] = useState(false);
   const batch = posts.filter(p => p.importBatchId === record.id);
   const touched = batch.filter(touchedSinceImport);
+  const box = useRef<HTMLDivElement>(null);
+  useDialog(box, () => onClose());
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal mt-[16vh] w-[min(480px,92vw)] p-5" role="dialog" aria-label="Undo import">
+      <div ref={box} tabIndex={-1} className="modal mt-[16vh] w-[min(480px,92vw)] p-5 outline-none" role="dialog" aria-modal="true" aria-label="Undo import">
         <h3 className="text-[.9rem] font-semibold">Undo import of {record.fileName}?</h3>
         <p className="mt-2 text-[.78rem] text-[var(--dim)]">
           {batch.length - touched.length} link{batch.length - touched.length === 1 ? "" : "s"} from this import will be removed.
@@ -227,6 +230,10 @@ export default function BookmarkImport() {
         a Telegram JSON export, or a WhatsApp chat export (.txt, or the .zip an iPhone makes). The file type is detected
         for you and nothing is saved until you confirm.
       </p>
+      <p className="mt-1 text-[.72rem] text-[var(--faint)]">
+        Importing the same file again keeps your titles, shelves, tags, notes, favourites and reading state. Only the file you choose is read;
+        no browser profile is scanned. Keep your export.
+      </p>
 
       {!preview && (
         <div
@@ -295,7 +302,7 @@ export default function BookmarkImport() {
                 </select>
               </label>
             )}
-            {preview.format !== "telegram" && (
+            {preview.format !== "telegram" && preview.format !== "whatsapp" && (
               <label className="flex items-center gap-2">Show in Catch Up
                 <select className="input" style={{ width: "auto", padding: "2px 6px", fontSize: ".72rem" }} value={importTriage}
                   onChange={e => setImportTriage(e.target.value as ImportTriage)} aria-label="Which imported bookmarks appear in Catch Up">

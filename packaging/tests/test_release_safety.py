@@ -19,7 +19,7 @@ import telegram_config
 class Safety(unittest.TestCase):
     def test_forbidden_paths_before_content_access(self):
         names = ['saved_posts.db','x.sqlite','x.sqlite-wal','x.session','x.session-journal',
-                 'config.json','credentials.json','secrets.txt','.env','.env.local','backups/a.txt',
+                 'config.json','ai.json','helper.json','0123456789abcdef0123456789abcdef.tg.json','restored-libraries/a.txt','credentials.json','secrets.txt','.env','.env.local','backups/a.txt',
                  'exports/a.json','profile/Preferences','User Data/Default/History']
         for name in names:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:

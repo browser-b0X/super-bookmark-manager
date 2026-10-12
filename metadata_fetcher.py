@@ -16,6 +16,7 @@ import threading
 import time
 from urllib.parse import parse_qs, urljoin, urlsplit
 
+import reddit_post
 import safe_http
 import storage
 
@@ -136,6 +137,23 @@ def cached_thumb(code):
     return ""
 
 
+def missing_thumbs(codes):
+    """The cache codes among `codes` whose picture file is not on this computer.
+
+    A JSON backup keeps each link's /thumb/ address but not the picture files, so after a
+    restore on a new install every one is missing until its preview is fetched again (a
+    fetch stores the picture under the same code)."""
+    missing = []
+    for code in codes:
+        local = os.path.join(THUMB_CACHE_DIR, code)
+        try:
+            if os.path.islink(local) or not os.path.isfile(local) or os.path.getsize(local) == 0:
+                missing.append(code)
+        except OSError:
+            missing.append(code)
+    return missing
+
+
 def install_thumb(code, data, mime="image/jpeg"):
     """Atomically install verified image bytes under an explicit cache code."""
     if not re.fullmatch(r"[A-Za-z0-9_-]{2,64}", code) or not _valid_image(data, mime):
@@ -237,6 +255,9 @@ def _decode_html(body, content_type):
     if not label:
         sniffed = _META_CHARSET.search(body[:4096])
         label = sniffed.group(1).decode("ascii", "ignore") if sniffed else ""
+        # A <meta> that could be read as ASCII can't be UTF-16: browsers read it as UTF-8.
+        if label.lower().replace("_", "-").startswith("utf-16"):
+            label = "utf-8"
     encoding = _ENCODING_ALIASES.get(label.lower(), label or "utf-8")
     try:
         return body.decode(encoding, errors="replace")
@@ -354,6 +375,26 @@ class _MetadataParser(HTMLParser):
             self.article_words += count
 
 
+_PARSE_CHUNK = 256 * 1024
+
+
+def _parse(parser, text, deadline):
+    """Feed a page in pieces until the deadline; never call close().
+
+    On Python builds before the 2025 html.parser fixes (the packaged runtime is
+    3.12.10), close() re-scans an unterminated tag or comment at the end of a
+    page quadratically: 60 KB of "<a " took 43 s. Feeding is linear. Text after
+    the last tag of a page is not flushed, which only affects the word count.
+    """
+    try:
+        for offset in range(0, len(text), _PARSE_CHUNK):
+            if time.monotonic() >= deadline:
+                break
+            parser.feed(text[offset:offset + _PARSE_CHUNK])
+    except (AssertionError, ValueError):
+        pass  # keep whatever was parsed before malformed markup
+
+
 def _jsonld_fields(blocks):
     """First article/video/product-like node of the page's JSON-LD."""
     wanted = {"article", "newsarticle", "blogposting", "techarticle", "scholarlyarticle", "report",
@@ -363,7 +404,7 @@ def _jsonld_fields(blocks):
     for raw in blocks:
         try:
             data = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):   # one broken or absurdly deep block never costs the preview
             continue
         pending = [data]
         while pending and len(nodes) < 64:
@@ -418,7 +459,7 @@ def _iso_date(value):
         if not 1990 <= parsed.year <= 2100:
             return ""
         return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    except ValueError:
+    except (ValueError, OverflowError):
         match = re.match(r"^(\d{4})[-/](\d{2})[-/](\d{2})", raw)
         return f"{match.group(1)}-{match.group(2)}-{match.group(3)}T00:00:00Z" if match else ""
 
@@ -579,29 +620,51 @@ def _from_oembed(data):
 
 
 def _reddit(url, deadline):
-    parts = urlsplit(url)
-    if not re.match(r"^/r/[^/]+/comments/", parts.path):
+    """Title, text, picture, author and subreddit from the post's public RSS feed (reddit_post.py).
+
+    Reddit's .json addresses now need an API login and its pages are a script
+    shell, so the feed is the one public source left.
+    """
+    link = reddit_post.parse_link(url)
+    if not link:
         return {}
-    data = _json(f"https://www.reddit.com{parts.path.rstrip('/')}.json?raw_json=1&limit=1", deadline, limit=1024 * 1024)
-    post = data[0]["data"]["children"][0]["data"] if isinstance(data, list) and data else {}
-    if not isinstance(post, dict):
-        return {}
-    image = ""
-    preview = post.get("preview") or {}
-    if isinstance(preview, dict) and preview.get("images"):
-        image = ((preview["images"][0] or {}).get("source") or {}).get("url", "")
-    if not image and isinstance(post.get("thumbnail"), str) and post["thumbnail"].startswith("http"):
-        image = post["thumbnail"]
-    created = post.get("created_utc")
-    published = ""
-    if isinstance(created, (int, float)):
-        from datetime import datetime, timezone
-        published = datetime.fromtimestamp(created, timezone.utc).isoformat().replace("+00:00", "Z")
-    return {"title": _clean_text(str(post.get("title") or ""), 1000),
-            "summary": _clean_text(str(post.get("selftext") or ""), 4000),
-            "image": image, "author": f"u/{post['author']}" if isinstance(post.get("author"), str) else "",
-            "site": f"r/{post['subreddit']}" if isinstance(post.get("subreddit"), str) else "Reddit",
-            "published": published}
+    kind, subreddit, identifier = link
+    if kind == "share":
+        # A share link: the redirect names the post.
+        reddit_post.wait_turn()
+        resolved = reddit_post.parse_link(safe_http.get(url, deadline=deadline, headers=_HEADERS).url)
+        if not resolved or resolved[0] != "post":
+            return {}
+        _, subreddit, identifier = resolved
+    reddit_post.wait_turn()
+    post = None
+    try:
+        response = safe_http.get(reddit_post.data_url(subreddit, identifier), deadline=deadline,
+                                 limit=reddit_post.DATA_LIMIT, headers={**_HEADERS, "Accept": "application/atom+xml"})
+        post, details = reddit_post.parse(response.body, identifier)
+    except safe_http.SafeHTTPError as exc:
+        if exc.status == 429:
+            raise                                  # slow down; the app tries again later
+        failure = exc
+    else:
+        failure = None
+    if post is None:
+        # No feed (Reddit may close it): its embed data still names the post.
+        try:
+            reddit_post.wait_turn()
+            answer = safe_http.get(reddit_post.oembed_url(subreddit, identifier), deadline=deadline,
+                                   limit=64 * 1024, headers={**_HEADERS, "Accept": "application/json"})
+            post, details = reddit_post.parse_oembed(answer.body, identifier, subreddit)
+        except safe_http.SafeHTTPError:
+            post = None
+        if post is None:
+            if failure:
+                raise failure
+            return {}
+    sub = details["subreddit"] or subreddit
+    return {"title": _clean_text(details["title"], 1000), "summary": _clean_text(details["summary"], 4000),
+            "image": details["image"], "author": f"u/{details['author']}" if details["author"] else "",
+            "site": f"r/{sub}" if sub else "Reddit", "published": details["published"]}
 
 
 def _arxiv_abstract_url(url):
@@ -668,18 +731,14 @@ def _crawler_friendly(url):
 def _crawler_page(page_url, deadline):
     """Fetch the page as WhatsApp's link-preview crawler; None when that fails too."""
     try:
-        response = safe_http.get(page_url, deadline=deadline, headers=_WHATSAPP_HEADERS)
+        response = safe_http.get(page_url, deadline=deadline, headers=_WHATSAPP_HEADERS, truncate=True)
     except safe_http.SafeHTTPError:
         return None
     content_type = response.headers.get("content-type", "").lower()
     if content_type.split(";", 1)[0].strip() not in ("text/html", "application/xhtml+xml"):
         return None
     parser = _MetadataParser()
-    try:
-        parser.feed(_decode_html(response.body, content_type))
-        parser.close()
-    except (AssertionError, ValueError):
-        pass
+    _parse(parser, _decode_html(response.body, content_type), deadline)
     meta = parser.meta
     return {
         "title": meta.get("og:title") or meta.get("twitter:title") or "".join(parser.title),
@@ -704,17 +763,31 @@ def _fetch_metadata(url, deadline):
         if endpoint:
             safe_http.validate_url(url, deadline)
             special = _from_oembed(_json(endpoint, deadline))
-        elif _host_matches(url, "reddit.com"):
+        elif reddit_post.parse_link(url):
             safe_http.validate_url(url, deadline)
             special = _reddit(url, deadline)
-    except (safe_http.SafeHTTPError, ValueError, KeyError, IndexError, TypeError):
+            if not special.get("title"):
+                return _result("http_error")   # removed, private or not a post
+            # The page itself is an empty script shell: the feed is the whole preview.
+            return _finish(url, url, special, "", [], None, deadline, instagram=False)
+    except safe_http.SafeHTTPError as exc:
+        if reddit_post.parse_link(url):
+            # Reddit limits how often its feeds may be read: come back later.
+            result = _result("busy" if exc.status == 429 else exc.code)
+            if exc.status:
+                result["httpStatus"] = exc.status
+            return result
+        special = {}
+    except (ValueError, KeyError, IndexError, TypeError):
         special = {}
     if special.get("title") and special.get("image") or (endpoint and special.get("title")):
         # oEmbed answered: no need to download the (often script-only) page.
         return _finish(url, url, special, "", [], None, deadline, instagram=False)
 
     try:
-        response = safe_http.get(page_url, deadline=deadline, headers=_INSTAGRAM_HEADERS if instagram else _HEADERS)
+        # The preview is in the page's head: a page over the limit is read up to it, not refused.
+        response = safe_http.get(page_url, deadline=deadline, headers=_INSTAGRAM_HEADERS if instagram else _HEADERS,
+                                 truncate=True)
     except safe_http.SafeHTTPError as exc:
         if special.get("title"):
             return _finish(url, url, special, "", [], None, deadline, instagram=False)
@@ -737,11 +810,7 @@ def _fetch_metadata(url, deadline):
         result["finalUrl"] = response.url
         return result
     parser = _MetadataParser()
-    try:
-        parser.feed(_decode_html(response.body, content_type))
-        parser.close()
-    except (AssertionError, ValueError):
-        pass  # keep whatever was parsed before malformed markup
+    _parse(parser, _decode_html(response.body, content_type), deadline)
     safe_http.remaining(deadline)
     meta = parser.meta
     ld = _jsonld_fields(parser.jsonld)

@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in Super Bookmark Manager doesn't work as described.
+description: Something in SuperBookmarks doesn't work as described.
 labels: [bug]
 body:
   - type: markdown
@@ -30,7 +30,7 @@ body:
     attributes:
       label: Version
       description: Shown in Settings → Application ("Running build"), or the release you installed.
-      placeholder: e.g. v0.2.0, build 10/3/2026 3:53 PM
+      placeholder: e.g. v0.3.0, build 10/12/2026 3:53 PM
   - type: dropdown
     id: os
     attributes:
@@ -48,7 +48,7 @@ body:
     attributes:
       label: Area
       multiple: true
-      options: ["Installing, starting or quitting", "The feed or library", "Importing bookmarks", "Telegram", "WhatsApp import", "Link previews", "AI providers or Tidy up with AI", "Search, shelves or tags", "Backup and restore", "Other"]
+      options: ["Installing, starting or quitting", "Home or the library", "Importing bookmarks", "Save from your browser (bookmark button)", "Telegram", "WhatsApp import", "Link previews", "Saved copies", "Sharing a shelf", "AI providers or Tidy up with AI", "Search, shelves or tags", "Themes and layout", "Backup and restore", "Other"]
   - type: textarea
     id: logs
     attributes:

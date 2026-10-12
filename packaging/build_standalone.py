@@ -22,7 +22,7 @@ from release_paths import CANDIDATE
 ROOT = Path(__file__).resolve().parents[1]
 
 LOCAL_MODULES = [
-    "config", "storage", "app", "metadata_fetcher", "safe_http",
+    "config", "storage", "app", "metadata_fetcher", "safe_http", "archive", "x_post", "tiktok_post", "instagram_post", "video_helper", "tls_trust", "truststore",
     "library_backup", "firefox_import", "telegram_refresh",
     "categorizer", "ai_providers", "ai_library", "taxonomy", "telegram_config", "telegram_auth", "telethon", "waitress",
 ]

@@ -13,13 +13,16 @@ import ssl
 import threading
 import time
 import zlib
+
+import tls_trust
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 TOTAL_TIMEOUT = 8.0
 CONNECT_TIMEOUT = 2.0
 DNS_TIMEOUT = 2.0
 # An anonymous Instagram post shell measures ~637 KB; below that it is a
-# deterministic too_large, not a size guard.
+# deterministic too_large, not a size guard. A preview reads only the first
+# HTML_LIMIT bytes of a bigger page (get(..., truncate=True)): its <head> is there.
 HTML_LIMIT = 1024 * 1024
 IMAGE_LIMIT = 4 * 1024 * 1024
 MAX_REDIRECTS = 3
@@ -54,6 +57,7 @@ class Response:
     status: int
     headers: dict
     body: bytes
+    truncated: bool = False   # only the first `limit` bytes (get(..., truncate=True))
 
 
 def remaining(deadline):
@@ -205,12 +209,13 @@ class _PinnedConnection(http.client.HTTPConnection):
         raise SafeHTTPError("network_error")
 
 
-def _request(target, address, deadline, limit, headers):
+def _request(target, address, deadline, limit, headers, truncate=False):
     sock = None
     connection = None
     response = None
     timer = None
     active_socket = []
+    connected = False      # TCP connect (and TLS handshake) done: the address itself works
 
     def abort():
         for active in active_socket[:]:
@@ -230,12 +235,17 @@ def _request(target, address, deadline, limit, headers):
         timer.daemon = True
         timer.start()
         if target.scheme == "https":
-            context = ssl.create_default_context()
-            # Attach before handshake so the wall timer can interrupt TLS too.
-            sock = context.wrap_socket(sock, server_hostname=target.host, do_handshake_on_connect=False)
-            active_socket.append(sock)
+            # The operating system's certificate check when the app enabled it
+            # (tls_trust), otherwise Python's own.
+            context = tls_trust.client_context()
+            # The handshake runs inside wrap_socket: on Windows the system check
+            # reads the server's certificates as soon as wrap_socket returns, so
+            # they must have arrived by then. The wall timer still interrupts a
+            # stalled handshake through the raw socket registered above.
             sock.settimeout(min(CONNECT_TIMEOUT, remaining(deadline)))
-            sock.do_handshake()
+            sock = context.wrap_socket(sock, server_hostname=target.host, do_handshake_on_connect=True)
+            active_socket.append(sock)
+        connected = True
         # Only the TCP connect and TLS handshake are held to CONNECT_TIMEOUT. A
         # slow server may take several seconds to send its first byte; that is
         # what the overall deadline is for.
@@ -253,6 +263,13 @@ def _request(target, address, deadline, limit, headers):
         response = connection.getresponse()
         remaining(deadline)
         response_headers = {name.lower(): response.getheader(name) for name in response.headers.keys()}
+        # Redirect/error bodies are unused; close rather than downloading them.
+        # Checked before the size and encoding: a gone page or a redirect whose
+        # unused body is large is still reported as gone, or followed.
+        if response.status in (301, 302, 303, 307, 308):
+            return Response(target.url, response.status, response_headers, b"")
+        if not 200 <= response.status < 300:
+            raise SafeHTTPError("http_error", response.status)
         encoding = response_headers.get("content-encoding", "identity").lower().strip()
         if encoding not in ("", "identity", "gzip"):
             raise SafeHTTPError("unsupported_encoding")
@@ -260,18 +277,14 @@ def _request(target, address, deadline, limit, headers):
         if length is not None:
             if not re.fullmatch(r"[0-9]+", length) or len(length) > 12:
                 raise SafeHTTPError("too_large")
-            if int(length) > limit:
+            if int(length) > limit and not truncate:
                 raise SafeHTTPError("too_large")
         transfer = response_headers.get("transfer-encoding", "").lower().strip()
         if transfer not in ("", "chunked") or (transfer and length is not None):
             raise SafeHTTPError("network_error")
-        # Redirect/error bodies are unused; close rather than downloading them.
-        if response.status in (301, 302, 303, 307, 308):
-            return Response(target.url, response.status, response_headers, b"")
-        if not 200 <= response.status < 300:
-            raise SafeHTTPError("http_error", response.status)
         body = bytearray()
         wire_size = 0
+        cut = False
         decoder = zlib.decompressobj(16 + zlib.MAX_WBITS) if encoding == "gzip" else None
         while not response.isclosed():
             sock.settimeout(remaining(deadline))
@@ -280,7 +293,7 @@ def _request(target, address, deadline, limit, headers):
             if not chunk:
                 break
             wire_size += len(chunk)
-            if wire_size > limit:
+            if wire_size > limit and not truncate:
                 raise SafeHTTPError("too_large")
             # max_length bounds allocation, not just the eventual size check.
             # One extra decoded byte proves overflow; never flush unboundedly.
@@ -289,23 +302,31 @@ def _request(target, address, deadline, limit, headers):
                     raise SafeHTTPError("network_error")
                 chunk = decoder.decompress(chunk, limit + 1 - len(body))
             body.extend(chunk)
-            if len(body) > limit:
-                raise SafeHTTPError("too_large")
+            if len(body) > limit or wire_size > limit:
+                if not truncate:
+                    raise SafeHTTPError("too_large")
+                # The caller wants the start of the page only: keep `limit` bytes, stop reading.
+                del body[limit:]
+                cut = True
+                break
             if decoder is not None and decoder.unused_data:
                 # Reject trailing garbage or concatenated members, not a chain.
                 raise SafeHTTPError("network_error")
-        if decoder is not None and not decoder.eof:
+        if not cut and decoder is not None and not decoder.eof:
             raise SafeHTTPError("network_error")
-        if length is not None and wire_size != int(length) and response.status != 204:
+        if not cut and length is not None and wire_size != int(length) and response.status != 204:
             raise SafeHTTPError("network_error")
-        return Response(target.url, response.status, response_headers, bytes(body))
+        return Response(target.url, response.status, response_headers, bytes(body), truncated=cut)
     except SafeHTTPError:
         raise
     except (socket.timeout, TimeoutError):
-        raise SafeHTTPError("timeout") from None
+        error = SafeHTTPError("timeout")
+        error.unreachable = not connected
+        raise error from None
     except Exception:
-        code = "timeout" if time.monotonic() >= deadline else "network_error"
-        raise SafeHTTPError(code) from None
+        error = SafeHTTPError("timeout" if time.monotonic() >= deadline else "network_error")
+        error.unreachable = not connected
+        raise error from None
     finally:
         if timer:
             timer.cancel()
@@ -319,25 +340,29 @@ def _request(target, address, deadline, limit, headers):
             sock.close()
 
 
-def _request_any(target, addresses, deadline, limit, headers):
+def _request_any(target, addresses, deadline, limit, headers, truncate=False):
     """Try each validated address in turn: a broken IPv6 route must not sink a
-    dual-stack site. Only connection-level failures move on to the next one."""
+    dual-stack site. Only connection-level failures move on to the next one,
+    including a connect that timed out (a route that silently drops packets)."""
     last = None
     for address in addresses[:4]:
         try:
-            return _request(target, address, deadline, limit, headers)
+            return _request(target, address, deadline, limit, headers, truncate)
         except SafeHTTPError as exc:
-            if exc.code != "network_error" or time.monotonic() >= deadline:
+            moves_on = exc.code == "network_error" or (exc.code == "timeout" and getattr(exc, "unreachable", False))
+            if not moves_on or time.monotonic() >= deadline:
                 raise
             last = exc
     raise last or SafeHTTPError("network_error")
 
 
-def get(url, *, deadline=None, limit=HTML_LIMIT, headers=None):
+def get(url, *, deadline=None, limit=HTML_LIMIT, headers=None, truncate=False):
+    """`truncate`: a body over `limit` is cut to its first `limit` bytes (Response.truncated)
+    instead of failing with too_large; for reading a page's head, never for a whole file."""
     deadline = deadline if deadline is not None else time.monotonic() + TOTAL_TIMEOUT
     for hop in range(MAX_REDIRECTS + 1):
         target, addresses = validate_url(url, deadline)
-        response = _request_any(target, addresses, deadline, limit, headers)
+        response = _request_any(target, addresses, deadline, limit, headers, truncate)
         remaining(deadline)
         if response.status not in (301, 302, 303, 307, 308):
             return response

@@ -33,6 +33,10 @@ def fixture(mode="valid"):
         if mode == "failure":
             conn.execute("DELETE FROM moz_bookmarks WHERE type=1 AND id<>101")
             conn.execute("UPDATE moz_places SET url='http://metadata.fixture.test/failure' WHERE id=1")
+        if mode == "tagged":
+            # Firefox tags: a folder per tag under the "tags" root, holding a second row per tagged bookmark.
+            conn.execute("INSERT INTO moz_bookmarks VALUES(50,2,NULL,10,1,'Tags','tags________'),(51,2,NULL,50,0,'baking',NULL)")
+            conn.execute("INSERT INTO moz_bookmarks VALUES(52,1,2,51,0,NULL,NULL)")
         if mode == "view":
             conn.executescript("DROP TABLE moz_bookmarks; CREATE VIEW moz_bookmarks AS SELECT 1 AS id,1 AS type,1 AS fk,1 AS parent,'bad' AS title;")
         conn.commit()

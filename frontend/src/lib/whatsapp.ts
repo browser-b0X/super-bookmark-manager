@@ -1,6 +1,7 @@
 import type { SavedPost } from "../types";
 import type { BookmarkImportResult } from "./bookmarks";
 import { postFromUrl } from "./providers";
+import { linksInText } from "./textLinks";
 
 /*
  * WhatsApp "Export chat" files. Phones export either a plain text file
@@ -17,7 +18,6 @@ import { postFromUrl } from "./providers";
  */
 
 const HEADER = /^‎?\[?(\d{1,4})[./-](\d{1,2})[./-](\d{1,4}),?\s+(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?[\s  ]*([AaPp]\.?\s?[Mm]\.?)?\]?\s*(?:[-–]\s*)?(.*)$/;
-const URL_RE = /https?:\/\/[^\s"'<>]+/gi;
 const OMITTED = /^‎?(?:<Media omitted>|<attached: .*>|(?:image|video|audio|sticker|GIF|document) omitted|This message was deleted|You deleted this message|null)$/i;
 
 interface Line { a: number; b: number; c: number; h: number; m: number; s: number; ampm: string; rest: string }
@@ -70,17 +70,7 @@ export function splitMessages(text: string): Message[] {
   return out;
 }
 
-function urlsIn(text: string): string[] {
-  const found: string[] = [];
-  for (const match of text.matchAll(URL_RE)) {
-    let url = match[0].replace(/[.,;:!?…]+$/, "");
-    for (const [open, close] of [["(", ")"], ["[", "]"], ["{", "}"]]) {
-      while (url.endsWith(close) && url.split(close).length > url.split(open).length) url = url.slice(0, -1);
-    }
-    found.push(url);
-  }
-  return found;
-}
+const urlsIn = linksInText;
 
 /** Turn a chat export into library links (one per distinct URL, first mention wins). */
 export function parseWhatsAppChat(text: string, chatName = ""): BookmarkImportResult & { messages: number } {

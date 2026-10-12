@@ -59,7 +59,13 @@ def install_guard(root):
         if event in ("socket.connect", "socket.bind"):
             if args[0] not in _ALLOWED_SOCKETS:
                 reason = "non-owned socket"
-        elif event in ("socket.getaddrinfo", "socket.gethostbyaddr", "socket.gethostbyname", "socket.sendto", "subprocess.Popen"):
+        elif event == "subprocess.Popen":
+            # Only a stand-in program the test itself wrote into its fixture folder
+            # (the fake video helper); never a real tool.
+            program = args[0] if args[0] else (list(args[1])[:1] or [""])[0]
+            if not any(_normal(str(program)).startswith(root) for root in _GUARD_ROOTS):
+                reason = "external DNS/network/process"
+        elif event in ("socket.getaddrinfo", "socket.gethostbyaddr", "socket.gethostbyname", "socket.sendto"):
             reason = "external DNS/network/process"
         elif event == "sqlite3.connect":
             if not any(_normal(args[0]).startswith(root) for root in _GUARD_ROOTS):

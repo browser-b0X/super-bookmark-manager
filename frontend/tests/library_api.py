@@ -129,6 +129,52 @@ class LibraryApiTests(unittest.TestCase):
         self.assertEqual({k: saved[k] for k in ("ok", "posts", "deletedUrls", "legacyRows", "rejected")},
                          {"ok": True, "posts": [], "deletedUrls": [], "legacyRows": [], "rejected": []})
 
+    def test_a_link_imported_again_after_an_undo_is_not_reported_purged(self):
+        first = post(1)
+        self.save([first])
+        rev_before = self.client.get("/api/library").get_json()["rev"]
+        purge = self.client.post("/api/library", json={"posts": [], "deletedUrls": [], "purgeUrls": [first["url"]]}).get_json()
+        self.assertEqual(purge["posts"], [])
+        self.save([post(1, updatedAt="2026-09-18T12:00:00Z")])            # imported again
+        delta = self.client.get(f"/api/library?since={rev_before}").get_json()
+        self.assertEqual([p["url"] for p in delta["posts"]], [first["url"]])
+        self.assertEqual(delta["purgedUrls"], [], "a live link is never also reported purged")
+
+    def test_a_refused_write_comes_back_with_what_sqlite_holds(self):
+        newer = post(1, userNotes="Newer note from another browser", updatedAt="2026-09-18T12:00:00Z")
+        self.save([newer])
+        rev = self.client.get("/api/library").get_json()["rev"]
+        older = post(1, userNotes="Older note", updatedAt="2026-09-17T12:00:00Z")
+        answer = self.client.post("/api/library", json={"posts": [older], "deletedUrls": [], "since": rev}).get_json()
+        self.assertEqual([r["reason"] for r in answer["rejected"]], ["stale"])
+        self.assertEqual([p["userNotes"] for p in answer["posts"]], ["Newer note from another browser"],
+                         "the change-only answer still carries SQLite's version of the refused link")
+        twin = post(2, id="twin", url=newer["url"], updatedAt="2026-09-19T12:00:00Z")
+        answer = self.client.post("/api/library", json={"posts": [twin], "deletedUrls": [], "since": rev}).get_json()
+        self.assertEqual([r["reason"] for r in answer["rejected"]], ["duplicate_url"])
+        self.assertEqual([p["id"] for p in answer["posts"]], ["fixture-1"])
+
+    def test_a_link_stored_as_typed_is_deleted_by_its_browser_spelling(self):
+        # Older builds kept some links as typed; the app now sends `new URL(link).href`.
+        typed = post(1, url="https://ru.wikipedia.org/wiki/Москва#История", canonicalUrl="https://ru.wikipedia.org/wiki/Москва")
+        self.save([typed])
+        href = "https://ru.wikipedia.org/wiki/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0#%D0%98%D1%81%D1%82%D0%BE%D1%80%D0%B8%D1%8F"
+        answer = self.client.post("/api/library", json={"posts": [], "deletedUrls": [href]}).get_json()
+        self.assertEqual(answer["posts"], [], "the typed row is the one deleted")
+        self.assertEqual(answer.get("removedUrls"), [typed["url"]])
+        self.assertEqual(self.client.get("/api/library").get_json()["posts"], [])
+
+    def test_odd_values_get_a_json_400_not_a_crash_page(self):
+        deep = "[" * 20000 + "]" * 20000
+        for path, body in (("/api/library", json.dumps({"posts": [], "deletedUrls": [], "categoryOps": [{"op": ["add"], "name": "x"}]})),
+                           ("/api/reclassify", json.dumps({"tg_msg_id": 10 ** 30, "category": "x"})),
+                           ("/api/reclassify", deep)):
+            with self.subTest(path=path, body=body[:40]):
+                response = self.client.post(path, data=body, content_type="application/json")
+                self.assertEqual(response.status_code, 400)
+                self.assertTrue(response.is_json)
+        self.assertEqual(self.client.get("/thumb/COM1").status_code, 404, "a Windows device name is never opened")
+
     def test_full_payload_survives_update_reinit_and_module_reload(self):
         first, second = post(), post(2, source="telegram", userNotes="Second note", status="reference")
         self.assertEqual(self.save([first, second])["posts"], [first, second])
@@ -210,6 +256,8 @@ class LibraryApiTests(unittest.TestCase):
             "status": ["unknown"], "metadataStatus": ["unknown"], "mediaType": ["unknown", None],
             "favorite": [1, "true", None], "pinned": [0], "createdAt": [0], "updatedAt": [None],
             "telegramMessage": [None, [], {}, {"text": 1}, {"text": "ok", "id": 1}, {"text": "ok", "date": None}],
+            "followUpAt": [None, 1, "", "2026-13-01", "2026-10-8", "2026-10-08T10:00:00Z", "tomorrow"],
+            "useOften": [1, "true", None], "openCount": [-1, 1.5, "3", None, True],
         }
         for key in ["canonicalUrl", "sourceMessageId", "title", "description", "excerpt", "thumbnailUrl", "userNotes", "aiSummary", "lastOpenedAt", "metadataError"]:
             bad_fields[key] = [None, 1]
@@ -249,6 +297,11 @@ class LibraryApiTests(unittest.TestCase):
         for key in ["canonicalUrl", "sourceMessageId", "telegramMessage", "title", "description", "excerpt", "thumbnailUrl", "mediaType", "favorite", "pinned", "userNotes", "aiSummary", "lastOpenedAt", "metadataError"]:
             del item[key]
         self.assertEqual(self.save([item])["posts"], [item])
+
+    def test_follow_up_day_use_often_and_open_count_round_trip(self):
+        item = post(4, followUpAt="2026-10-15", useOften=True, openCount=14)
+        self.assertEqual(self.save([item])["posts"], [item])
+        self.assertEqual([p for p in self.get()["posts"] if p["id"] == item["id"]], [item])
 
     def test_legacy_rows_untouched_and_only_unadopted_exposed(self):
         urls = [post()["url"], "https://example.invalid/legacy#keep", None, "javascript:alert(1)", "https://[broken"]

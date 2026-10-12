@@ -84,6 +84,10 @@ def isolate_routes():
         return jsonify(idle if request.method == "GET" else {**idle, "result": "idle", "code": ""})
     if request.path == "/api/ai/providers" and request.method == "GET":
         return jsonify(ok=True, providers=[], ready=[], available=False)
+    # Saved copies: the app asks once at startup whether the server makes them.
+    # Answer "no" so nothing is queued; every other /api/archive request stays blocked.
+    if request.path == "/api/archive" and request.method == "GET" and not request.args:
+        return jsonify(ok=True, enabled=False, count=0, bytes=0)
     if request.path.startswith("/api/") and request.path not in ("/api/library", "/api/stats", "/api/categories", "/api/categorize"):
         BLOCKED.append("unexpected API " + request.path)
         return jsonify(error="Disabled fixture API"), 503

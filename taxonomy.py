@@ -3,8 +3,8 @@ Corpus-level category taxonomy for the saved-posts library.
 
 The per-post categorizer (categorizer.py) only ever *reuses* categories. The
 taxonomy itself is derived here, once, by looking at the whole collection at
-the same time — which is the only way to see that "folklore" and
-"folkloremythology" are the same shelf.
+the same time — which is the only way to see that "recipes" and
+"cooking" are the same shelf.
 
 Public surface:
   plan_consolidation(limit)  -> dry-run proposal: canon + old->new mapping
@@ -595,28 +595,57 @@ SUGGEST_SCHEMA = {
 }
 
 
+def _unfiled_labels(sample: int) -> list[str]:
+    """Titles of the newest links with no shelf of their own: the library first,
+    then old Telegram rows that have not moved into it yet."""
+    labels = []
+    conn = _connect()
+    try:
+        for (document,) in conn.execute(
+                "SELECT document FROM library_items WHERE deleted = 0 AND document IS NOT NULL "
+                "ORDER BY rowid DESC LIMIT 5000"):
+            try:
+                post = json.loads(document)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(post, dict) or post.get("status") == "archived":
+                continue
+            shelves = [c for c in post.get("categories") or [] if isinstance(c, str)]
+            if any(categorizer._norm_category(c) not in RESERVED for c in shelves):
+                continue
+            text = lambda key: post.get(key).strip() if isinstance(post.get(key), str) else ""
+            label = text("title") or text("description")[:80] or text("excerpt")[:80] or text("url")
+            if label:
+                labels.append(label)
+            if len(labels) >= sample:
+                return labels
+        rows = conn.execute(
+            """SELECT title, url, text FROM saved_posts
+               WHERE category IN ('other', 'uncategorized')
+               ORDER BY date_utc DESC LIMIT ?""",
+            (sample - len(labels),),
+        ).fetchall()
+    finally:
+        conn.close()
+    for r in rows:
+        label = (r["title"] or "").strip() or (r["text"] or "").strip()[:80] or (r["url"] or "")
+        if label:
+            labels.append(label)
+    return labels
+
+
 def suggest_categories(max_suggestions: int = 3, sample: int = 40) -> list[dict]:
     """
     Look at posts that ended up unfiled and propose shelves worth adding.
     Read-only: suggestions are returned for the user to accept, never created.
     """
-    conn = _connect()
-    rows = conn.execute(
-        """SELECT title, url, text FROM saved_posts
-           WHERE category IN ('other', 'uncategorized')
-           ORDER BY date_utc DESC LIMIT ?""",
-        (sample,),
-    ).fetchall()
-    conn.close()
-    if len(rows) < 3:
+    labels = _unfiled_labels(sample)
+    if len(labels) < 3:
         return []
 
     existing = [c for c in storage.get_categories() if c not in RESERVED]
     lines = [f"Existing shelves: {', '.join(existing)}", "", "Unfiled links:"]
-    for r in rows:
-        label = (r["title"] or "").strip() or (r["text"] or "").strip()[:80] or (r["url"] or "")
-        if label:
-            lines.append(f"- {label[:110]}")
+    lines += [f"- {label[:110]}" for label in labels]
 
     raw = _proxy_json(SUGGEST_SYSTEM, "\n".join(lines), SUGGEST_SCHEMA, max_tokens=900)
     if not raw:

@@ -1,23 +1,31 @@
 import { useEffect, useRef, useState } from "react";
 import AiReview from "./AiReview";
 import { fetchAiStatus } from "./AiProviders";
-import { Archive, RefreshCw, Sparkles, Tag, Trash2, X } from "lucide-react";
+import { Archive, FileDown, RefreshCw, Share2, Sparkles, Tag, Trash2, X } from "lucide-react";
+import ShareDialog from "./ShareDialog";
 import { useLibrary } from "../../store/library";
 import { STATUS_META, STATUS_ORDER } from "../../lib/ui";
 import { enrichMany } from "../../lib/metadataEnrichment";
+import { useCopyAvailability } from "../../lib/copyAvailability";
+import { saveCopies } from "../../lib/savedCopies";
+
+const items = (n: number) => `${n} item${n === 1 ? "" : "s"}`;
 
 export default function BulkBar({ ids, onClear }: { ids: string[]; onClear: () => void }) {
   const posts = useLibrary(s => s.posts);
   const categories = useLibrary(s => s.categories);
   const bulkPatch = useLibrary(s => s.bulkPatch);
+  const addToShelf = useLibrary(s => s.addToShelf);
   const bulkTag = useLibrary(s => s.bulkTag);
   const deletePosts = useLibrary(s => s.deletePosts);
-  const updatePost = useLibrary(s => s.updatePost);
   const logActivity = useLibrary(s => s.logActivity);
   const [confirming, setConfirming] = useState(false);
   const [working, setWorking] = useState(false);
   const [tidying, setTidying] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const [aiReady, setAiReady] = useState(false);
+  const copiesEnabled = useCopyAvailability(s => s.enabled);
+  const withoutCopy = ids.filter(id => posts.find(x => x.id === id)?.archiveStatus !== "saved").length;
   const dialog = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -33,20 +41,20 @@ export default function BulkBar({ ids, onClear }: { ids: string[]; onClear: () =
     // Queued together (3 at a time, with progress in the status bar).
     await enrichMany(ids.filter(id => posts.some(x => x.id === id)), { force: true });
     setWorking(false);
-    logActivity("organize", `Refreshed metadata for ${ids.length} items`);
+    logActivity("organize", `Refreshed metadata for ${items(ids.length)}`);
   };
 
   const addTag = () => {
     const t = window.prompt("Tag to add to selected items:");
     if (t?.trim()) {
       bulkTag(ids, [t.trim().toLowerCase().replace(/\s+/g, "-")], []);
-      logActivity("organize", `Tagged ${ids.length} items`, t);
+      logActivity("organize", `Tagged ${items(ids.length)}`, t);
     }
   };
 
   return (
     <div
-      className="fixed bottom-5 left-1/2 z-[80] flex -translate-x-1/2 flex-wrap items-center gap-2 rounded-xl border px-4 py-2.5"
+      className="bulk-bar z-[80] flex flex-wrap items-center gap-2 rounded-xl border px-4 py-2.5"
       style={{ background: "var(--elev)", borderColor: "var(--border-hi)", boxShadow: "var(--shadow)" }}
       role="toolbar" aria-label="Bulk actions"
     >
@@ -54,7 +62,7 @@ export default function BulkBar({ ids, onClear }: { ids: string[]; onClear: () =
       <select
         className="input" style={{ width: "auto", padding: "4px 8px", fontSize: ".74rem" }}
         defaultValue=""
-        onChange={e => { if (e.target.value) { bulkPatch(ids, { status: e.target.value as never }); logActivity("organize", `Status → ${STATUS_META[e.target.value as keyof typeof STATUS_META].label}`, `${ids.length} items`); e.target.value = ""; } }}
+        onChange={e => { if (e.target.value) { bulkPatch(ids, { status: e.target.value as never }); logActivity("organize", `Status → ${STATUS_META[e.target.value as keyof typeof STATUS_META].label}`, items(ids.length)); e.target.value = ""; } }}
         aria-label="Change status"
       >
         <option value="" disabled>Status…</option>
@@ -66,13 +74,9 @@ export default function BulkBar({ ids, onClear }: { ids: string[]; onClear: () =
         onChange={e => {
           const cat = categories.find(c => c.id === e.target.value);
           if (cat) {
-            ids.forEach(id => {
-              const p = posts.find(x => x.id === id);
-              if (p && !p.categories.includes(cat.name)) {
-                updatePost(id, { categories: [...p.categories.filter(c => c !== "uncategorized"), cat.name] });
-              }
-            });
-            logActivity("organize", `Assigned “${cat.name}”`, `${ids.length} items`);
+            // One write for the whole selection (one per link took seconds on a big library).
+            addToShelf(ids, cat.name);
+            logActivity("organize", `Assigned “${cat.name}”`, items(ids.length));
           }
           e.target.value = "";
         }}
@@ -87,6 +91,16 @@ export default function BulkBar({ ids, onClear }: { ids: string[]; onClear: () =
       </button>
       <button className="btn" onClick={() => { bulkPatch(ids, { status: "archived" }); onClear(); }}><Archive size={13} /> Archive</button>
       <button className="btn" onClick={retryAll} disabled={working}><RefreshCw size={13} className={working ? "animate-spin" : ""} /> Enrich</button>
+      {copiesEnabled && <button className="btn" disabled={!withoutCopy}
+        title={withoutCopy ? `Save an offline copy of ${withoutCopy === 1 ? "the selected link that has none" : `the ${withoutCopy} selected links that have none`}` : "Every selected link already has a copy"}
+        onClick={() => { const count = saveCopies(ids); if (count) logActivity("organize", `Saving copies of ${count} link${count === 1 ? "" : "s"}`); }}>
+        <FileDown size={13} /> Save copies
+      </button>}
+      <button className="btn" onClick={() => setSharing(true)} title="Download the selected links as one page to send or put online">
+        <Share2 size={13} /> Share
+      </button>
+      {sharing && <ShareDialog name={`${ids.length} selected link${ids.length === 1 ? "" : "s"}`}
+        posts={ids.map(id => posts.find(x => x.id === id)).filter((p): p is NonNullable<typeof p> => !!p)} onClose={() => setSharing(false)} />}
       {confirming ? (
         <>
           <button className="btn btn-danger" onClick={() => { deletePosts(ids); onClear(); }}>Confirm</button>

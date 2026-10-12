@@ -4,6 +4,7 @@ import type { Platform, SavedPost } from "../../types";
 import { PLATFORM_META } from "../../lib/ui";
 import { effectivePlatform, titleFromUrl } from "../../lib/platform";
 import { displayText } from "../../lib/displayText";
+import { BRAND_LABEL, type Brand } from "./PlatformArt";
 
 /** Platforms whose image-less posts are drawn as a styled text post. */
 export const SOCIAL_PLATFORMS = new Set<Platform>(["instagram", "x", "tiktok", "reddit", "facebook", "threads",
@@ -65,24 +66,38 @@ function hue(text: string): number {
  * vertical clip, Facebook with its blue band, Reddit with the subreddit, and
  * so on. Generic shapes and colours only; no logos are reproduced.
  */
-export default function SocialCard({ post, color }: { post: SavedPost; color: string }) {
+// Titles that only name the site ("Instagram post", "Post on X", "TikTok video") say nothing about the post.
+const SITES = "instagram|x|twitter|tiktok|facebook|youtube|linkedin|pinterest|reddit|threads|bluesky|snapchat|telegram|whatsapp|wechat";
+const KINDS = "post|video|reel|pin|story|photo|thread|spotlight|short";
+const GENERIC_TITLE = new RegExp(`^(?:(?:${KINDS}) on (?:${SITES})|(?:${SITES})(?: (?:${KINDS}))?)$`, "i");
+
+/** The words a social card shows: the post's caption, else a title worth reading. */
+export function socialText(post: SavedPost): string {
+  const caption = captionOf(post);
+  if (caption) return caption;
+  const title = usefulTitle(post);
+  return title && !GENERIC_TITLE.test(title) ? title : "";
+}
+
+export default function SocialCard({ post, color, brand }: { post: SavedPost; color: string; brand?: Brand }) {
   const platform = platformOf(post);
   const meta = PLATFORM_META[platform] ?? PLATFORM_META.web;
-  const Icon = meta.icon;
+  // Messaging sites the app files under "web" (Telegram, WhatsApp…) get their name and colours, and a plain dot for an icon.
+  const label = brand && platform === "web" ? BRAND_LABEL[brand] : meta.label;
+  const Icon = brand && platform === "web" ? null : meta.icon;
   const handle = handleOf(post, platform);
-  const title = displayText(post.title);
-  const usefulTitle = title && title !== post.url && title !== titleFromUrl(post.canonicalUrl || post.url) ? clean(title) : "";
-  const text = captionOf(post) || usefulTitle;
-  const name = handle || meta.label;
+  const text = socialText(post);
+  const name = handle || label;
   const initial = (name.replace(/^[@ru]\//, "").replace(/^@/, "")[0] || "?").toUpperCase();
   const style = { "--preview-color": color, "--platform-color": meta.color, "--avatar-hue": hue(name) } as CSSProperties;
+  const glyph = Icon ? <Icon size={13} className="social-card__glyph" /> : <span className="social-card__dot" />;
 
   const avatar = <span className="social-card__avatar" aria-hidden="true">{initial}</span>;
   const header = (
     <span className="social-card__header" aria-hidden="true">
       {platform === "reddit" ? <span className="social-card__sub">{handle || "Reddit"}</span> : <>{avatar}<span className="social-card__name">{name}</span></>}
       <span className="flex-1" />
-      <Icon size={13} className="social-card__glyph" />
+      {glyph}
     </span>
   );
   const actions = (icons: typeof Heart[]) => (
@@ -90,7 +105,7 @@ export default function SocialCard({ post, color }: { post: SavedPost; color: st
   );
 
   return (
-    <div className="category-preview social-card" data-brand={platform} style={style} aria-label="No content preview available">
+    <div className="category-preview social-card" data-brand={brand ?? platform} style={style} aria-label="No content preview available">
       {platform === "tiktok" ? <>
         <span className="social-card__clip-glyph" aria-hidden="true"><Play size={18} fill="currentColor" /></span>
         <span className="social-card__clip-body">
@@ -99,13 +114,13 @@ export default function SocialCard({ post, color }: { post: SavedPost; color: st
           <span className="social-card__sound" aria-hidden="true"><Music2 size={11} /> original sound{handle ? ` · ${handle}` : ""}</span>
         </span>
       </> : platform === "youtube" ? <>
-        <span className="social-card__play" aria-hidden="true"><Play size={20} fill="currentColor" /></span>
         {text && <p className="social-card__text art-text" data-label={text} />}
         <span className="social-card__name">{name}</span>
+        <span className="social-card__timeline" aria-hidden="true"><span /></span>
       </> : <>
         {header}
         {text ? <p className="social-card__text art-text" data-label={text} /> : <span className="social-card__empty" aria-hidden="true">
-          <Icon size={34} strokeWidth={1.3} /><span className="social-card__kind">{kindOf(post, meta.label)}</span></span>}
+          {Icon ? <Icon size={34} strokeWidth={1.3} /> : null}<span className="social-card__kind">{kindOf(post, label)}</span></span>}
         {platform === "x" || platform === "bluesky" || platform === "threads" ? actions([MessageCircle, Repeat2, Heart, Share])
           : platform === "reddit" ? actions([ArrowBigUp, MessageCircle, Share])
           : platform === "facebook" || platform === "linkedin" ? actions([Heart, MessageCircle, Share])

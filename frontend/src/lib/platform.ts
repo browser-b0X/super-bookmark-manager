@@ -1,10 +1,32 @@
 import type { Platform, SavedPost } from "../types";
 
+/**
+ * Remember a pure string → value function's answers. Every write to the library
+ * re-reads thousands of links (counts, duplicate checks, sync keys), and parsing a
+ * URL each time kept the page busy for seconds after a big import. A link's
+ * answers never change, so they are computed once; the table empties itself when
+ * it grows past `limit` instead of growing without bound.
+ */
+export function remembered<T>(fn: (value: string) => T, limit = 50_000): (value: string) => T {
+  const known = new Map<string, T>();
+  return (value: string) => {
+    const seen = known.get(value);
+    if (seen !== undefined || known.has(value)) return seen as T;
+    const answer = fn(value);       // a throw is passed on and not remembered
+    if (known.size >= limit) known.clear();
+    known.set(value, answer);
+    return answer;
+  };
+}
+
 /** Normalize a URL for dedup: lowercase host, strip tracking params, drop fragment. */
-export function normalizeUrl(raw: string): string {
+export const normalizeUrl = remembered(normalizeUrlNow);
+
+function normalizeUrlNow(raw: string): string {
   try {
     const u = new URL(raw.trim());
-    u.hash = "";
+    // "#section" is a place on the same page; "#/invoice/2002" is a page of a web app.
+    if (!/^#!?\//.test(u.hash)) u.hash = "";
     const keep = [...u.searchParams.entries()].filter(
       ([k]) => !["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid", "igsh", "igshid", "si", "feature"].includes(k.toLowerCase())
     );
@@ -18,15 +40,17 @@ export function normalizeUrl(raw: string): string {
   }
 }
 
-export function domainOf(url: string): string {
+export const domainOf = remembered((url: string): string => {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
   } catch {
     return "";
   }
-}
+});
 
-export function detectPlatform(url: string): Platform {
+export const detectPlatform = remembered(detectPlatformNow);
+
+function detectPlatformNow(url: string): Platform {
   const d = domainOf(url).toLowerCase();
   if (d.includes("instagram.com")) return "instagram";
   if (d === "x.com" || d.includes("twitter.com")) return "x";
@@ -73,9 +97,9 @@ export function titleFromUrl(url: string): string {
 }
 
 /** The exact-URL key the library uses everywhere (WHATWG href). */
-export function libraryUrl(url: string): string {
+export const libraryUrl = remembered((url: string): string => {
   try { return new URL(url.trim()).href; } catch { return url.trim(); }
-}
+});
 
 /**
  * Stable ID for one exact link. Built from the href, not the canonical form:

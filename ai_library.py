@@ -18,15 +18,19 @@ import ai_providers
 import categorizer
 
 MAX_BATCH = 10
+MAX_ID = 20000
 # One /api/ai/suggest call must answer well inside the browser's patience (150 s),
 # whatever mix of slow providers, retired models and retries it meets.
 BUDGET_SECONDS = 100
-CALL_SECONDS = 45
+# One provider's answer for a batch: a provider that hasn't answered by then is benched
+# and the next one is asked (45 s held a whole batch up behind a stuck provider).
+# FreeLLMAPI gets longer (ai_providers "patience"): it fails over between its own providers.
+CALL_SECONDS = 30
 JOBS = ("shelf", "tags", "title")
 
 SYSTEM = (
     "You tidy one person's saved-links library so it reads like a personal feed.\n"
-    "For every link you are given, return an object in an `items` array with the link's `id` and:\n"
+    "For every link you are given, return an object in an `items` array with the link's number as `id` and:\n"
     "{fields}\n"
     "Rules:\n"
     "- Shelves are fixed: copy one name verbatim from the list. A broad shelf that plausibly fits beats 'other'. "
@@ -36,7 +40,7 @@ SYSTEM = (
     "no 'on Instagram'. Keep the creator's name only if it matters. Keep the original language.\n"
     "- Summary: one plain sentence (max 160 characters) saying why it's worth opening.\n"
     "- Never invent facts that aren't in the text. If there is too little to go on, keep the title close to the original.\n"
-    "Return ONLY JSON: {{\"items\": [...]}}"
+    "Answer straight away: no explanations and no thinking out loud. Return ONLY JSON: {{\"items\": [...]}}"
 )
 FIELD_TEXT = {
     "shelf": "  \"shelf\": one shelf name from the list",
@@ -53,14 +57,14 @@ def _clean_tag(value) -> str:
 
 
 def _clean_line(value, limit: int) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip().strip('"“”\'')
+    text = re.sub(r"\s+", " ", value if isinstance(value, str) else "").strip().strip('"“”\'')   # text only, never a dict's repr
     if len(text) > limit:
         text = text[:limit - 1].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
     return text
 
 
-def _item_text(item: dict) -> str:
-    lines = [f'"id": "{item["id"]}"']
+def _item_text(item: dict, key: str) -> str:
+    lines = [f'"id": "{key}"']
     for key, label in (("title", "Title"), ("text", "Text"), ("url", "URL"), ("platform", "Platform"), ("folder", "Folder")):
         value = item.get(key)
         if isinstance(value, str) and value.strip():
@@ -78,8 +82,10 @@ def _prompt(items: list[dict], shelves: list[str], jobs: tuple[str, ...]) -> lis
     if "shelf" in jobs:
         user += ["Shelves:", *shelf_lines, "- other: last resort", ""]
     user.append("Links:")
-    for item in items:
-        user += ["---", _item_text(item)]
+    # Each link is numbered within the request: a bookmark's own id is its URL in base64,
+    # often hundreds of characters, which costs tokens and comes back garbled.
+    for number, item in enumerate(items, 1):
+        user += ["---", _item_text(item, str(number))]
     return [{"role": "system", "content": SYSTEM.format(fields=fields)}, {"role": "user", "content": "\n".join(user)}]
 
 
@@ -103,13 +109,20 @@ def _parse(text: str, items: list[dict], shelves: list[str], jobs: tuple[str, ..
     rows = parsed.get("items") if isinstance(parsed, dict) else None
     if not isinstance(rows, list):
         return None
-    wanted = {item["id"] for item in items}
+    by_number = {str(number): item["id"] for number, item in enumerate(items, 1)}
     live = {categorizer._norm_category(s) for s in shelves} - categorizer.RESERVED_CATEGORIES
     out: dict[str, dict] = {}
     for row in rows:
-        if not isinstance(row, dict) or row.get("id") not in wanted or row["id"] in out:
+        if not isinstance(row, dict):
             continue
-        entry: dict = {"id": row["id"]}
+        # The link's number, as text or as a number ("3", 3); anything else (a list, an
+        # object, a number we didn't send) is not one of ours.
+        number = row.get("id")
+        number = str(number) if type(number) is int else number.strip() if isinstance(number, str) else None
+        link_id = by_number.get(number) if number else None
+        if link_id is None or link_id in out:
+            continue
+        entry: dict = {"id": link_id}
         if "shelf" in jobs and isinstance(row.get("shelf"), str):
             entry["shelf"] = categorizer._snap_category(categorizer._norm_category(row["shelf"]), live)
         if "tags" in jobs and isinstance(row.get("tags"), list):
@@ -121,7 +134,7 @@ def _parse(text: str, items: list[dict], shelves: list[str], jobs: tuple[str, ..
                 entry["title"] = title
             if summary:
                 entry["summary"] = summary
-        out[row["id"]] = entry
+        out[link_id] = entry
     return list(out.values()) if out else None
 
 
@@ -135,15 +148,21 @@ def _ask(items: list[dict], shelves: list[str], jobs: tuple[str, ...], deadline:
         text, provider = ai_providers.chat(_prompt(items, shelves, jobs), max_tokens=300 * len(items) + 800,
                                            timeout=CALL_SECONDS, deadline=deadline, spread=spread)
     except ai_providers.NoProvider as exc:
-        return [], "", exc.code
-    rows = _parse(text, items, shelves, jobs) or []
-    got = {row["id"] for row in rows}
-    missing = [item for item in items if item["id"] not in got]
-    reason = "bad_response" if missing else ""
+        # The model thought until its answer was cut off (FreeLLMAPI says so): the answer about half
+        # as many links is shorter and fits. Any other failure is waited out by the browser.
+        if not exc.cut_off or len(items) < 2:
+            return [], "", exc.code
+        rows, provider, missing, reason = [], "", items, exc.code
+        size = (len(items) + 1) // 2
+    else:
+        rows = _parse(text, items, shelves, jobs) or []
+        got = {row["id"] for row in rows}
+        missing = [item for item in items if item["id"] not in got]
+        reason = "bad_response" if missing else ""
+        size = max(1, (len(missing) + 1) // 2) if len(missing) > 3 else len(missing)
     if missing and depth < 2 and deadline - time.monotonic() > 15:
-        half = max(1, (len(missing) + 1) // 2) if len(missing) > 3 else len(missing)
-        for start in range(0, len(missing), half):
-            more, more_provider, more_reason = _ask(missing[start:start + half], shelves, jobs, deadline, depth + 1, spread)
+        for start in range(0, len(missing), size):
+            more, more_provider, more_reason = _ask(missing[start:start + size], shelves, jobs, deadline, depth + 1, spread)
             rows += more
             provider = provider or more_provider
             if more_reason and more_reason != "bad_response":
@@ -198,7 +217,8 @@ def validate_request(data: dict) -> tuple[list[dict], list[str], tuple[str, ...]
         raise ValueError("jobs must list shelf, tags and/or title.")
     items = []
     for raw in raw_items:
-        if not isinstance(raw, dict) or not isinstance(raw.get("id"), str) or not 0 < len(raw["id"]) <= 200:
+        # A bookmark's id is its URL in base64, so a long URL makes a long id (200 used to be the limit).
+        if not isinstance(raw, dict) or not isinstance(raw.get("id"), str) or not 0 < len(raw["id"]) <= MAX_ID:
             raise ValueError("Each link needs an id.")
         item = {"id": raw["id"]}
         for key in ("title", "text", "url", "platform", "folder"):

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { importThroughField } from './importField.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
@@ -135,7 +136,9 @@ try{
   assert.equal(await chooser.inputValue(),dynamicDefs[0].id);await close();
   const fixtures=[['html','<!DOCTYPE NETSCAPE-Bookmark-file-1><DL><DT><A HREF="https://book.example.invalid/programming">Programming new bookmark</A><DT><A HREF="https://book.example.invalid/cooking">Cooking nonmatch</A></DL>',10,2],['json',JSON.stringify({messages:[{id:401,type:'message',date:'2026-09-24',text:'https://json.example.invalid/programming https://json.example.invalid/travel'}]}),12,3]];
   for(const [kind,body,count,matches] of fixtures){
-    await page.goto(base+'/library/settings');await page.getByLabel(kind==='html'?'Import bookmarks HTML':'Import Telegram JSON').setInputFiles({name:'synthetic.'+kind,mimeType:kind==='html'?'text/html':'application/json',buffer:Buffer.from(body)});
+    await page.goto(base+'/library/settings');const file={name:'synthetic.'+kind,mimeType:kind==='html'?'text/html':'application/json',buffer:Buffer.from(body)};
+    // Bookmarks HTML goes through the one import field (v0.3.0); Telegram JSON keeps its own input.
+    if(kind==='html'){const r=await importThroughField(page,file);assert.ok(!r.refused,r.text);}else await page.getByLabel('Import Telegram JSON').setInputFiles(file);
     await page.waitForFunction(()=>JSON.parse(localStorage.getItem('library-store-v1')).state.posts.every(p=>p.categoryMode));
     await saved(count);await page.goto(base+'/library');await saved(count);await apply('Dynamic programming');await page.waitForFunction(n=>document.querySelectorAll('main article').length===n,matches);assert.deepEqual(await definitions(),dynamicDefs);
     report.comparisons.push({import:kind,matches:await ids()});

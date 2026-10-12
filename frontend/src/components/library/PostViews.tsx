@@ -1,6 +1,6 @@
 import { useMemo, useState, type CSSProperties } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Archive, ArrowUpDown, ArrowUpRight, Clock, GripVertical, Star } from "lucide-react";
+import { Archive, ArrowUpDown, ArrowUpRight, Clock, FileCheck, GripVertical, Star } from "lucide-react";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -10,17 +10,34 @@ import { PLATFORM_META, STATUS_META, relTime } from "../../lib/ui";
 import { useLibrary } from "../../store/library";
 import CategoryPreview from "./CategoryPreview";
 import { handleOf, platformOf, SOCIAL_PLATFORMS } from "./SocialCard";
+import { BRAND_LABEL, brandOf, kindOf } from "./PlatformArt";
 
 /** A readable name for a saved social post that has no title yet. */
-function untitledName(post: SavedPost): string {
+export function untitledName(post: SavedPost): string {
   const platform = platformOf(post);
-  if (!SOCIAL_PLATFORMS.has(platform)) return post.url;
-  const handle = handleOf(post, platform);
-  const label = PLATFORM_META[platform].label;
-  return handle ? `${handle} on ${label}` : `${label} post`;
+  if (SOCIAL_PLATFORMS.has(platform)) {
+    const handle = handleOf(post, platform);
+    const label = PLATFORM_META[platform].label;
+    return handle ? `${handle} on ${label}` : `${label} post`;
+  }
+  // Messaging sites filed under "web": "designdigest on Telegram", "WhatsApp group invite".
+  const brand = brandOf(post);
+  if (!brand) return post.url;
+  let channel = "";
+  try { channel = brand === "telegram" ? new URL(post.url).pathname.split("/").filter(Boolean)[0] ?? "" : ""; } catch { /* keep empty */ }
+  if (channel && /^[A-Za-z0-9_]{3,64}$/.test(channel) && channel !== "s") return `${channel} on Telegram`;
+  return `${BRAND_LABEL[brand]} ${kindOf(post, brand).toLowerCase()}`;
 }
 import SiteLine, { SiteIcon } from "./SiteLine";
 import { useIncremental } from "../../lib/incremental";
+
+/** Small mark on links that have a saved copy of their page. */
+import { FollowUpBadge, UseOftenMark } from "./FollowUp";
+
+function CopyMark({ post, className, size = 13 }: { post: SavedPost; className?: string; size?: number }) {
+  if (post.archiveStatus !== "saved" || !post.archiveKey) return null;
+  return <span className={className} role="img" aria-label="Has a saved copy" title="Saved copy: opens without the internet"><FileCheck size={size} aria-hidden="true" /></span>;
+}
 
 function PlatformIcon({ post }: { post: SavedPost }) {
   const meta = PLATFORM_META[platformOf(post)] ?? PLATFORM_META.web;
@@ -42,14 +59,17 @@ export function PostPreview({ post, compact = false, fill = false, caption = tru
   const [failedUrl, setFailedUrl] = useState<string>();
   const [loadedUrl, setLoadedUrl] = useState<string>();
   const url = post.thumbnailUrl;
+  // A picture that failed is tried again once the link has been fetched again: the fetch may
+  // have put it back at the same address (one missing on this computer after a restore).
+  const attempt = url && `${url}#${post.enrichedAt ?? ""}`;
   const size = fill ? "h-full w-full" : compact ? "h-24 w-36" : "h-32 w-full";
   const isFavicon = !!url && /\/s2\/favicons|\/favicon(?:[./?#]|$)|\.ico(?:[?#]|$)/i.test(url);
   const loaded = (el: HTMLImageElement) => {
-    if (el.naturalWidth < 128 || el.naturalHeight < 80) setFailedUrl(url);
+    if (el.naturalWidth < 128 || el.naturalHeight < 80) setFailedUrl(attempt);
     else setLoadedUrl(url);
   };
 
-  const showImage = !!url && failedUrl !== url && !isFavicon;
+  const showImage = !!url && failedUrl !== attempt && !isFavicon;
   return (
     <div className={`cell-media preview-container shrink-0 rounded-md ${size}`}>
       {(!showImage || loadedUrl !== url) && <CategoryPreview post={post} caption={caption} />}
@@ -59,9 +79,9 @@ export function PostPreview({ post, compact = false, fill = false, caption = tru
           alt={`Preview of ${post.title || post.domain}`}
           loading="lazy"
           // Cached images may finish before React attaches onLoad.
-          ref={el => { if (el?.complete && el.naturalWidth && loadedUrl !== url && failedUrl !== url) loaded(el); }}
+          ref={el => { if (el?.complete && el.naturalWidth && loadedUrl !== url && failedUrl !== attempt) loaded(el); }}
           onLoad={e => loaded(e.currentTarget)}
-          onError={() => setFailedUrl(url)}
+          onError={() => setFailedUrl(attempt)}
           className={`absolute inset-0 h-full w-full rounded-md object-cover ${loadedUrl === url ? "is-loaded" : ""}`}
         />
       )}
@@ -139,6 +159,9 @@ function PostTile({ post: p, index, selected, onToggle, sortable }: {
           onClick={e => e.stopPropagation()} onChange={() => onToggle(p.id)}
           className={`tile__select hover-tool ${selected ? "is-on" : ""}`} />
         <FavButton post={p} className={`tile__fav hover-tool ${p.favorite ? "is-on" : ""}`} />
+        <CopyMark post={p} className="tile__copy" size={14} />
+        <FollowUpBadge post={p} className="tile__due" />
+        <UseOftenMark post={p} className={`tile__often${sortable ? " has-grip" : ""}`} />
         {sortable && <button ref={setActivatorNodeRef} {...attributes} {...listeners} type="button"
           className="tile__grip hover-tool" aria-label={`Move ${displayTitle(p.title, p.url)}`} title="Drag to reorder"
           onClick={e => e.stopPropagation()}>
@@ -163,7 +186,7 @@ function PostTile({ post: p, index, selected, onToggle, sortable }: {
           <span className="tile__pop-when">saved {relTime(p.createdAt)}</span>
         </div>
         <div className="tile__pop-actions">
-          <a className="btn btn-primary" href={p.url} target="_blank" rel="noreferrer noopener"><ArrowUpRight size={13} /> Open</a>
+          <a className="btn btn-primary" href={p.url} target="_blank" rel="noreferrer noopener" onClick={() => useLibrary.getState().touchOpened(p.id)}><ArrowUpRight size={13} /> Open</a>
           {p.status !== "to-review" && <button className="btn" onClick={() => setStatus("to-review")}><Clock size={13} /> Later</button>}
           {p.status !== "archived" && <button className="btn" onClick={() => setStatus("archived")}><Archive size={13} /> Archive</button>}
           <button className="btn" onClick={() => navigate(`/library/item/${p.id}`)}>Details</button>
@@ -238,6 +261,7 @@ export function PostList({ posts: all, selected, onToggle, resetKey = "" }: View
               {p.description && <div className="line-clamp-1 text-[.74rem] text-[var(--dim)]">{p.description}</div>}
             </div>
             {p.categories.filter(c => c !== "uncategorized").slice(0, 1).map(c => <span key={c} className="chip max-[900px]:hidden">{c}</span>)}
+            <CopyMark post={p} className="shrink-0 text-[var(--dim)]" />
             <StatusBadge post={p} />
             <span className="w-10 text-right text-[.68rem] text-[var(--faint)]">{relTime(p.createdAt)}</span>
             <FavButton post={p} />
@@ -297,6 +321,7 @@ export function PostTable({ posts, selected, onToggle, resetKey = "" }: ViewProp
                   {p.faviconUrl ? <SiteIcon post={p} /> : <PlatformIcon post={p} />}
                   <Link to={`/library/item/${p.id}`} onClick={e => e.stopPropagation()} className="max-w-[360px] truncate font-medium">{p.title || p.url}</Link>
                   {p.favorite && <Star size={12} className="text-[var(--amber)]" fill="currentColor" />}
+                  <CopyMark post={p} className="shrink-0 text-[var(--dim)]" size={12} />
                 </div>
               </td>
               <td className="text-[var(--dim)]">{(PLATFORM_META[platformOf(p)] ?? PLATFORM_META.web).label}</td>

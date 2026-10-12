@@ -1,14 +1,11 @@
-"""Explicit durable JSON backup and non-overwriting new-database restore."""
+"""Explicit durable JSON backup, and restore into the library in use (the library as it was saved first)."""
 import hashlib
 import hmac
 import json
 import os
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-import tempfile
 from urllib.parse import urlsplit, quote
-from uuid import uuid4
 
 import config
 import storage
@@ -111,44 +108,57 @@ def export_backup():
 def preview_backup(raw):
     d = validate_backup(raw)
     return {"version": d["version"], "exportedAt": d["exportedAt"], "recordCount": d["recordCount"],
-            "deletedCount": len(d["library"]["tombstones"]), "sha256": d["sha256"], "mode": "new-database"}
+            "deletedCount": len(d["library"]["tombstones"]), "sha256": d["sha256"], "mode": "replace",
+            # Links in the library now, which the restore replaces (saved first; see restore_backup).
+            "currentCount": storage.live_count()}
+
+
+def _safety_copy(library):
+    """The library as it was, as an ordinary backup file in a backups folder beside it.
+
+    "Restore backup" with this file puts it back. A new name each time: never overwrites one."""
+    document = {"format": FORMAT, "version": VERSION, "exportedAt": datetime.now(timezone.utc).isoformat(),
+                "recordCount": len(library["posts"]), "library": library}
+    document["sha256"] = _checksum(document)
+    text = json.dumps(document, ensure_ascii=True, indent=2)
+    validate_backup(text)
+    directory = Path(config.DB_PATH).resolve().parent / "backups"
+    directory.mkdir(exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    for attempt in range(100):
+        path = directory / f"before-restore-{stamp}{'' if attempt == 0 else f'-{attempt + 1}'}.json"
+        try:
+            with open(path, "x", encoding="utf-8") as target:
+                target.write(text)
+                target.flush()
+                os.fsync(target.fileno())
+            return path
+        except FileExistsError:
+            continue
+    raise BackupError("Could not save the current library before restoring; nothing was changed.")
 
 
 def restore_backup(raw, confirmed_sha256):
+    """Put a backup's links, deletion markers and shelves into the library in use.
+
+    A library that has links is saved first (see _safety_copy), so restoring is never a loss."""
     d = validate_backup(raw)
     if confirmed_sha256 != d["sha256"]:
         raise BackupError("Confirm the validated preview before restoring.")
-    # No user-supplied paths or overwrite mode. The current DB is never written.
-    directory = Path(config.DB_PATH).resolve().parent / "restored-libraries"
-    directory.mkdir(exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".restore-", suffix=".sqlite", dir=directory)
-    os.close(fd)
-    temporary = Path(temporary)
-    destination = directory / f"library-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid4().hex}.sqlite"
     try:
-        storage.write_backup_library(temporary, d["library"])
-        if storage.get_backup_library(temporary) != d["library"]:
-            raise BackupError("Restored database did not match the backup; nothing was published.")
-        # Reading above can enable WAL. Last connection has closed/checkpointed.
-        # Hard-link creation is atomic and fails if the destination already exists.
-        try:
-            os.link(temporary, destination)
-        except FileExistsError:
-            raise
-        except OSError:
-            # FAT32/exFAT, some network and cloud-synced folders have no hard
-            # links: fall back to an exclusive-create copy (never overwrites).
-            with open(temporary, "rb") as source, open(destination, "xb") as target:
-                try:
-                    shutil.copyfileobj(source, target)
-                    target.flush()
-                    os.fsync(target.fileno())
-                except BaseException:
-                    # Never leave a half-written database where a restore is expected.
-                    target.close()
-                    destination.unlink(missing_ok=True)
-                    raise
-        return {"path": str(destination), "recordCount": d["recordCount"], "mode": "new-database"}
-    finally:
-        for path in [temporary, Path(str(temporary) + "-wal"), Path(str(temporary) + "-shm")]:
-            path.unlink(missing_ok=True)
+        current = storage.get_backup_library()
+    except storage.LibraryValidationError as exc:
+        # Telegram links that Library has not saved yet would be in neither library.
+        raise BackupError("Library is still saving links from Telegram. Restore once it shows them saved; nothing was changed.") from exc
+    safety = _safety_copy(current) if current["posts"] or current["tombstones"] else None
+    try:
+        epoch = storage.replace_library(d["library"])
+    except Exception as exc:
+        # Nothing changed, so the copy of the unchanged library is not needed.
+        if safety:
+            safety.unlink(missing_ok=True)
+        if isinstance(exc, storage.LibraryValidationError):
+            raise BackupError(str(exc)) from exc
+        raise
+    return {"recordCount": d["recordCount"], "mode": "replaced", "epoch": epoch,
+            "safetyCopy": str(safety) if safety else ""}

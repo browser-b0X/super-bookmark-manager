@@ -3,6 +3,8 @@ import Shell from "./components/Shell";
 import LibraryPage from "./pages/LibraryPage";
 import LibrarySettingsPage from "./pages/LibrarySettingsPage";
 import NotFound from "./pages/NotFound";
+import AddWindowPage from "./pages/AddWindowPage";
+import AllShelvesPage from "./pages/AllShelvesPage";
 
 /**
  * Real route components for every address — direct navigation, refresh,
@@ -11,6 +13,8 @@ import NotFound from "./pages/NotFound";
 export default function App() {
   return (
     <Routes>
+      {/* The bookmark button's small Save window: no sidebar, only the form. */}
+      <Route path="/add" element={<AddWindowPage />} />
       <Route element={<Shell />}>
         {/* The landing page is the feed: new links in a strip on top, the library below. */}
         <Route path="/" element={<LibraryPage />} />
@@ -24,6 +28,7 @@ export default function App() {
         <Route path="/library/tag/:tagId" element={<LibraryPage />} />
         <Route path="/library/item/:postId" element={<LibraryPage />} />
         <Route path="/library/settings" element={<LibrarySettingsPage />} />
+        <Route path="/shelves" element={<AllShelvesPage />} />
         {/* Safe not-found: renders a page, never redirects valid routes away. */}
         <Route path="*" element={<NotFound />} />
       </Route>

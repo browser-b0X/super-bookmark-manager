@@ -1,8 +1,9 @@
 import { storageKey } from "../lib/publicRuntime";
+import { byFollowUp } from "../lib/followUp";
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  LayoutGrid, Link2, List, Plus, Search, Table2,
+  Globe, LayoutGrid, Link2, List, Plus, Search, Share2, Table2, X,
 } from "lucide-react";
 import { useLibrary } from "../store/library";
 import type { LibraryFilter, SavedPost, SavedView } from "../types";
@@ -12,12 +13,16 @@ import { PLATFORM_META, STATUS_META } from "../lib/ui";
 import { PostGrid, PostList, PostTable } from "../components/library/PostViews";
 import PostDrawer from "../components/library/PostDrawer";
 import BulkBar from "../components/library/BulkBar";
-import CatchUpRail from "../components/library/CatchUpRail";
-import Rediscover from "../components/library/Rediscover";
+import HomeView from "../components/home/HomeView";
 import { effectivePlatform } from "../lib/platform";
 import AddLinkDialog from "../components/library/AddLinkDialog";
+import ShareDialog from "../components/library/ShareDialog";
 import { isEmptyQuery, matchesQuery, parseQuery } from "../lib/librarySearch";
 import { useLibraryPersistence } from "../lib/libraryPersistence";
+import SiteGroups, { groupBySite } from "../components/library/SiteGroups";
+
+/** A shelf this big offers to group its links by website (unfiled links offer it from 12). */
+const BIG_SHELF = 40;
 
 let lastListWasFeed = true;
 
@@ -35,6 +40,7 @@ export default function LibraryPage() {
   const [appliedId, setAppliedId] = useState<string | null>(null);
 
   const [q, setQ] = useState("");
+  const [sharing, setSharing] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem(storageKey("lib-view")) as ViewMode) || "grid");
   const [sort, setSort] = useState<SortMode>(() => {
     try { return (localStorage.getItem(storageKey("lib-sort")) as SortMode) || "newest"; } catch { return "newest"; }
@@ -49,16 +55,28 @@ export default function LibraryPage() {
   const [addLink, setAddLink] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  // Unfiled links ("other", "uncategorized") can be shown grouped by website, to file a whole site at once.
+  const [bySite, setBySite] = useState(() => { try { return localStorage.getItem(storageKey("lib-by-site")) === "1"; } catch { return false; } });
+  const [siteOfferHidden, setSiteOfferHidden] = useState(() => { try { return localStorage.getItem(storageKey("lib-site-offer")) === "hidden"; } catch { return false; } });
+  const [moved, setMoved] = useState<{ message: string; undo: () => void } | null>(null);
+  useEffect(() => { try { localStorage.setItem(storageKey("lib-by-site"), bySite ? "1" : "0"); } catch { /* per-browser convenience only */ } }, [bySite]);
+
   useEffect(() => { localStorage.setItem(storageKey("lib-view"), viewMode); }, [viewMode]);
   useEffect(() => { try { localStorage.setItem(storageKey("lib-sort"), sort); } catch { /* per-browser convenience only */ } }, [sort]);
   // A selection only ever covers what is on screen: changing the filter or the
   // search text clears it, so a bulk delete can never hit hidden items.
   useEffect(() => { setSelected(new Set()); }, [params.categoryId, params.tagId, params.postId, search.toString(), q]);
 
+  // The top bar's search box lands here with ?q=…
+  const urlQuery = search.get("q");
+  useEffect(() => { if (urlQuery !== null) setQ(urlQuery); }, [urlQuery]);
+
   // "/" focuses search
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "/" && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement)) {
+      const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement
+        || e.target instanceof HTMLSelectElement || (e.target instanceof HTMLElement && e.target.isContentEditable);
+      if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && !typing) {
         e.preventDefault();
         searchRef.current?.focus();
       }
@@ -104,6 +122,7 @@ export default function LibraryPage() {
   const lazyQ = useDeferredValue(q);
   const deferredQ = posts.length > 2000 ? lazyQ : q;
   const persistence = useLibraryPersistence(state => state.status);
+  const synced = persistence === "saved" || persistence === "error";
   const filtered = useMemo(() => {
     let list = posts;
     const f = filter;
@@ -114,6 +133,7 @@ export default function LibraryPage() {
       case "reference": list = list.filter(p => p.status === "reference"); break;
       case "archived": list = list.filter(p => p.status === "archived"); break;
       case "favorites": list = list.filter(p => p.favorite); break;
+      case "followup": list = list.filter(p => p.followUpAt && p.status !== "archived"); break;
       case "uncategorized": list = list.filter(p => p.categories.length === 0 || p.categories.every(c => c === "uncategorized")); break;
       case "category": list = list.filter(p => p.categories.includes(categories.find(c => c.id === f.categoryId)?.name ?? f.categoryId!)); break;
       case "tag": list = list.filter(p => p.tags.includes(f.tag!)); break;
@@ -134,8 +154,25 @@ export default function LibraryPage() {
       case "custom": sorted.sort((a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER)
         || b.createdAt.localeCompare(a.createdAt)); break;
     }
+    // Follow up is a to-do list: overdue first, then by day, whatever the sort menu says.
+    if (filter.kind === "followup") return sorted.sort(byFollowUp);
     return sorted.sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
   }, [posts, filter, deferredQ, sort, categories, feed]);
+  const shelfName = filter.kind === "category" ? categories.find(c => c.id === filter.categoryId)?.name ?? filter.categoryId : "";
+  const unfiledView = filter.kind === "uncategorized" || shelfName === "other" || shelfName === "uncategorized";
+  // Any shelf can be grouped by website (a big shelf reads better a site at a time); on a shelf,
+  // moving a site takes its links off that shelf, while unfiled links are filed.
+  const shelfView = filter.kind === "category" && !unfiledView;
+  const siteView = unfiledView || shelfView;
+  const grouped = siteView && bySite && !q;
+  const siteStats = useMemo(() => siteView && !bySite ? groupBySite(filtered) : null, [siteView, bySite, filtered]);
+  const topSites = siteStats ? siteStats.groups.slice(0, 3) : [];
+  const siteCount = siteStats ? siteStats.groups.length + siteStats.singles.length : 0;
+  const offerSites = !bySite && !siteOfferHidden && !q && topSites.length > 0
+    && (unfiledView ? filtered.length >= 12 : filtered.length >= BIG_SHELF && topSites.length >= 2);
+  useEffect(() => { setMoved(null); }, [filter.kind, shelfName]);
+  // Home ("/") is its own view: the sort deck, Up next and the shelf rows. A search shows results instead.
+  const home = feed && !q;
   const fresh = useMemo(() => feed && !q ? posts.filter(p => p.status === "inbox") : [], [feed, q, posts]);
   const onReorder = (ids: string[]) => {
     // Dragging always means "my order": keep what is on screen and switch to it.
@@ -157,7 +194,14 @@ export default function LibraryPage() {
   return (
     <div className="flex h-full">
       {/* ── Main content ─────────────────────────────────── */}
-      <div className="min-w-0 flex-1 p-5">
+      <div className={home ? "min-w-0 flex-1" : "min-w-0 flex-1 p-5"}>
+        {home ? <>
+          {demo && <div role="status" className="panel mx-auto mt-5 max-w-[1040px] p-3 text-[.82rem] text-[var(--amber)]">
+            Sample library — these examples are not your imported content and are not saved to SQLite.
+            Start the local server to see your own links.
+          </div>}
+          <HomeView />
+        </> : <>
         {/* header */}
         <div className="mb-4 flex flex-wrap items-center gap-2.5">
           <h1 className="text-[1.05rem] font-bold">
@@ -165,7 +209,7 @@ export default function LibraryPage() {
               : filter.kind === "tag" ? `#${filter.tag}`
               : filter.kind === "all" ? (feed ? "Feed" : "Saved Posts")
               : filter.kind === "platform" ? PLATFORM_META[filter.platform as keyof typeof PLATFORM_META]?.label ?? "Platform"
-              : filter.kind === "favorites" ? "Favorites" : filter.kind === "uncategorized" ? "Unfiled"
+              : filter.kind === "favorites" ? "Favorites" : filter.kind === "uncategorized" ? "Unfiled" : filter.kind === "followup" ? "Follow up"
               : filter.kind === "reference" ? "Kept" : filter.kind === "to-review" ? "Later"
               : STATUS_META[filter.kind as keyof typeof STATUS_META]?.label ?? "Library"}
           </h1>
@@ -173,13 +217,24 @@ export default function LibraryPage() {
           <div className="relative min-w-[180px] flex-1 max-w-[340px]">
             <Search size={13} className="absolute top-1/2 left-3 -translate-y-1/2 text-[var(--faint)]" />
             <input ref={searchRef} className="input pl-8" placeholder="Search… ( / )" value={q} onChange={e => setQ(e.target.value)}
-              aria-describedby="search-hint" title="Operators: site:example.com  #tag  is:unread|later|favorite|gone|unfiled  shelf:travel  in:&quot;Folder&quot;" />
-            <span id="search-hint" className="sr-only">Supports site:, #tag, is:unread, is:later, is:favorite, is:gone, shelf: and in: folder filters.</span>
+              aria-describedby="search-hint" title="Operators: site:example.com  #tag  is:unread|later|favorite|due|often|gone|unfiled  shelf:travel  in:&quot;Folder&quot;" />
+            <span id="search-hint" className="sr-only">Supports site:, #tag, is:unread, is:later, is:favorite, is:due, is:often, is:gone, shelf: and in: folder filters.</span>
           </div>
-          <button className="btn btn-primary" onClick={() => setAddLink(true)}><Plus size={13} /> Add link</button>
+          {(filter.kind === "category" || savedView) && filtered.length > 0 && (
+            <button className="btn" onClick={() => setSharing(true)} title="Download these links as one page to send or put online">
+              <Share2 size={13} /> {savedView ? "Share this view" : "Share this shelf"}
+            </button>
+          )}
+          {sharing && <ShareDialog posts={filtered} onClose={() => setSharing(false)}
+            name={savedView ? savedView.name : categories.find(c => c.id === filter.categoryId)?.name ?? "Shelf"} />}
           <SavedViews criteria={criteria} onApply={applyView} />
           <button className="btn" onClick={() => { setQ(""); setAppliedId(null); navigate(feed ? "/" : "/library"); }}>Clear search and filters</button>
           {savedView && <span className="max-w-full break-words text-xs text-[var(--dim)]">{savedView.name}{viewModified ? " — modified" : " — applied"}</span>}
+          {siteView && <button className={"btn" + (bySite ? " btn-on" : "")} aria-pressed={bySite} onClick={() => setBySite(v => !v)}
+            title={unfiledView ? "Group these links by website, to move a whole site onto a shelf at once"
+              : "Group this shelf's links by website, to see each site together or move a whole site to another shelf"}>
+            <Globe size={13} /> By website
+          </button>}
           <select className="input max-[720px]:hidden" style={{ width: "auto" }} value={sort} onChange={e => setSort(e.target.value as never)} aria-label="Sort">
             <option value="newest">Newest</option>
             <option value="oldest">Oldest</option>
@@ -202,12 +257,36 @@ export default function LibraryPage() {
           Sample library — these examples are not your imported content and are not saved to SQLite.
           Start the local server to see your own links.
         </div>}
-        {fresh.length > 0 && filter.kind === "all" && <CatchUpRail posts={fresh} />}
-        {feed && !q && fresh.length === 0 && filtered.length > 0 && <Rediscover posts={posts} />}
-        {feed && fresh.length > 0 && filtered.length > 0 && <h2 className="feed-subhead">Your library</h2>}
+
+        {offerSites && (
+          <div className="site-offer" role="note">
+            <span className="site-offer__icon" aria-hidden="true"><Globe size={17} /></span>
+            <div className="min-w-0 flex-1">
+              <div className="site-offer__title">{unfiledView ? `${filtered.length} links here aren't on a shelf yet`
+                : `${filtered.length} links on ${shelfName}, from ${siteCount} websites`}</div>
+              <div className="site-offer__text">
+                {unfiledView ? "Group them by website to move a whole site onto a shelf in one go"
+                  : "Group them by website to see each site together, or move a whole site to another shelf"} — {topSites.map(g => `${g.site} (${g.posts.length})`).join(", ")}…
+              </div>
+            </div>
+            <button className="btn btn-primary" onClick={() => setBySite(true)}><Globe size={13} /> Group by website</button>
+            <button className="icon-btn" aria-label="Not now" title="Not now (the By website button stays)"
+              onClick={() => { setSiteOfferHidden(true); try { localStorage.setItem(storageKey("lib-site-offer"), "hidden"); } catch { /* convenience only */ } }}>
+              <X size={14} />
+            </button>
+          </div>
+        )}
+        {moved && <div className="site-moved" role="status">
+          <span>{moved.message}</span>
+          <button className="btn" onClick={() => { moved.undo(); setMoved(null); }}>Undo</button>
+          <button className="icon-btn" aria-label="Dismiss" onClick={() => setMoved(null)}><X size={13} /></button>
+        </div>}
 
         {/* content */}
-        {filtered.length === 0 && posts.length === 0 && (persistence === "idle" || persistence === "syncing") ? (
+        {grouped && filtered.length > 0 ? (
+          <SiteGroups posts={filtered} shelfId={filter.kind === "category" ? filter.categoryId : undefined} fromShelf={shelfView ? shelfName : undefined}
+            onMoved={(message, undo) => setMoved({ message, undo })} onShowAll={() => setBySite(false)} />
+        ) : filtered.length === 0 && posts.length === 0 && (persistence === "idle" || persistence === "syncing") ? (
           // First load from SQLite: show where cards will appear, not "Nothing here yet".
           <div className="cell-grid grid gap-3.5" aria-busy="true" aria-label="Loading your library">
             {Array.from({ length: 8 }, (_, i) => <div key={i} className="panel skeleton h-[260px]" />)}
@@ -236,15 +315,21 @@ export default function LibraryPage() {
         ) : (
           <PostTable posts={filtered} selected={selected} onToggle={toggleSelect} resetKey={resetKey} />
         )}
+        </>}
       </div>
 
       {/* overlays */}
       <BulkBar ids={filtered.filter(p => selected.has(p.id)).map(p => p.id)} onClear={() => setSelected(new Set())} />
-      {drawerPost && <PostDrawer post={drawerPost} onClose={() => navigate(-1)} />}
+      {drawerPost && <PostDrawer post={drawerPost} onClose={() => {
+        // Opened straight into a link (a new tab, the Save window): there is no page to go back to.
+        if (window.history.length > 1) navigate(-1);
+        else navigate("/library", { replace: true });
+      }} />}
       {drawerPost === undefined && params.postId && (
-        <div className="overlay" onMouseDown={() => navigate("/library")}>
+        <div className="overlay" onMouseDown={() => { if (synced) navigate("/library"); }}>
           <div className="modal mt-[20vh] p-6 text-center">
-            <p className="text-[.85rem]">This saved post no longer exists.</p>
+            {/* Until SQLite has answered once, a link opened by its address may simply not be loaded yet. */}
+            <p className="text-[.85rem]" role="status">{synced ? "This saved post no longer exists." : "Loading this link…"}</p>
             <button className="btn mt-3" onClick={() => navigate("/library")}>Back to library</button>
           </div>
         </div>

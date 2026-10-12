@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Bookmark, Inbox, Link2, Plus, Search, Settings } from "lucide-react";
 import { useLibrary } from "../store/library";
 import { PLATFORM_META } from "../lib/ui";
+import { useDialog } from "../lib/useDialog";
 
 interface Item {
   icon: typeof Search;
@@ -20,6 +21,8 @@ export default function CommandPalette({ onClose }: { onClose: () => void }) {
   const categories = useLibrary(s => s.categories);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
+  const box = useRef<HTMLDivElement>(null);
+  useDialog(box, onClose);
 
   const items = useMemo<Item[]>(() => {
     const ql = q.toLowerCase();
@@ -59,7 +62,7 @@ export default function CommandPalette({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal mt-[12vh] w-[min(600px,92vw)] overflow-hidden" role="dialog" aria-label="Command palette">
+      <div ref={box} tabIndex={-1} className="modal mt-[12vh] w-[min(600px,92vw)] overflow-hidden outline-none" role="dialog" aria-modal="true" aria-label="Command palette">
         <div className="flex items-center gap-2 border-b px-4" style={{ borderColor: "var(--border)" }}>
           <Search size={15} className="text-[var(--faint)]" />
           <input

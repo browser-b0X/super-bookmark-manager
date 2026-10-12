@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Archive, GripVertical, Lightbulb, Palette, Plus, Trash2, X } from "lucide-react";
 import { CAT_COLORS, useLibrary } from "../../store/library";
 import type { Category } from "../../types";
+import { useDialog } from "../../lib/useDialog";
 
 /**
  * The whole point of the consolidation: a browsable library has a shelf count you
@@ -46,7 +47,11 @@ function SortableRow({ cat, count }: { cat: Category; count: number }) {
           value={name} autoFocus
           onChange={e => setName(e.target.value)}
           onBlur={() => { renameCategory(cat.id, name); setEditing(false); }}
-          onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") { setName(cat.name); setEditing(false); } }}
+          onKeyDown={e => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            // Handled here, so the dialog stays open: the next Escape closes it.
+            if (e.key === "Escape") { e.preventDefault(); setName(cat.name); setEditing(false); }
+          }}
         />
       ) : (
         <button className="flex-1 truncate text-left text-[.8rem]" onDoubleClick={() => setEditing(true)} title="Double-click to rename">
@@ -65,7 +70,7 @@ function SortableRow({ cat, count }: { cat: Category; count: number }) {
       <button className="icon-btn" style={{ width: 24, height: 24 }} title={cat.archived ? "Unarchive" : "Archive"} onClick={() => archiveCategory(cat.id, !cat.archived)}>
         <Archive size={12} />
       </button>
-      {cat.id !== "uncategorized" && (
+      {cat.id !== "uncategorized" && cat.name !== "other" && (
         confirmDel ? (
           <button className="btn btn-danger" style={{ padding: "2px 8px", fontSize: ".68rem" }} onClick={() => deleteCategory(cat.id)}>posts → uncategorized. sure?</button>
         ) : (
@@ -82,6 +87,8 @@ export default function CategoryManager({ onClose }: { onClose: () => void }) {
   const addCategory = useLibrary(s => s.addCategory);
   const reorderCategories = useLibrary(s => s.reorderCategories);
   const [newName, setNewName] = useState("");
+  const box = useRef<HTMLDivElement>(null);
+  useDialog(box, onClose);
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
   const [loadingSug, setLoadingSug] = useState(false);
   const [sugMsg, setSugMsg] = useState<string | null>(null);
@@ -127,7 +134,7 @@ export default function CategoryManager({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal mt-[8vh] flex max-h-[80vh] w-[min(520px,94vw)] flex-col p-5" role="dialog" aria-label="Manage categories">
+      <div ref={box} tabIndex={-1} className="modal mt-[8vh] flex max-h-[80vh] w-[min(520px,94vw)] flex-col p-5 outline-none" role="dialog" aria-modal="true" aria-label="Manage categories">
         <div className="mb-3 flex items-center">
           <h3 className="text-[.95rem] font-semibold">Manage categories</h3>
           <button className="icon-btn ml-auto" onClick={onClose} aria-label="Close"><X size={15} /></button>

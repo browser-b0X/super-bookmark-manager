@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Link2, X } from "lucide-react";
 import { useLibrary } from "../../store/library";
 import { enrichSavedPost } from "../../lib/metadataEnrichment";
+import { useDialog } from "../../lib/useDialog";
 
 export default function AddLinkDialog({ onClose }: { onClose: () => void }) {
   const addByUrl = useLibrary(s => s.addByUrl);
@@ -10,6 +11,8 @@ export default function AddLinkDialog({ onClose }: { onClose: () => void }) {
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useDialog(box, onClose);
 
   const submit = async () => {
     setError("");
@@ -26,7 +29,7 @@ export default function AddLinkDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal mt-[16vh] w-[min(480px,92vw)] p-5" role="dialog" aria-label="Add link">
+      <div ref={box} tabIndex={-1} className="modal mt-[16vh] w-[min(480px,92vw)] p-5 outline-none" role="dialog" aria-modal="true" aria-label="Add link">
         <div className="mb-3 flex items-center">
           <h3 className="text-[.95rem] font-semibold"><Link2 size={15} className="mr-2 inline text-[var(--accent)]" />Add a link</h3>
           <button className="icon-btn ml-auto" onClick={onClose} aria-label="Close"><X size={15} /></button>

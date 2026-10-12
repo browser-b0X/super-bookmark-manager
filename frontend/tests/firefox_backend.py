@@ -52,6 +52,23 @@ class FirefoxTests(unittest.TestCase):
         self.assertNotIn('history-only.invalid', result.get_data(as_text=True))
         self.assertNotIn('History title', result.get_data(as_text=True))
 
+    def test_tags_are_not_bookmarks_of_their_own(self):
+        from firefox_cases import fixture as make
+        data = self.parse(make("tagged")).json
+        entries, paths = [], []
+
+        def walk(node, path):
+            for child in node['children']:
+                if child['type'] == 'folder':
+                    walk(child, path + ([child['name']] if child['name'] else []))
+                else:
+                    entries.append(child)
+                    paths.append(tuple(path))
+        walk(data['roots']['bookmarks'], [])
+        self.assertEqual(data['bookmarkRows'], 5)
+        self.assertNotIn(('Tags', 'baking'), paths)
+        self.assertEqual([e['name'] for e in entries if e['url'] == NEW][0], 'Cooking recipe supplied')
+
     def test_bad_files_controlled_and_no_library_access(self):
         with patch.object(dashboard.storage, '_connect', side_effect=AssertionError('Library mutation')):
             for name in ['empty', 'not-sqlite', 'truncated', 'missing-bookmarks', 'missing-places', 'schema', 'bad-fk', 'view']:

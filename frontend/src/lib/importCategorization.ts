@@ -1,5 +1,5 @@
 import type { SavedPost } from "../types";
-import { libraryUrl, useLibrary } from "../store/library";
+import { applyAutomaticCategoryInBackground, libraryUrl, useLibrary } from "../store/library";
 import { needsCategory } from "./shelves";
 import { syncLibrary, useLibraryPersistence } from "./libraryPersistence";
 import { enrichSavedPost } from "./metadataEnrichment";
@@ -35,8 +35,8 @@ async function classify(id: string) {
     }
   } catch { /* Import is already complete; an unavailable classifier leaves review. */ }
   finally { clearTimeout(timer); }
-  // Recheck current state after the request: edits and deletion always win.
-  useLibrary.getState().applyAutomaticCategory(id, category);
+  // Checked against the link as it is when applied: edits and deletion always win.
+  void applyAutomaticCategoryInBackground(id, category);
 }
 
 function drain() {

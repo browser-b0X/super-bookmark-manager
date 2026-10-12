@@ -2,7 +2,8 @@
 from pathlib import Path
 import zipfile
 
-FORBIDDEN_DIRS = {"backups", "backup", "exports", "export", "thumb_cache", "profiles",
+FORBIDDEN_DIRS = {"backups", "backup", "exports", "export", "thumb_cache", "archive_store", "video_helper_store", "profiles",
+                  "restored-libraries",
                   "profile", "user data", "browser_data", "browser-data", ".git", ".verify"}
 
 
@@ -10,9 +11,10 @@ def forbidden(name):
     parts = name.replace("\\", "/").lower().split("/")
     leaf = parts[-1]
     return (bool(set(parts[:-1]) & FORBIDDEN_DIRS)
-            or leaf in {"config.json", "credentials.json", "cookies", "history", "login data",
+            or leaf in {"config.json", "ai.json", "helper.json", "credentials.json", "cookies", "history", "login data",
                         "local state", "preferences", "bookmarks", "runtime.json", "browser-id.txt"}
             or leaf.startswith((".env", "secrets."))
+            or leaf.endswith(".tg.json")                 # a link's kept Telegram photos and videos
             or leaf.endswith(".db") or ".db-" in leaf
             or ".sqlite" in leaf or ".session" in leaf)
 

@@ -6,6 +6,7 @@ export const SETTINGS_SECTIONS = [
   { id: "ai", label: "AI & previews" },
   { id: "library", label: "Library & sync" },
   { id: "backup", label: "Backup" },
+  { id: "appearance", label: "Appearance" },
 ] as const;
 
 export function SettingsGroup({ id, title, icon, intro, children }: {

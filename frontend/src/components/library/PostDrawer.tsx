@@ -1,17 +1,24 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ExternalLink, Pencil, Pin, RefreshCw, Star, Trash2, X } from "lucide-react";
+import { ExternalLink, FileDown, Pencil, Pin, RefreshCw, Star, Trash2, X } from "lucide-react";
 import type { SavedPost } from "../../types";
 import { useLibrary } from "../../store/library";
+import { useDialog } from "../../lib/useDialog";
 import { PLATFORM_META, STATUS_META, STATUS_ORDER, relTime } from "../../lib/ui";
+import { FollowUpSection } from "./FollowUp";
 import { enrichSavedPost, refreshIfStale } from "../../lib/metadataEnrichment";
 import SiteLine from "./SiteLine";
 import { relatedItems } from "../../lib/relatedItems";
 import { libraryUrl, normalizeUrl } from "../../lib/platform";
+import { useCopyAvailability } from "../../lib/copyAvailability";
+import { checkCopy, saveCopy } from "../../lib/savedCopies";
+import SavedCopyPanel from "./SavedCopyPanel";
+import CopyReader from "./CopyReader";
 
 export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose: () => void }) {
   const navigate = useNavigate();
   const updatePost = useLibrary(s => s.updatePost);
+  const touchOpened = useLibrary(s => s.touchOpened);
   const restoreTitle = useLibrary(s => s.restoreOriginalTitle);
   const deletePosts = useLibrary(s => s.deletePosts);
   const categories = useLibrary(s => s.categories);
@@ -22,29 +29,14 @@ export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState<null | "title" | "description">(null);
   const [draft, setDraft] = useState("");
+  const copiesEnabled = useCopyAvailability(s => s.enabled);
+  const [reading, setReading] = useState(false);
+  const closeReader = useCallback(() => setReading(false), []);
 
   const panel = useRef<HTMLElement>(null);
   // Dialog behaviour: focus moves in, Tab stays inside, Escape closes, and
   // focus returns to whatever opened the panel.
-  useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
-    if (!panel.current?.contains(document.activeElement)) panel.current?.focus({ preventScroll: true });
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); onClose(); return; }
-      if (e.key !== "Tab" || !panel.current) return;
-      const focusable = [...panel.current.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), textarea, select, [tabindex]:not([tabindex="-1"])')]
-        .filter(el => el.offsetParent !== null);
-      if (!focusable.length) return;
-      const first = focusable[0], last = focusable[focusable.length - 1];
-      if (e.shiftKey && (document.activeElement === first || document.activeElement === panel.current)) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      if (opener && opener.isConnected && opener !== document.body) opener.focus({ preventScroll: true });
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useDialog(panel, onClose);
 
   // The same page saved under another spelling (http/https, www, tracking
   // parameters, a canonical or redirect target): offer to merge, never automatically.
@@ -74,6 +66,8 @@ export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose
 
   // Opening a link is a good moment to refresh an old or missing preview.
   useEffect(() => { refreshIfStale(post); }, [post.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // ...and to check that a copy this link claims is still on disk.
+  useEffect(() => { setReading(false); void checkCopy(post); }, [post.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startEdit = (field: "title" | "description") => { setDraft(post[field] ?? ""); setEditing(field); };
   const commitEdit = () => {
@@ -108,6 +102,8 @@ export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose
         style={{ background: "var(--surface-solid)", borderColor: "var(--border-hi)", boxShadow: "var(--shadow)" }}
         role="dialog" aria-label="Saved post detail"
       >
+        {/* Inside the panel so Tab reaches it; drawn to the left of it. */}
+        {reading && post.archiveStatus === "saved" && post.archiveKey && <CopyReader post={post} onClose={closeReader} />}
         {/* header actions */}
         <div className="mb-3 flex items-center gap-1.5">
           <span className="chip inline-flex items-center gap-1.5" style={{ color: meta.color }}>
@@ -145,23 +141,27 @@ export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose
           {post.lastOpenedAt ? ` · opened ${relTime(post.lastOpenedAt)}` : ""}
           {post.folderPath?.length ? ` · ${post.folderPath.join(" › ")}` : ""}
         </div>
-        {post.linkStatus === "gone" && <p role="note" className="mt-2 text-[.74rem] text-[var(--amber)]">This page no longer exists at its address{post.httpStatus ? ` (HTTP ${post.httpStatus})` : ""}. Your saved copy of the details is unchanged.</p>}
+        {post.linkStatus === "gone" && <p role="note" className="mt-2 text-[.74rem] text-[var(--amber)]">This page no longer exists at its address{post.httpStatus ? ` (HTTP ${post.httpStatus})` : ""}. The details you saved here are unchanged.</p>}
         {post.finalUrl && <p className="mt-1 truncate text-[.7rem] text-[var(--faint)]" title={post.finalUrl}>Now redirects to {post.finalUrl}</p>}
         {duplicate && (
           <div role="note" className="mt-2 flex items-center gap-2 rounded-lg border p-2 text-[.74rem]" style={{ borderColor: "var(--border-hi)" }}>
-            <span className="min-w-0 flex-1">Possible duplicate of <button className="underline" onClick={() => navigate(`/library/item/${duplicate.id}`)}>{duplicate.title || duplicate.url}</button></span>
+            <span className="min-w-0 flex-1">Possible duplicate of <button className="underline" onClick={() => navigate(`/library/item/${duplicate.id}`, { replace: true })}>{duplicate.title || duplicate.url}</button></span>
             <button className="btn" style={{ padding: "2px 8px", fontSize: ".7rem" }} onClick={mergeDuplicate} title="Keep this link and move tags, notes, favourite and shelf over from the other">Merge into this</button>
           </div>
         )}
 
         {/* source + actions */}
         <div className="mt-3 flex flex-wrap gap-2">
-          <a className="btn btn-primary" href={post.url} target="_blank" rel="noopener noreferrer" onClick={() => updatePost(post.id, { lastOpenedAt: new Date().toISOString() })}>
+          <a className="btn btn-primary" href={post.url} target="_blank" rel="noopener noreferrer" onClick={() => touchOpened(post.id)}>
             <ExternalLink size={13} /> Open source
           </a>
           <button className="btn" onClick={retryMetadata} disabled={enriching}>
             <RefreshCw size={13} className={enriching ? "animate-spin" : ""} /> {enriching ? "Enriching…" : "Refresh metadata"}
           </button>
+          {copiesEnabled && !post.archiveStatus && <button className="btn" onClick={() => saveCopy(post.id)}
+            title="Keep an offline copy of this page, readable after the site changes or disappears">
+            <FileDown size={13} /> Save a copy
+          </button>}
         </div>
         <div className="mt-1.5 text-[.66rem] text-[var(--faint)]">
           preview: <span style={{ color: post.metadataStatus === "failed" ? "var(--red)" : post.metadataStatus === "enriched" ? "var(--green)" : "var(--amber)" }}>
@@ -170,6 +170,7 @@ export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose
           {post.metadataRetryAt ? ` Next automatic try in ${Math.max(1, Math.ceil((Date.parse(post.metadataRetryAt) - Date.now()) / 60000))} min.` : ""}
           {post.sourceMessageId ? ` · telegram msg ${post.sourceMessageId}` : ""}
         </div>
+        <SavedCopyPanel post={post} onRead={() => setReading(true)} />
 
         {/* description / excerpt */}
         <div className="panel mt-4 p-3">
@@ -206,6 +207,8 @@ export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose
             ))}
           </div>
         </div>
+
+        <FollowUpSection post={post} />
 
         {/* categories */}
         <div className="mt-4">
@@ -273,7 +276,7 @@ export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose
           <div className="mt-4">
             <div className="mb-1.5 text-[.66rem] font-semibold tracking-[.8px] text-[var(--faint)] uppercase">Related</div>
             {related.map(r => (
-              <button key={r.id} className="block w-full truncate rounded px-1 py-1 text-left text-[.74rem] text-[var(--dim)] hover:bg-[var(--surface2)] hover:text-[var(--text)]" onClick={() => navigate(`/library/item/${r.id}`)}>
+              <button key={r.id} className="block w-full truncate rounded px-1 py-1 text-left text-[.74rem] text-[var(--dim)] hover:bg-[var(--surface2)] hover:text-[var(--text)]" onClick={() => navigate(`/library/item/${r.id}`, { replace: true })}>
                 {r.title || r.url}
               </button>
             ))}

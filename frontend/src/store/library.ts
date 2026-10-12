@@ -8,6 +8,8 @@ import { postFromUrl } from "../lib/providers";
 import { CANONICAL_SHELVES, migrateToCanonicalShelves, reopenRecentQueue } from "./migrations";
 import { appendBoundedShelves, needsCategory, RESERVED_SHELVES, TOPICAL_SHELF_LIMIT } from "../lib/shelves";
 import { viewName, viewCriteria } from "../lib/savedViews";
+import { wantsCopyOfNewLinks } from "../lib/copyAvailability";
+import { isInstagramPost } from "../lib/instagram";
 
 // Legacy source values (SQLite `source` column) → canonical platform.
 const LEGACY_PLATFORM: Record<string, SavedPost["platform"]> = {
@@ -38,14 +40,50 @@ export interface ImportRecord {
 }
 
 /** A post the owner has worked with since import (undo keeps these unless asked). */
+/** The saved link for `url` in any spelling: exact href, or the canonical form a browser
+ * import stores as its own href (`https://a.com/` vs `https://a.com`). */
+export function findSavedByUrl(posts: SavedPost[], url: string): SavedPost | undefined {
+  let wanted: SavedPost;
+  try { wanted = postFromUrl(url, "manual"); } catch { return undefined; }
+  const exact = libraryUrl(wanted.url);
+  return posts.find(p => libraryUrl(p.url) === exact
+    || (p.canonicalUrl || normalizeUrl(p.url)) === wanted.canonicalUrl
+    || normalizeUrl(p.canonicalUrl || p.url) === wanted.canonicalUrl);
+}
+
+/**
+ * A status the owner chose (Keep, Later, Archive, Done) marks the link as worked
+ * with, so "Undo import" keeps it: an import's own "reference" looks the same.
+ */
+function ownerStatus(post: SavedPost, patch: Partial<SavedPost>): Partial<SavedPost> {
+  return patch.status && patch.status !== post.status ? { ...patch, fieldSources: { ...post.fieldSources, ...patch.fieldSources, status: "user" } } : patch;
+}
+
+/** A background job's change to one link, worked out from the link as it is when applied. */
+export type BackgroundChange = Partial<SavedPost> | ((post: SavedPost) => Partial<SavedPost> | null);
+
+/** The automatic shelf for a link, or null when it has one already (or the owner filed it). */
+function automaticCategory(post: SavedPost, category: string, shelves: Category[]): Partial<SavedPost> | null {
+  if (!needsCategory(post)) return null;
+  const name = shelves.some(c => c.name === category && !c.archived && category !== "uncategorized") ? category : "other";
+  const review = name === "other";
+  if (post.categoryMode === "automatic" && post.categoryReview === review && post.categories.length === 1 && post.categories[0] === name) return null;
+  return { categories: [name], categoryMode: "automatic", categoryReview: review };
+}
+
 export function touchedSinceImport(post: SavedPost): boolean {
-  return !!(post.userNotes?.trim() || post.favorite || post.pinned || post.lastOpenedAt
+  return !!(post.userNotes?.trim() || post.favorite || post.pinned || post.lastOpenedAt || post.followUpAt || post.useOften
     || !["inbox", "reference"].includes(post.status)
     || Object.values(post.fieldSources ?? {}).includes("user"));
 }
 
 /** One reviewed suggestion from Settings > AI & previews. */
 export interface AiSuggestion { id: string; shelf?: string; tags?: string[]; title?: string; summary?: string }
+
+/** What one background AI change did to a link, kept so the run can be undone. */
+export interface AiChange { id: string; before: Partial<SavedPost>; after: Partial<SavedPost> }
+/** The fields an AI suggestion can change (and an undo puts back). */
+export const AI_FIELDS = ["categories", "categoryMode", "categoryReview", "tags", "title", "originalTitle", "fieldSources", "aiSummary", "aiCheckedAt"] as const;
 
 /** A change SQLite refused; kept visible until the owner retries or discards it. */
 export interface RejectedChange { post: SavedPost; reason: string; error?: string; at: string }
@@ -72,19 +110,35 @@ interface LibraryState {
   imports: ImportRecord[];
   /** Last SQLite revision merged into this cache (0 = ask for everything). */
   syncRev: number;
+  /** Which library this cache holds: SQLite's epoch when last read. A restore replaces the
+   *  library and moves it on (absent: never read from a server that has one, counts as 0). */
+  syncEpoch?: number;
 
   // posts
   importPosts(incoming: SavedPost[]): { added: number; updated: number; skipped: number };
-  addByUrl(url: string): SavedPost | null;
+  /** `copy: false` keeps a new link from being queued for a saved copy (the Save window's box). */
+  addByUrl(url: string, options?: { copy?: boolean }): SavedPost | null;
   retryRejected(url: string): void;
   recordImport(record: Omit<ImportRecord, "at">): void;
   undoImport(batchId: string, includeTouched: boolean): { removed: number; kept: number };
   discardRejected(url: string): void;
   updatePost(id: string, patch: Partial<SavedPost>): void;
   applyAutomaticCategory(id: string, category: string): void;
+  /** Background results for many links at once (see updatePostInBackground). */
+  applyBackgroundChanges(changes: Map<string, BackgroundChange[]>): void;
   bulkPatch(ids: string[], patch: Partial<SavedPost>): void;
-  /** Save reviewed AI suggestions in one write; returns how many links changed. */
-  applyAiSuggestions(items: AiSuggestion[]): number;
+  /** Put many links on one more shelf in a single write (their other shelves stay; "other" and "uncategorized" go). */
+  addToShelf(ids: string[], shelf: string): number;
+  /** Move many links from one shelf to another in a single write (their other shelves stay). */
+  moveToShelf(ids: string[], from: string, to: string): number;
+  /** Put shelves back exactly as they were (undo for a move). */
+  restoreCategories(before: { id: string; categories: string[]; categoryMode?: SavedPost["categoryMode"]; categoryReview?: boolean }[]): void;
+  /** Apply AI suggestions in one write; `checked` are the links this run looked at (they stop coming back).
+   *  Reviewed ones file links like a manual choice; `automatic` ones (sorted in the background, not reviewed)
+   *  keep the shelf automatic. Returns what changed on each link, before and after. */
+  applyAiSuggestions(items: AiSuggestion[], checked?: string[], options?: { automatic?: boolean }): AiChange[];
+  /** Undo background AI changes; a field the owner has changed since is left as it is. Returns links restored. */
+  restoreAiChanges(changes: AiChange[]): number;
   restoreOriginalTitle(id: string): void;
   /** Save a hand-arranged order: the given ids, first to last. */
   reorderPosts(orderedIds: string[]): void;
@@ -120,22 +174,31 @@ const uid = () => "id-" + Math.random().toString(36).slice(2, 10);
 
 export { libraryUrl };
 
+/** Set by the first read of the cache (see `merge`); later reads are other tabs' writes. */
+let hydratedOnce = false;
+
 export const useLibrary = create<LibraryState>()(
   persist(
     (rawSet, get) => {
       const set = (patch: Partial<LibraryState>) => {
         if (patch.posts && !(patch.demo ?? get().demo)) {
-          const previous = new Map(get().posts.map(p => [libraryUrl(p.url), p]));
-          const pending = { ...get().pending, ...patch.pending };
-          let changed = false;
+          // Every change replaces only the posts it touches (`posts.map(p => p.id === id ? {...} : p)`),
+          // so a post that is the same object as before is unchanged: only new objects are
+          // compared field by field. Comparing all of them on every write froze the page
+          // for seconds after a big import, when previews and shelves arrive many per second.
+          const before = get().posts;
+          const kept = new Set(before);
+          let byId: Map<string, SavedPost> | undefined;
+          let pending: Record<string, SavedPost | null> | undefined;
           for (const post of patch.posts) {
-            const url = libraryUrl(post.url);
-            if (JSON.stringify(previous.get(url)) !== JSON.stringify(post)) {
-              pending[url] = post;
-              changed = true;
-            }
+            if (kept.has(post)) continue;
+            byId ??= new Map(before.map(p => [p.id, p]));
+            const previous = byId.get(post.id);
+            if (previous && previous.url === post.url && JSON.stringify(previous) === JSON.stringify(post)) continue;
+            pending ??= { ...get().pending, ...patch.pending };
+            pending[libraryUrl(post.url)] = post;
           }
-          if (changed) patch = { ...patch, pending };
+          if (pending) patch = { ...patch, pending };
         }
         rawSet(patch);
       };
@@ -150,8 +213,8 @@ export const useLibrary = create<LibraryState>()(
       purgeUrls: [],
       imports: [],
       syncRev: 0,
-      // A fresh install starts on the derived shelves rather than growing a
-      // category per link, which is what produced 32 of them for 204 links.
+      // A fresh install starts on the default shelves rather than growing a
+      // category per link.
       categories: [
         ...CANONICAL_SHELVES.map((s, i) => ({
           id: s.name, name: s.name, description: s.description,
@@ -168,35 +231,44 @@ export const useLibrary = create<LibraryState>()(
 
       importPosts(incoming) {
         if (incoming.length && get().demo) rawSet({ posts: [], pending: {}, deletedUrls: [], demo: false });
-        const posts = get().posts.map(p => ({ ...p }));
-        const byCanonical = new Map(posts.map(p => [p.canonicalUrl || normalizeUrl(p.url), p]));
-        const exactUrl = (url: string) => {
-          try { return new URL(url).href; } catch { return url; }
-        };
+        // Copy-on-write: a post is copied only when the import changes it, and lookups go
+        // by index and id sets (one scan of the library, not one per imported link).
+        const posts = get().posts.slice();
+        // Canonical keys are normalized on both sides: a browser import stores its exact
+        // href as canonicalUrl, a WhatsApp or pasted link the normalized form.
+        const byCanonical = new Map(posts.map((p, i) => [normalizeUrl(p.canonicalUrl || p.url), i]));
         // File imports retain fragments/query values. Match older records by
         // their original URL too, without replacing their IDs or curated fields.
-        const byExactUrl = new Map(posts.map(p => [exactUrl(p.url), p]));
+        const byExactUrl = new Map(posts.map((p, i) => [libraryUrl(p.url), i]));
+        const ids = new Set(posts.map(p => p.id));
         let added = 0, updated = 0, skipped = 0;
+        const copies = wantsCopyOfNewLinks();
         const deleted = new Set(get().deletedUrls);
         for (const item of incoming) {
           if (deleted.has(libraryUrl(item.url))) { skipped++; continue; }
-          const key = item.canonicalUrl || normalizeUrl(item.url);
-          const existing = item.telegramMessage || item.source === "browser"
-            ? byExactUrl.get(exactUrl(item.url)) : byCanonical.get(key);
-          if (existing) {
+          const key = normalizeUrl(item.canonicalUrl || item.url);
+          // The exact link always matches first: two posts with one URL would make
+          // SQLite refuse every later edit to that link as a duplicate.
+          const at = byExactUrl.get(libraryUrl(item.url))
+            ?? (item.telegramMessage || item.source === "browser" ? undefined : byCanonical.get(key));
+          if (at !== undefined) {
+            const existing = posts[at];
             // Idempotent: refresh source metadata only, preserve organization.
             const patch: Partial<SavedPost> = { sourceMessageId: existing.sourceMessageId ?? item.sourceMessageId };
             if (item.telegramMessage && !existing.telegramMessage) patch.telegramMessage = item.telegramMessage;
             if (item.excerpt && !existing.excerpt) patch.excerpt = item.excerpt;
             if (item.folderPath?.length && !existing.folderPath?.length) patch.folderPath = item.folderPath;
-            Object.assign(existing, patch);
+            if ((Object.keys(patch) as (keyof SavedPost)[]).some(k => existing[k] !== patch[k])) posts[at] = { ...existing, ...patch };
             updated++;
-          } else if (posts.some(p => p.id === item.id)) {
+          } else if (ids.has(item.id)) {
             skipped++;
           } else {
-            posts.push(item);
-            byCanonical.set(key, item);
-            byExactUrl.set(exactUrl(item.url), item);
+            // The copy queue (lib/savedCopies) picks up links marked "pending".
+            const fresh = copies && !item.archiveStatus && !isInstagramPost(item.url) ? { ...item, archiveStatus: "pending" as const } : item;
+            posts.push(fresh);
+            byCanonical.set(key, posts.length - 1);
+            byExactUrl.set(libraryUrl(item.url), posts.length - 1);
+            ids.add(item.id);
             added++;
           }
         }
@@ -209,16 +281,12 @@ export const useLibrary = create<LibraryState>()(
         return { added, updated, skipped };
       },
 
-      addByUrl(url) {
+      addByUrl(url, options = {}) {
         try { if (!["http:", "https:"].includes(new URL(url.trim()).protocol)) return null; } catch { return null; }
         if (get().demo) rawSet({ posts: [], pending: {}, deletedUrls: [], demo: false });
         const post = postFromUrl(url, "manual");
         const exact = libraryUrl(post.url);
-        // Same link in any spelling: exact href, or the canonical form a browser
-        // import stores as its own href (`https://a.com/` vs `https://a.com`).
-        const dup = get().posts.find(p => libraryUrl(p.url) === exact
-          || (p.canonicalUrl || normalizeUrl(p.url)) === post.canonicalUrl
-          || normalizeUrl(p.canonicalUrl || p.url) === post.canonicalUrl);
+        const dup = findSavedByUrl(get().posts, url);
         if (dup) return dup;
         // Typing a deleted link back in is an explicit request to keep it again.
         if (get().deletedUrls.includes(exact)) {
@@ -227,6 +295,8 @@ export const useLibrary = create<LibraryState>()(
             undeleteUrls: [...new Set([...get().undeleteUrls, exact])],
           });
         }
+        // Instagram posts are saved only through the bookmark button, which brings what the page shows.
+        if (wantsCopyOfNewLinks() && options.copy !== false && !isInstagramPost(post.url)) post.archiveStatus = "pending";
         set({ posts: [post, ...get().posts] });
         get().logActivity("post", "Added link", post.title);
         return post;
@@ -273,42 +343,127 @@ export const useLibrary = create<LibraryState>()(
       discardRejected(url) {
         const rejected = { ...get().rejected };
         delete rejected[url];
-        rawSet({ rejected });
+        // "Discard to keep the saved version": the refused edit is still what this
+        // tab shows, so read the whole library from SQLite again (syncRev 0).
+        rawSet({ rejected, syncRev: 0 });
+        void import("../lib/libraryPersistence").then(m => m.syncLibrary());
       },
 
       updatePost(id, patch) {
         if (patch.categories) patch = { ...patch, categoryMode: "manual", categoryReview: false };
-        set({ posts: get().posts.map(p => (p.id === id ? { ...p, ...patch, updatedAt: nowIso() } : p)) });
+        set({ posts: get().posts.map(p => (p.id === id ? { ...p, ...ownerStatus(p, patch), updatedAt: nowIso() } : p)) });
       },
 
       applyAutomaticCategory(id, category) {
         const post = get().posts.find(p => p.id === id);
-        if (!post || !needsCategory(post)) return;
-        const name = get().categories.some(c => c.name === category && !c.archived && category !== "uncategorized") ? category : "other";
-        const review = name === "other";
-        if (post.categoryMode === "automatic" && post.categoryReview === review && post.categories.length === 1 && post.categories[0] === name) return;
-        set({ posts: get().posts.map(p => p.id === id
-          ? { ...p, categories: [name], categoryMode: "automatic", categoryReview: review, updatedAt: nowIso() } : p) });
+        const patch = post && automaticCategory(post, category, get().categories);
+        if (!patch) return;
+        set({ posts: get().posts.map(p => p.id === id ? { ...p, ...patch, updatedAt: nowIso() } : p) });
+      },
+
+      applyBackgroundChanges(changes) {
+        let touched = false;
+        const posts = get().posts.map(p => {
+          const list = changes.get(p.id);
+          if (!list) return p;
+          let next = p;
+          for (const change of list) {
+            const patch = typeof change === "function" ? change(next) : change;
+            if (patch) next = { ...next, ...patch };
+          }
+          if (next === p) return p;
+          touched = true;
+          return { ...next, updatedAt: nowIso() };
+        });
+        if (touched) set({ posts });
+      },
+
+      addToShelf(ids, shelf) {
+        const idSet = new Set(ids);
+        const at = nowIso();
+        // Filing a link takes it out of the "not filed yet" places.
+        const placeholder = (c: string) => c === "uncategorized" || (c === "other" && shelf !== "other");
+        let n = 0;
+        const posts = get().posts.map(p => {
+          if (!idSet.has(p.id) || (p.categories.includes(shelf) && !p.categories.some(placeholder))) return p;
+          n += 1;
+          return { ...p, categories: [...p.categories.filter(c => !placeholder(c) && c !== shelf), shelf], categoryMode: "manual" as const, categoryReview: false, updatedAt: at };
+        });
+        if (n) set({ posts });
+        return n;
+      },
+
+      moveToShelf(ids, from, to) {
+        if (from === to) return 0;
+        const idSet = new Set(ids);
+        const at = nowIso();
+        let n = 0;
+        const posts = get().posts.map(p => {
+          if (!idSet.has(p.id) || !p.categories.includes(from)) return p;
+          n += 1;
+          const rest = p.categories.filter(c => c !== from && c !== to && c !== "uncategorized" && !(c === "other" && to !== "other"));
+          return { ...p, categories: [...rest, to], categoryMode: "manual" as const, categoryReview: false, updatedAt: at };
+        });
+        if (n) set({ posts });
+        return n;
+      },
+
+      restoreCategories(before) {
+        const byId = new Map(before.map(b => [b.id, b]));
+        const at = nowIso();
+        let n = 0;
+        const posts = get().posts.map(p => {
+          const b = byId.get(p.id);
+          if (!b) return p;
+          n += 1;
+          return { ...p, categories: b.categories, categoryMode: b.categoryMode, categoryReview: b.categoryReview, updatedAt: at };
+        });
+        if (n) set({ posts });
       },
 
       bulkPatch(ids, patch) {
         if (patch.categories) patch = { ...patch, categoryMode: "manual", categoryReview: false };
         const idSet = new Set(ids);
-        set({ posts: get().posts.map(p => (idSet.has(p.id) ? { ...p, ...patch, updatedAt: nowIso() } : p)) });
+        set({ posts: get().posts.map(p => (idSet.has(p.id) ? { ...p, ...ownerStatus(p, patch), updatedAt: nowIso() } : p)) });
       },
 
-      applyAiSuggestions(items) {
+      applyAiSuggestions(items, checked = [], options = {}) {
         const byId = new Map(items.map(item => [item.id, item]));
-        let changed = 0;
+        const seen = new Set(checked);
+        const at = nowIso();
+        let marked = 0;
+        const changes: AiChange[] = [];
+        const record = (before: SavedPost, after: SavedPost) => {
+          const was: Partial<SavedPost> = {}, now: Partial<SavedPost> = {};
+          for (const field of AI_FIELDS) {
+            if (JSON.stringify(before[field]) === JSON.stringify(after[field])) continue;
+            (was as Record<string, unknown>)[field] = before[field];
+            (now as Record<string, unknown>)[field] = after[field];
+          }
+          changes.push({ id: before.id, before: was, after: now });
+        };
         const posts = get().posts.map(p => {
           const s = byId.get(p.id);
-          if (!s) return p;
-          const next: SavedPost = { ...p };
+          if (!s) {
+            if (!seen.has(p.id)) return p;
+            marked += 1;
+            const next = { ...p, aiCheckedAt: at, updatedAt: at };
+            if (options.automatic) record(p, next);
+            return next;
+          }
+          const next: SavedPost = { ...p, ...(seen.has(p.id) ? { aiCheckedAt: at } : {}) };
           if (s.shelf && get().categories.some(c => c.name === s.shelf && !c.archived)) {
-            // Reviewed and accepted by the owner: treated like a manual choice.
-            next.categories = [s.shelf];
-            next.categoryMode = "manual";
-            next.categoryReview = false;
+            if (options.automatic) {
+              // Sorted in the background, not reviewed: an automatic shelf ("other" still asks for a look).
+              next.categories = [s.shelf];
+              next.categoryMode = "automatic";
+              next.categoryReview = s.shelf === "other";
+            } else {
+              // Reviewed and accepted by the owner: treated like a manual choice.
+              next.categories = [s.shelf];
+              next.categoryMode = "manual";
+              next.categoryReview = false;
+            }
           }
           if (s.tags?.length) next.tags = [...new Set([...p.tags, ...s.tags])];
           if (s.title && s.title !== p.title && p.fieldSources?.title !== "user") {
@@ -318,11 +473,38 @@ export const useLibrary = create<LibraryState>()(
           }
           if (s.summary) next.aiSummary = s.summary;
           if (JSON.stringify(next) === JSON.stringify(p)) return p;
-          changed += 1;
-          return { ...next, updatedAt: nowIso() };
+          // Only the checked-mark changed: counted as looked at, not as a changed link.
+          if (JSON.stringify({ ...next, aiCheckedAt: p.aiCheckedAt }) === JSON.stringify(p)) marked += 1;
+          record(p, next);
+          return { ...next, updatedAt: at };
         });
-        if (changed) set({ posts });
-        return changed;
+        if (changes.length || marked) set({ posts });
+        // Reviewed runs report real changes only; a background run also keeps the checked marks (to undo them).
+        return options.automatic ? changes : changes.filter(c => Object.keys(c.after).some(f => f !== "aiCheckedAt"));
+      },
+
+      restoreAiChanges(changes) {
+        const byId = new Map(changes.map(c => [c.id, c]));
+        const at = nowIso();
+        let n = 0;
+        const posts = get().posts.map(p => {
+          const c = byId.get(p.id);
+          if (!c) return p;
+          const next = { ...p } as Record<string, unknown>;
+          let touched = false;
+          for (const [field, value] of Object.entries(c.after)) {
+            // The owner changed it since the AI did: theirs stays.
+            if (JSON.stringify(next[field]) !== JSON.stringify(value)) continue;
+            const before = (c.before as Record<string, unknown>)[field];
+            if (before === undefined) delete next[field]; else next[field] = before;
+            touched = true;
+          }
+          if (!touched) return p;
+          n += 1;
+          return { ...(next as unknown as SavedPost), updatedAt: at };
+        });
+        if (n) set({ posts });
+        return n;
       },
 
       reorderPosts(orderedIds) {
@@ -358,7 +540,8 @@ export const useLibrary = create<LibraryState>()(
       },
 
       touchOpened(id) {
-        set({ posts: get().posts.map(p => (p.id === id ? { ...p, lastOpenedAt: nowIso() } : p)) });
+        const post = get().posts.find(p => p.id === id);
+        if (post) get().updatePost(id, { lastOpenedAt: nowIso(), openCount: (post.openCount ?? 0) + 1 });
       },
 
       addCategory(name) {
@@ -366,8 +549,11 @@ export const useLibrary = create<LibraryState>()(
         if (!clean) return null;
         if (get().categories.some(c => c.name === clean)) return null;
         if (!RESERVED_SHELVES.has(clean) && get().categories.filter(c => !RESERVED_SHELVES.has(c.name)).length >= TOPICAL_SHELF_LIMIT) return null;
+        // A renamed shelf keeps its old id, so a new shelf with that old name needs another one.
+        let id = clean;
+        for (let n = 2; get().categories.some(c => c.id === id); n++) id = `${clean}-${n}`;
         const cat: Category = {
-          id: clean, name: clean, order: get().categories.length,
+          id, name: clean, order: get().categories.length,
           color: CAT_COLORS[get().categories.length % CAT_COLORS.length],
         };
         set({ categories: [...get().categories, cat], categoryOps: [...get().categoryOps, { op: "add", name: clean }] });
@@ -602,6 +788,16 @@ export const useLibrary = create<LibraryState>()(
       // let rehydration drop unsaved work on either side.
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<LibraryState>;
+        // A restore replaced the library and another tab may still hold the replaced one: the
+        // copy of the newer library wins whole, so links and unsaved edits of the replaced
+        // library never come back into it. At start-up this tab holds no library yet (only
+        // edits made while the cache was loading), so the first read merges as usual.
+        const first = !hydratedOnce;
+        hydratedOnce = true;
+        const epoch = (state: Partial<LibraryState>) => state.syncEpoch ?? 0;
+        if (!first && epoch(saved) !== epoch(current)) {
+          return (epoch(saved) > epoch(current) ? { ...current, ...saved } : current) as LibraryState;
+        }
         // Per link, the newer unsaved edit wins; a deletion beats any edit.
         const newer = (a: SavedPost | null | undefined, b: SavedPost | null | undefined) => {
           if (a === undefined) return b;
@@ -655,3 +851,39 @@ export const useLibrary = create<LibraryState>()(
 export function categoryIdForName(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, "-") || slugId(name);
 }
+
+/*
+ * Background work — previews, automatic shelves, saved-copy results — changes many
+ * links a second after a big import. Applied one by one, every change re-rendered
+ * the open page and re-saved the whole library, and the app lagged for minutes.
+ * These changes are gathered and applied together, a few times a second. The
+ * owner's own edits never wait: they still go through the store directly.
+ */
+const backlog = new Map<string, BackgroundChange[]>();
+const waiting: (() => void)[] = [];
+let backlogTimer: ReturnType<typeof setTimeout> | undefined;
+const BACKGROUND_EVERY_MS = 250;
+
+export function flushBackgroundUpdates() {
+  if (backlogTimer) { clearTimeout(backlogTimer); backlogTimer = undefined; }
+  const changes = new Map(backlog);
+  backlog.clear();
+  const done = waiting.splice(0);
+  if (changes.size) useLibrary.getState().applyBackgroundChanges(changes);
+  done.forEach(resolve => resolve());
+}
+
+/** Queue a background change to one link; the promise settles once it is applied. */
+export function updatePostInBackground(id: string, change: BackgroundChange): Promise<void> {
+  const list = backlog.get(id);
+  if (list) list.push(change); else backlog.set(id, [change]);
+  if (!backlogTimer) backlogTimer = setTimeout(flushBackgroundUpdates, BACKGROUND_EVERY_MS);
+  return new Promise(resolve => { waiting.push(resolve); });
+}
+
+/** A background automatic shelf, checked against the link and the shelves as they are when applied. */
+export function applyAutomaticCategoryInBackground(id: string, category: string): Promise<void> {
+  return updatePostInBackground(id, post => automaticCategory(post, category, useLibrary.getState().categories));
+}
+
+if (typeof window !== "undefined") window.addEventListener("pagehide", flushBackgroundUpdates);

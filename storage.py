@@ -3,11 +3,14 @@ SQLite storage for saved posts.
 Schema: one row per saved message, with JSON fields for flexible metadata.
 """
 
+import ipaddress
 import json
+import re
 import sqlite3
+import unicodedata
 from datetime import datetime, timezone
 from typing import Optional
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import config
 
@@ -137,6 +140,165 @@ def init_db(path=None):
     conn.close()
 
 
+# ── The browser's spelling of a link ─────────────────────────────────────────
+# The app stores each link as the browser writes it (`new URL(link).href`), and a
+# link's saved files are named after that spelling. Telegram gives the text as
+# typed (Unicode domains, spaces in a query, `..` in a path), so the photos and
+# videos of a message are filed under the same spelling the importer will store,
+# or the link panel would never find them. WHATWG URL rules, http(s) only.
+
+_C0_OR_SPACE = "".join(chr(code) for code in range(0x21))
+_PATH_KEEP = frozenset(chr(code) for code in range(0x21, 0x7f)) - set('"#<>?`{}')
+_QUERY_KEEP = frozenset(chr(code) for code in range(0x21, 0x7f)) - set('"#<>\'')
+_FRAGMENT_KEEP = frozenset(chr(code) for code in range(0x21, 0x7f)) - set('"<>`')
+_FORBIDDEN_HOST = frozenset("\x00\t\n\r #/:<>?@[\\]^|%\x7f") | frozenset(chr(code) for code in range(0x20))
+
+
+def _encode(text, keep):
+    return "".join(char if char in keep else "".join(f"%{byte:02X}" for byte in char.encode("utf-8")) for char in text)
+
+
+def _ipv4(host):
+    """The dotted address of a host that ends in a number, None when it doesn't, False when invalid."""
+    parts = host.split(".")
+    if parts and parts[-1] == "" and len(parts) > 1:
+        parts = parts[:-1]
+    last = parts[-1] if parts else ""
+    if not (re.fullmatch(r"[0-9]+", last) or re.fullmatch(r"0[xX][0-9a-fA-F]*", last)):
+        return None
+    if len(parts) > 4:
+        return False
+    numbers = []
+    for part in parts:
+        if re.fullmatch(r"0[xX][0-9a-fA-F]*", part):
+            numbers.append(int(part[2:] or "0", 16))
+        elif re.fullmatch(r"0[0-7]+", part):
+            numbers.append(int(part, 8))
+        elif re.fullmatch(r"[0-9]+", part) and not (len(part) > 1 and part[0] == "0"):
+            numbers.append(int(part))
+        else:
+            return False
+    if any(number > 255 for number in numbers[:-1]) or numbers[-1] >= 256 ** (5 - len(numbers)):
+        return False
+    value = numbers[-1] + sum(number << (8 * (3 - index)) for index, number in enumerate(numbers[:-1]))
+    return str(ipaddress.IPv4Address(value))
+
+
+def _host(raw):
+    if raw.startswith("["):
+        if not raw.endswith("]") or "%" in raw:
+            return None
+        try:
+            packed = ipaddress.IPv6Address(raw[1:-1]).packed
+        except ValueError:
+            return None
+        # WHATWG spelling: hex pieces, the first longest run of two or more zeros as "::".
+        pieces = [int.from_bytes(packed[index:index + 2], "big") for index in range(0, 16, 2)]
+        start, length, index = -1, 1, 0
+        while index < 8:
+            stop = index
+            while stop < 8 and pieces[stop] == 0:
+                stop += 1
+            if stop - index > length:
+                start, length = index, stop - index
+            index = max(stop, index + 1)
+        hexes = [f"{piece:x}" for piece in pieces]
+        text = ":".join(hexes) if start < 0 else ":".join(hexes[:start]) + "::" + ":".join(hexes[start + length:])
+        return "[" + text + "]"
+    try:
+        decoded = unquote(raw, encoding="utf-8", errors="strict")
+    except UnicodeError:
+        return None
+    decoded = unicodedata.normalize("NFKC", decoded.replace("\u3002", ".").replace("\uff0e", ".").replace("\uff61", ".")).lower()
+    if not decoded or any(char in _FORBIDDEN_HOST for char in decoded):
+        return None
+    labels = []
+    for label in decoded.split("."):
+        if label.isascii():
+            labels.append(label)
+            continue
+        try:
+            labels.append("xn--" + label.encode("punycode").decode("ascii"))
+        except UnicodeError:
+            return None
+    host = ".".join(labels)
+    address = _ipv4(host)
+    if address is False:
+        return None
+    return address or host
+
+
+def browser_href(raw):
+    """`new URL(raw).href` for an http(s) link, or None when a browser would refuse it."""
+    if not isinstance(raw, str):
+        return None
+    url = re.sub(r"[\t\n\r]", "", raw.strip(_C0_OR_SPACE))
+    match = re.match(r"([A-Za-z][A-Za-z0-9+.-]*):", url)
+    if not match or match.group(1).lower() not in ("http", "https"):
+        return None
+    scheme = match.group(1).lower()
+    rest = url[match.end():].lstrip("/\\")
+    end = len(rest)
+    for stop in "/\\?#":
+        index = rest.find(stop)
+        if index != -1:
+            end = min(end, index)
+    authority, rest = rest[:end], rest[end:]
+    if "@" in authority:
+        return None                       # a link with a user name: never a Saved Messages link worth guessing
+    if authority.startswith("[") and "]" in authority:
+        close = authority.index("]") + 1
+        host_text, port_text = authority[:close], authority[close:]
+        if port_text and not port_text.startswith(":"):
+            return None
+        port_text = port_text[1:]
+    else:
+        host_text, _, port_text = authority.partition(":")
+    if port_text and not port_text.isdigit():
+        return None
+    host = _host(host_text)
+    if not host:
+        return None
+    port = ""
+    if port_text:
+        number = int(port_text)
+        if number > 65535:
+            return None
+        if number != (443 if scheme == "https" else 80):
+            port = f":{number}"
+    fragment = None
+    if "#" in rest:
+        rest, fragment = rest.split("#", 1)
+    query = None
+    if "?" in rest:
+        rest, query = rest.split("?", 1)
+    segments = []
+    pieces = re.split(r"[/\\]", rest)[1:] if rest else []
+    for index, piece in enumerate(pieces):
+        last = index == len(pieces) - 1
+        lowered = piece.lower()
+        if lowered in ("..", ".%2e", "%2e.", "%2e%2e"):
+            if segments:
+                segments.pop()
+            if last:
+                segments.append("")
+        elif lowered in (".", "%2e"):
+            if last:
+                segments.append("")
+        else:
+            segments.append(piece)
+    try:
+        path = "/" + "/".join(_encode(segment, _PATH_KEEP) for segment in segments) if segments else "/"
+        href = f"{scheme}://{host}{port}{path}"
+        if query is not None:
+            href += "?" + _encode(query, _QUERY_KEEP)
+        if fragment is not None:
+            href += "#" + _encode(fragment, _FRAGMENT_KEEP)
+    except UnicodeEncodeError:
+        return None                       # a lone surrogate: not a link a browser can spell
+    return href
+
+
 def url_identity(url: str) -> str:
     """One link, however it was spelled: the key every library match uses.
 
@@ -228,6 +390,10 @@ class LibraryConflictError(Exception):
     """One stable ID cannot identify two different full URLs."""
 
 
+class LibraryReplacedError(LibraryConflictError):
+    """A restore replaced the library after this client last read it: its copy is out of date."""
+
+
 def _library_http_url(value) -> bool:
     if not isinstance(value, str) or not value:
         return False
@@ -245,7 +411,8 @@ _REQUIRED_STRINGS = ("id", "url", "source", "platform", "domain", "status", "cre
 _OPTIONAL_STRINGS = ("canonicalUrl", "sourceMessageId", "title", "description", "excerpt", "thumbnailUrl", "mediaType",
                      "userNotes", "aiSummary", "lastOpenedAt", "metadataError", "categoryMode", "importBatchId",
                      "siteName", "author", "publishedAt", "lang", "faviconUrl", "finalUrl", "linkStatus", "enrichedAt",
-                     "metadataRetryAt", "originalTitle")
+                     "metadataRetryAt", "originalTitle", "archivedAt", "archiveKey", "archiveError", "followUpAt",
+                     "aiCheckedAt", "metadataTriedAt")
 _ENUMS = {
     "source": ("telegram", "whatsapp", "manual", "browser", "import", "api"),
     "platform": ("instagram", "x", "youtube", "github", "reddit", "tiktok", "facebook", "threads", "linkedin",
@@ -255,8 +422,13 @@ _ENUMS = {
     "mediaType": ("video", "image", "thread", "article", "repository", "document", "post", "other"),
     "categoryMode": ("manual", "automatic"),
     "linkStatus": ("ok", "redirected", "gone", "error"),
+    # Saved copy of the page (archive.py): the file itself lives outside SQLite.
+    "archiveStatus": ("pending", "saved", "failed", "too_large"),
 }
 _FIELD_SOURCES = ("file", "fetched", "user", "derived", "ai")
+_ARCHIVE_KEY = re.compile(r"[0-9a-f]{32}")
+# "Follow up by" is a calendar day on the owner's computer, not an instant.
+_FOLLOW_UP_DAY = re.compile(r"\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])")
 
 
 def _validate_post(post, label: str) -> str:
@@ -279,12 +451,16 @@ def _validate_post(post, label: str) -> str:
             raise LibraryValidationError(f"{label}.{field} must be an array of strings.")
     if "folderPath" in post and (not isinstance(post["folderPath"], list) or any(not isinstance(v, str) for v in post["folderPath"])):
         raise LibraryValidationError(f"{label}.folderPath must be an array of strings when supplied.")
-    for field in ("favorite", "pinned", "categoryReview"):
+    for field in ("favorite", "pinned", "categoryReview", "archiveLimited", "archiveNoVideo", "useOften"):
         if field in post and not isinstance(post[field], bool):
             raise LibraryValidationError(f"{label}.{field} must be a boolean when supplied.")
-    for field in ("wordCount", "readingMinutes", "httpStatus", "metadataAttempts", "position"):
+    for field in ("wordCount", "readingMinutes", "httpStatus", "metadataAttempts", "position", "archiveBytes", "openCount"):
         if field in post and (type(post[field]) is not int or post[field] < 0):
             raise LibraryValidationError(f"{label}.{field} must be a non-negative integer when supplied.")
+    if "archiveKey" in post and not _ARCHIVE_KEY.fullmatch(post["archiveKey"]):
+        raise LibraryValidationError(f"{label}.archiveKey is not a saved-copy key.")
+    if "followUpAt" in post and not _FOLLOW_UP_DAY.fullmatch(post["followUpAt"]):
+        raise LibraryValidationError(f"{label}.followUpAt must be a day as YYYY-MM-DD.")
     if "fieldSources" in post:
         sources = post["fieldSources"]
         if not isinstance(sources, dict) or any(not isinstance(k, str) or v not in _FIELD_SOURCES for k, v in sources.items()):
@@ -315,7 +491,7 @@ def _validate_category_ops(data):
         raise LibraryValidationError("categoryOps must be an array.")
     for op in ops:
         kind = op.get("op") if isinstance(op, dict) else None
-        names = {"add": ("name",), "delete": ("name",), "rename": ("from", "to")}.get(kind)
+        names = {"add": ("name",), "delete": ("name",), "rename": ("from", "to")}.get(kind) if isinstance(kind, str) else None
         if names is None or set(op) != {"op", *names} or any(not isinstance(op[n], str) or not op[n].strip() for n in names):
             raise LibraryValidationError("categoryOps entries must be add/delete {name} or rename {from, to}.")
     return ops
@@ -335,6 +511,12 @@ def _current_rev(conn) -> int:
     return int(row[0]) if row else 0
 
 
+def _current_epoch(conn) -> int:
+    """Which library this is: 0 until a restore replaces it, then the revision of that restore."""
+    row = conn.execute("SELECT value FROM library_meta WHERE key = 'epoch'").fetchone()
+    return int(row[0]) if row else 0
+
+
 def _next_rev(conn) -> int:
     """A counter that only ever grows (a MAX() over rows would shrink when an
     undelete or purge removes the newest row, and clients would miss writes)."""
@@ -349,9 +531,11 @@ def _library_snapshot(conn, since: int = 0) -> dict:
     A delta lists changed posts, tombstones written since then and links
     purged by an import undo; the client merges it into its own copy.
     """
-    posts, deleted_urls, idents = [], [], set()
+    posts, deleted_urls, idents, live = [], [], set(), set()
     for row in conn.execute("SELECT document, url, deleted, ident, rev FROM library_items ORDER BY rowid"):
         idents.add(row["ident"])
+        if not row["deleted"]:
+            live.add(row["ident"])
         if since and row["rev"] <= since:
             continue
         if row["deleted"]:
@@ -367,10 +551,12 @@ def _library_snapshot(conn, since: int = 0) -> dict:
     ]
     categories = [row[0] for row in conn.execute("SELECT name FROM categories ORDER BY sort_order, name")]
     result = {"posts": posts, "deletedUrls": deleted_urls, "legacyRows": legacy_rows, "categories": categories,
-              "rev": _current_rev(conn)}
+              "rev": _current_rev(conn), "epoch": _current_epoch(conn)}
     if since:
         result["since"] = since
-        result["purgedUrls"] = [row[0] for row in conn.execute("SELECT url FROM library_purged WHERE rev > ?", (since,))]
+        # A link removed by an import undo and imported again since is live: not purged.
+        result["purgedUrls"] = [row[0] for row in conn.execute("SELECT url FROM library_purged WHERE rev > ?", (since,))
+                                if url_identity(row[0]) not in live]
     return result
 
 
@@ -386,41 +572,81 @@ def get_library(since: int = 0) -> dict:
         conn.close()
 
 
+def live_count() -> int:
+    """How many links the library holds (deleted ones not counted)."""
+    conn = _connect()
+    try:
+        return conn.execute("SELECT COUNT(*) FROM library_items WHERE deleted = 0").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def library_urls() -> dict:
+    """{url_identity: stored url} for every live link (saved-copy restore checks against it)."""
+    conn = _connect()
+    try:
+        return {row[0]: row[1] for row in conn.execute("SELECT ident, url FROM library_items WHERE deleted = 0")}
+    finally:
+        conn.close()
+
+
+def deleted_identities() -> set:
+    """url_identity of every link the owner deleted (a Telegram refresh keeps no photos for them)."""
+    conn = _connect()
+    try:
+        return {row[0] for row in conn.execute("SELECT ident FROM library_items WHERE deleted = 1")}
+    finally:
+        conn.close()
+
+
+def _backup_rows(conn) -> dict:
+    """The library as a backup holds it: links, deletion markers and shelves."""
+    return {
+        "posts": [json.loads(row[0]) for row in conn.execute("SELECT document FROM library_items WHERE deleted = 0 ORDER BY rowid")],
+        "tombstones": [dict(row) for row in conn.execute("SELECT url, id FROM library_items WHERE deleted = 1 ORDER BY rowid")],
+        "categories": [dict(row) for row in conn.execute("SELECT name, sort_order, created_at FROM categories ORDER BY rowid")],
+    }
+
+
 def get_backup_library(path=None) -> dict:
     """One consistent durable-library snapshot; never silently omit legacy links."""
     conn = _connect(path)
     try:
         with conn:
             conn.execute("BEGIN")
-            snapshot = _library_snapshot(conn)
-            if snapshot["legacyRows"]:
+            if _library_snapshot(conn)["legacyRows"]:
                 raise LibraryValidationError("Legacy links still need to finish loading and saving in Library. Retry export after SQLite confirms the save.")
-            return {
-                "posts": snapshot["posts"],
-                "tombstones": [dict(row) for row in conn.execute("SELECT url, id FROM library_items WHERE deleted = 1 ORDER BY rowid")],
-                "categories": [dict(row) for row in conn.execute("SELECT name, sort_order, created_at FROM categories ORDER BY rowid")],
-            }
+            return _backup_rows(conn)
     finally:
         conn.close()
 
 
-def write_backup_library(path, data):
-    """Populate an exclusively owned, unpublished new DB, never the active DB."""
-    init_db(path)
-    conn = _connect(path)
+def replace_library(data) -> int:
+    """Make the library in use exactly a validated backup's links, deletion markers and shelves.
+
+    One transaction, checked before it commits: if anything is off, nothing changes. Returns the
+    new epoch; a client still holding the replaced library is refused (LibraryReplacedError) when
+    it tries to save, and reloads instead of writing old links back."""
+    init_db()
+    conn = _connect()
     try:
         with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            epoch = _next_rev(conn)
+            conn.execute("DELETE FROM library_items")
+            conn.execute("DELETE FROM library_purged")
             conn.execute("DELETE FROM categories")
             conn.executemany("INSERT INTO categories (name, sort_order, created_at) VALUES (:name, :sort_order, :created_at)", data["categories"])
-            conn.executemany("INSERT INTO library_items (url, id, document, ident) VALUES (?, ?, ?, ?)",
-                             [(p["url"], p["id"], json.dumps(p, ensure_ascii=True, allow_nan=False), url_identity(p["url"])) for p in data["posts"]])
-            conn.executemany("INSERT INTO library_items (url, id, deleted, ident) VALUES (?, ?, 1, ?)",
-                             [(t["url"], t["id"], url_identity(t["url"])) for t in data["tombstones"]])
-        # Close a complete standalone file, not a DB depending on a missing WAL.
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        conn.execute("PRAGMA journal_mode=DELETE")
-        if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-            raise sqlite3.DatabaseError("Restored database failed integrity validation")
+            conn.executemany("INSERT INTO library_items (url, id, document, ident, rev) VALUES (?, ?, ?, ?, ?)",
+                             [(p["url"], p["id"], json.dumps(p, ensure_ascii=True, allow_nan=False), url_identity(p["url"]), epoch)
+                              for p in data["posts"]])
+            conn.executemany("INSERT INTO library_items (url, id, deleted, ident, rev) VALUES (?, ?, 1, ?, ?)",
+                             [(t["url"], t["id"], url_identity(t["url"]), epoch) for t in data["tombstones"]])
+            conn.execute("INSERT INTO library_meta (key, value) VALUES ('epoch', ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (epoch,))
+            if _backup_rows(conn) != data:
+                raise LibraryValidationError("The restored library did not match the backup, so nothing was changed.")
+        return epoch
     finally:
         conn.close()
 
@@ -485,6 +711,10 @@ def save_library(data) -> dict:
     since = data.get("since", 0)
     if type(since) is not int or since < 0:
         raise LibraryValidationError("since must be a non-negative integer.")
+    # Which library the client's copy is of (see replace_library); absent from pages that predate restores.
+    epoch = data.get("epoch")
+    if epoch is not None and (type(epoch) is not int or epoch < 0):
+        raise LibraryValidationError("epoch must be a non-negative integer.")
     rejected, accepted = [], []
     for index, post in enumerate(data["posts"]):
         try:
@@ -497,6 +727,10 @@ def save_library(data) -> dict:
     try:
         with conn:
             conn.execute("BEGIN IMMEDIATE")
+            # A copy read before a restore would bring the replaced library's links and edits
+            # back. A page too old to send an epoch has never seen one: it counts as 0.
+            if (epoch or 0) != _current_epoch(conn):
+                raise LibraryReplacedError("This library was replaced by a restore. Reload the page to see it; nothing was saved.")
             stamp = []
 
             def rev():
@@ -512,13 +746,36 @@ def save_library(data) -> dict:
                     rejected_ops.append({**op, "reason": reason})
             for url in undelete_urls:
                 conn.execute("DELETE FROM library_items WHERE ident = ? AND deleted = 1", (url_identity(url),))
+            spellings = []
+
+            def stored_ident(url):
+                """The row a link names. Rows saved by older builds may hold the link as typed
+                (Unicode domain, unencoded query) while the app now sends the browser's spelling."""
+                ident = url_identity(url)
+                if conn.execute("SELECT 1 FROM library_items WHERE ident = ?", (ident,)).fetchone():
+                    return ident
+                if not spellings:
+                    index = {}
+                    for row in conn.execute("SELECT url, ident FROM library_items"):
+                        href = browser_href(row["url"])
+                        if href and href != row["url"]:
+                            index.setdefault(url_identity(href), row["ident"])
+                    spellings.append(index)
+                return spellings[0].get(ident, ident)
+            removed_urls = []
             for url in purge_urls:
-                removed = conn.execute("DELETE FROM library_items WHERE ident = ? AND deleted = 0", (url_identity(url),)).rowcount
+                ident = stored_ident(url)
+                stored = conn.execute("SELECT url FROM library_items WHERE ident = ? AND deleted = 0", (ident,)).fetchone()
+                removed = conn.execute("DELETE FROM library_items WHERE ident = ? AND deleted = 0", (ident,)).rowcount
                 if removed:
+                    removed_urls.append(stored["url"])
                     conn.execute("INSERT INTO library_purged (url, rev) VALUES (?, ?) ON CONFLICT(url) DO UPDATE SET rev = excluded.rev", (url, rev()))
             # Deletions take precedence over every upsert, including unseen URLs.
             for url in deleted_urls:
-                ident = url_identity(url)
+                ident = stored_ident(url)
+                stored = conn.execute("SELECT url FROM library_items WHERE ident = ? AND deleted = 0", (ident,)).fetchone()
+                if stored and stored["url"] != url:
+                    removed_urls.append(stored["url"])
                 if conn.execute("SELECT 1 FROM library_items WHERE ident = ?", (ident,)).fetchone():
                     conn.execute("UPDATE library_items SET document = NULL, deleted = 1, id = NULL, rev = ? WHERE ident = ?", (rev(), ident))
                 else:
@@ -572,8 +829,28 @@ def save_library(data) -> dict:
             for url in adopted_urls:
                 conn.execute("INSERT OR IGNORE INTO legacy_adopted (url) VALUES (?)", (url,))
             result = _library_snapshot(conn, since if since and since <= _current_rev(conn) else 0)
+            # A refused write leaves the client showing its own version. A change-only
+            # answer would not include the link (SQLite didn't write it), so send what
+            # SQLite holds for every refused link: the client then shows that instead.
+            if result.get("since"):
+                listed = {url_identity(post["url"]) for post in result["posts"]} | {url_identity(url) for url in result["deletedUrls"]}
+                for item in rejected:
+                    if item["reason"] not in ("stale", "duplicate_url", "deleted") or not item["url"]:
+                        continue
+                    ident = url_identity(item["url"])
+                    row = conn.execute("SELECT document, url, deleted FROM library_items WHERE ident = ?", (ident,)).fetchone()
+                    if row is None or ident in listed:
+                        continue
+                    listed.add(ident)
+                    if row["deleted"]:
+                        result["deletedUrls"].append(row["url"])
+                    else:
+                        result["posts"].append(json.loads(row["document"]))
         # The transaction context commits before callers can acknowledge this result.
-        return {**result, "rejected": rejected, **({"rejectedOps": rejected_ops} if rejected_ops else {})}
+        # removedUrls: the stored spelling of links removed under another spelling, so
+        # their saved copies (named after the stored spelling) go too.
+        return {**result, "rejected": rejected, **({"rejectedOps": rejected_ops} if rejected_ops else {}),
+                **({"removedUrls": removed_urls} if removed_urls else {})}
     finally:
         conn.close()
 

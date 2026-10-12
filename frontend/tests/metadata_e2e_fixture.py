@@ -125,13 +125,18 @@ def isolate_routes():
             return jsonify(ok=False, error="Synthetic classifier unavailable"), 503
         return jsonify(ok=True, category_name="technology")
     if request.path == "/api/telegram/refresh" and request.method == "POST":
-        assert request.get_json() == {"confirm": True}
+        # The Refresh button: confirmed, plus the "keep photos and videos" switch (on by default).
+        assert request.get_json() == {"confirm": True, "media": True}
         record("mock-refresh")
         return jsonify(ok=True, checked=1, limit=200, malformed=0, export={"messages": [
             {"id": 81004, "type": "message", "date": "2026-09-24T12:00:00",
              "text": "Synthetic refresh caption " + BASE_URL + "/refresh"}]})
     if request.path == "/api/ai/providers" and request.method == "GET":
         return jsonify(ok=True, providers=[], ready=[], available=False)
+    # Saved copies: the app asks once at startup whether the server makes them.
+    # Answer "no" so nothing is queued; every other /api/archive request stays blocked.
+    if request.path == "/api/archive" and request.method == "GET" and not request.args:
+        return jsonify(ok=True, enabled=False, count=0, bytes=0)
     allowed = {"/api/library", "/api/enrich", "/api/stats", "/api/backup/export", "/api/backup/preview"}
     if FIREFOX:
         allowed.add("/api/import/firefox")

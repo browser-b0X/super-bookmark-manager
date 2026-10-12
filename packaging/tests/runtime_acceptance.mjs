@@ -76,7 +76,7 @@ try{
  context=await browser.newContext({viewport:{width:1365,height:900},serviceWorkers:'block'});
  await context.route('**/*',route=>{const u=new URL(route.request().url());if(u.origin!==base)return route.abort();if(u.pathname==='/api/enrich')return route.fulfill({status:503,contentType:'application/json',body:'{"error":"synthetic metadata unavailable"}'});return route.continue();});
  const page=await context.newPage();page.on('pageerror',e=>report.errors.push(e.message));page.on('dialog',d=>d.accept());
- const quitDialog=()=>page.getByRole('dialog',{name:'Quit Super Bookmark Manager?'});
+ const quitDialog=()=>page.getByRole('dialog',{name:'Quit SuperBookmarks?'});
  await page.addInitScript(()=>{
    if(!localStorage.getItem('legacy-seeded')){
      localStorage.setItem('library-store-v1',JSON.stringify({state:{posts:[{id:'legacy',url:'https://example.invalid/legacy',source:'manual',platform:'web',domain:'example.invalid',categories:[],tags:[],projectIds:[],status:'inbox',createdAt:'2026-01-01T00:00:00Z',updatedAt:'2026-01-01T00:00:00Z',metadataStatus:'failed'}],pending:{},views:[{id:'developer-view',name:'Developer view',filter:{kind:'all'}}],demo:false},version:2}));
@@ -84,8 +84,8 @@ try{
      localStorage.setItem('lib-view','table');localStorage.setItem('legacy-seeded','yes');
    }
  });
- await page.goto(base+'/library/settings');await page.getByRole('button',{name:'Quit Super Bookmark Manager',exact:true}).waitFor();
- await page.getByRole('region',{name:'Telegram Integration',exact:true}).getByText('Keys saved here belong only to this Super Bookmark Manager profile. Inherited developer credentials are ignored.').waitFor();
+ await page.goto(base+'/library/settings');await page.getByRole('button',{name:'Quit SuperBookmarks',exact:true}).waitFor();
+ await page.getByRole('region',{name:'Telegram Integration',exact:true}).getByText('Keys saved here belong only to this SuperBookmarks profile. Inherited developer credentials are ignored.').waitFor();
  await page.waitForFunction(()=>Object.keys(localStorage).some(k=>k.startsWith('sbm-')&&k.endsWith('library-store-v1')));
  const isolation=await page.evaluate(()=>{
    const key=Object.keys(localStorage).find(k=>k.startsWith('sbm-')&&k.endsWith('library-store-v1'));
@@ -95,11 +95,11 @@ try{
  assert.deepEqual(isolation,{posts:0,views:0,theme:'dark',legacyView:'Developer view'});record('populated legacy link cache, Saved Views and preferences ignored/preserved before hydration');
  await page.setViewportSize({width:320,height:750});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);await page.setViewportSize({width:1365,height:900});record('Settings Quit control fits at 320px');
  let failWrites=true;await page.route('**/api/library',r=>failWrites&&r.request().method()==='POST'?r.fulfill({status:503,contentType:'application/json',body:'{"error":"synthetic write failure"}'}):r.continue());
- await page.getByRole('button',{name:'Add link',exact:true}).click();
+ await page.getByRole('button',{name:'Add link',exact:true}).first().click(); // the top bar's; Settings has its own
  await page.getByRole('dialog',{name:'Add link'}).getByRole('textbox').fill('https://example.invalid/owned');
  await page.getByRole('button',{name:'Save link',exact:true}).click();
  await page.goto(base+'/library/settings');
- await page.getByRole('button',{name:'Quit Super Bookmark Manager',exact:true}).click();
+ await page.getByRole('button',{name:'Quit SuperBookmarks',exact:true}).click();
  await quitDialog().getByRole('button',{name:/Save and quit/}).click();
  await quitDialog().getByText('Changes are still pending. Retry SQLite save before quitting.',{exact:true}).waitFor();
  await quitDialog().getByRole('button',{name:'Cancel'}).click();
@@ -109,9 +109,9 @@ try{
  await wait(async()=>{const l=await(await api('/api/library')).json();return l.posts.length===1;});
  const own=await(await api('/api/library')).json();assert.equal(own.posts[0].url,'https://example.invalid/owned');
  await page.goto(base+'/library/settings');
- await page.getByRole('button',{name:'Quit Super Bookmark Manager',exact:true}).click();
+ await page.getByRole('button',{name:'Quit SuperBookmarks',exact:true}).click();
  await quitDialog().getByRole('button',{name:'Quit now'}).click();
- await page.getByRole('alertdialog').getByText(/Super Bookmark Manager (is stopping|has stopped)/).waitFor();await wait(()=>child.exitCode!==null);assert.equal(child.exitCode,0);
+ await page.getByRole('alertdialog').getByText(/SuperBookmarks (is stopping|has stopped)/).waitFor();await wait(()=>child.exitCode!==null);assert.equal(child.exitCode,0);
  record('synthetic manual link saved; visible Settings Quit acknowledges and stops process');
  await assert.rejects(fetch(base+'/api/library'));record('Quit releases server port');
  delete env.SUPER_BOOKMARK_MANAGER_PORT;
@@ -124,7 +124,7 @@ try{
  const fresh=await browser.newContext({serviceWorkers:'block'});await fresh.route('**/*',r=>new URL(r.request().url()).origin===base?r.continue():r.abort());const freshPage=await fresh.newPage();await freshPage.goto(base+'/library');
  await freshPage.waitForFunction(()=>{const k=Object.keys(localStorage).find(k=>k.startsWith('sbm-')&&k.endsWith('library-store-v1'));return k&&JSON.parse(localStorage.getItem(k)).state.posts.length===1;});await fresh.close();record('fresh browser recovers only own SQLite link');
  await page.goto(base+'/library/settings');await page.screenshot({path:path.join(out,'settings.png'),fullPage:true});
- await page.getByRole('button',{name:'Quit Super Bookmark Manager',exact:true}).click();await quitDialog().getByRole('button',{name:'Quit now'}).click();await wait(()=>child.exitCode!==null);assert.equal(child.exitCode,0);
+ await page.getByRole('button',{name:'Quit SuperBookmarks',exact:true}).click();await quitDialog().getByRole('button',{name:'Quit now'}).click();await wait(()=>child.exitCode!==null);assert.equal(child.exitCode,0);
  for(const [name,value]of Object.entries(sentinels))assert.equal(await readFile(path.join(legacy,name),'utf8'),value);record('legacy synthetic DB/config/session/cache/backups byte-identical');
  assert.deepEqual(report.errors,[]);assert.equal(blocker.listening,true);assert.ok(processes.every(p=>p.exitCode===0));
  report.status='PASS';

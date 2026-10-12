@@ -1,5 +1,6 @@
 import {malformed,wrap,node} from './chromium-cases.mjs';
 import assert from 'node:assert/strict';
+import { importThroughField } from './importField.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
@@ -82,14 +83,15 @@ try {
   const fixtures=join(root,'frontend/tests/fixtures');
   const nativeFile=join(fixtures,'chromium-bookmarks.json');
   const raw=await readFile(nativeFile,'utf8');
-  const nativeInput=()=>page.getByLabel('Select copied Chromium Bookmarks file');
-  const nativeResult=()=>page.getByRole('status',{name:'Chromium import result'});
-  const nativeButton=()=>page.getByRole('button',{name:'Import Chromium Bookmarks file',exact:true});
-  const html=async(name,added)=>{await page.getByLabel('Import bookmarks HTML').setInputFiles(join(fixtures,`bookmarks-${name}.html`));await page.getByRole('status').filter({hasText:`Bookmark import complete — ${added} new`}).waitFor();};
+  // One import field since v0.3.0: the native Bookmarks file goes through the same chooser, preview and Import.
+  const nativeResult=()=>page.getByRole('status',{name:'Import result',exact:true});
+  const nativeButton=()=>page.getByRole('button',{name:'Choose a file…',exact:true});
+  const html=async(name,added)=>{const r=await importThroughField(page,join(fixtures,`bookmarks-${name}.html`));assert.ok(!r.refused,r.text);assert.equal(r.added,added,r.text);};
   const telegram=async(added)=>{await page.getByLabel('Import Telegram JSON').setInputFiles(join(fixtures,'telegram-saved-messages.json'));await page.getByRole('status',{name:'Telegram import result'}).filter({hasText:`${added} new`}).waitFor();};
   const classified=()=>page.waitForFunction(()=>JSON.parse(localStorage.getItem('library-store-v1')).state.posts.every(p=>p.categoryMode));
   const capture=async name=>{await page.screenshot({path:join(output,name),animations:'disabled'});report.screenshots.push(name);};
-  const importNative=async(content,pattern)=>{await nativeInput().setInputFiles({name:'Bookmarks',mimeType:'application/json',buffer:Buffer.from(content)});await nativeResult().filter({hasText:pattern}).waitFor();assert.equal(await nativeButton().isEnabled(),true);};
+  // expected: a RegExp for a refused file, or [added] / [added, alreadySaved] for an import.
+  const importNative=async(content,expected)=>{const r=await importThroughField(page,{name:'Bookmarks',mimeType:'application/json',buffer:Buffer.from(content)});if(expected instanceof RegExp){assert.ok(r.refused,r.text);assert.match(r.text,expected);}else{assert.ok(!r.refused,r.text);assert.deepEqual([r.added,r.updated].slice(0,expected.length),expected,r.text);}assert.equal(await nativeButton().isEnabled(),true);};
   await nativeButton().scrollIntoViewIfNeeded();await capture('b2-settings-import-control.png');
   await html('firefox',3);await saved(3);await html('chromium',2);await saved(5);await telegram(3);await classified();
   const imported=await snapshot('HTML5 + Telegram4 overlap =8',8);
@@ -113,7 +115,8 @@ try {
   await page.goto(base+'/library/settings');await saved(8);
   for(const [name,content] of malformed){
     const localBefore=await state();const postsBefore=report.requests.filter(r=>r.method==='POST').length;
-    await importNative(content,/empty|valid JSON|Unsupported|Invalid|No HTTP/);
+    // A file that is not a Bookmarks file at all now gets the one field's "isn't a bookmark export" message.
+    await importNative(content,/empty|valid JSON|Unsupported|Invalid|No HTTP|isn't a bookmark export this app can read/);
     assert.deepEqual(await state(),localBefore,name);assert.deepEqual(await snapshot('invalid '+name,8),before,name);
     assert.equal(report.requests.filter(r=>r.method==='POST').length,postsBefore,name);
   }
@@ -121,7 +124,8 @@ try {
   pass(`${malformed.length} malformed/unsupported cases: readable error, exact browser state/API/SQLite and zero POST mutation`);
   // Simulate an unreadable/locked selected file without accessing a live file.
   await page.evaluate(()=>{window.b2FileText=File.prototype.text;File.prototype.text=async()=>{throw Error('Synthetic locked file');};});
-  await importNative(raw,/copied\/exported Bookmarks file/);assert.deepEqual(await snapshot('unreadable copy',8),before);
+  // The one field reports the read error itself (no separate copy/export wording any more).
+  await importNative(raw,/Synthetic locked file/);assert.deepEqual(await snapshot('unreadable copy',8),before);
   await page.evaluate(()=>{File.prototype.text=window.b2FileText;delete window.b2FileText;});
   pass('unreadable selected file: copy/export guidance, no mutation or forced access');
   // Reach the actual button by Tab and activate its file chooser with Enter.
@@ -129,9 +133,10 @@ try {
   const chooser=page.waitForEvent('filechooser');
   let reachable=false;for(let i=0;i<160;i++){if(await nativeButton().evaluate(e=>e===document.activeElement)){reachable=true;break;}await page.keyboard.press('Tab');}
   assert.equal(reachable,true);
-  await page.keyboard.press('Enter');await (await chooser).setFiles(nativeFile);
-  await nativeResult().filter({hasText:'3 valid unique links found, 2 new, 1 already present, 1 duplicate entries'}).waitFor();
-  assert.match(await nativeResult().innerText(),/1 unsupported-scheme/);await classified();
+  const picked=await importThroughField(page,nativeFile,{choose:async()=>{await page.keyboard.press('Enter');await (await chooser).setFiles(nativeFile);}});
+  // 3 valid unique links: 2 new, 1 already saved; the file's 1 repeated and 1 unsupported entry are left out.
+  assert.ok(!picked.refused,picked.text);assert.deepEqual([picked.added,picked.updated],[2,1],picked.text);
+  assert.match(picked.preview,/In the file: 1 repeated, 1 non-web/);await classified();
   const first=await snapshot('native import10',10);
   for(const p of before)assert.deepEqual(first.find(q=>q.id===p.id),p);
   const programming=first.find(p=>p.url.includes('native.example.invalid/programming'));
@@ -142,7 +147,7 @@ try {
   assert.equal(programming.source,'browser');assert.equal(cooking.source,'browser');
   await nativeResult().scrollIntoViewIfNeeded();await capture('b2-import-success.png');
   pass('keyboard chooser; nested3 unique, duplicate1, unsupported1, overlap1 ->2 new; supplied titles/query/fragment; keyword technology/food-drink; exact original8');
-  await importNative(raw,/0 new, 3 already present/);await html('firefox',0);await html('chromium',0);await telegram(0);await classified();
+  await importNative(raw,[0,3]);await html('firefox',0);await html('chromium',0);await telegram(0);await classified();
   assert.deepEqual(await snapshot('all reimports10',10),first);assert.deepEqual((await state()).views,views);
   await page.reload();assert.deepEqual(await snapshot('reload10',10),first);
   pass('native + both HTML + Telegram reimport: exact10 IDs/documents; title/note/tag/favorite/status/manual/other preserved; reload durable');
@@ -154,7 +159,7 @@ try {
   // Existing view criteria are dynamic: add a matching query/fragment URL variant.
   await page.goto(base+'/library/settings');await saved(10);
   const matching=wrap([node('https://native.example.invalid/programming#typescript','Programming dynamic tutorial')]);
-  await importNative(matching,/1 new/);await classified();await snapshot('matching additional fixture11',11);
+  await importNative(matching,[1]);await classified();await snapshot('matching additional fixture11',11);
   await page.goto(base+'/library');await saved(11);await applyView('Native matching',2);await applyView('Unchanged exercise',1);
   assert.deepEqual((await state()).views,views);assert.ok(views.every(v=>!('postIds' in v)&&!('ids' in v)));
   pass('B4 dynamic definitions unchanged: matching view1→2 after native import, nonmatching exercise1; no member snapshots');
@@ -169,7 +174,7 @@ try {
   const beforeFailure=await snapshot('before provider/write failure11',11);
   await control('mode:extra');await control('fail-on');
   const beforeUnsaved=report.requests.filter(r=>r.url.endsWith('/api/categorize')||r.url.endsWith('/api/enrich')).length;
-  await importNative(wrap([node('https://native.example.invalid/unavailable','Unknown item')]),/1 new/);
+  await importNative(wrap([node('https://native.example.invalid/unavailable','Unknown item')]),[1]);
   await page.getByRole('button',{name:'Retry SQLite save',exact:true}).waitFor();
   const failed=await state(),dbFailed=(await control('snapshot')).result;
   assert.equal(failed.posts.length,12);assert.deepEqual(sorted(dbFailed.posts),beforeFailure);assert.ok(Object.keys(failed.pending).length);

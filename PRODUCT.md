@@ -1,4 +1,6 @@
-# Super Bookmark Manager
+# SuperBookmarks
+
+(Called Super Bookmark Manager up to v0.2.0.)
 
 ## What it is
 
@@ -38,14 +40,14 @@ speed beats choreography. Dark is the default; a light theme exists for daytime 
 - **Nothing is ever silently lost.** Import is idempotent; deletes are confirmed;
   organisation is never overwritten by a re-sync.
 - **Motion conveys state.** 150–250ms for interactions; the owner is mid-task. The only
-  ambient motion (the drifting new-links strip and the slow background) pauses on hover
+  ambient motion (the drifting shelf rows and the slow background) pauses on hover
   or stops entirely under reduced motion.
 
 ## Surfaces
 
 | Surface | Purpose |
 |---|---|
-| `/` Feed | New links drift across the top for keep / later / archive; the library sits below. Rediscover picks resurface old favourites when nothing is new. |
+| `/` Home | New links one at a time for keep / later / archive (arrow keys), with Up next, follow-ups due and an old favourite beside them; every shelf is a row below. |
 | `/library/*` | Lists (New, All saved, Later, Kept, Favorites, Unfiled, Archived), shelves, platforms, tags and saved views. |
 | `/library/item/:id` | One link in full, with notes and filing controls. |
 | `/library/settings` | Sources and imports, AI & previews, library & sync, backup. |
@@ -56,5 +58,6 @@ Flask + SQLite backend, React 18 + TypeScript + Vite frontend, Zustand (persiste
 store, Tailwind v4 with CSS custom-property tokens in `src/styles.css`. Automatic import
 classification uses local keywords without provider credentials. Optional AI review
 (shelf, tags, clean title, summary) calls OpenAI-compatible endpoints directly with the
-standard library, in order Gemini → Groq → OpenRouter → NVIDIA NIM → local, using keys
-the owner adds in Settings (`ai.json` in the data directory). No provider SDK is bundled.
+standard library, in order FreeLLMAPI (a router the owner runs, when set up) → Gemini → Groq →
+OpenRouter → NVIDIA NIM → local, using keys the owner adds in Settings (`ai.json` in the data
+directory). No provider SDK is bundled.

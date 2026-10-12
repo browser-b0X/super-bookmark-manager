@@ -1,6 +1,6 @@
 // Save status toast: floats bottom-left of the content, invisible when idle, shows while a slow
 // save runs, says "Saved" and fades, stays (with Retry) when SQLite fails, and
-// never changes the sidebar's layout. Synthetic data only.
+// never changes the top bar's layout. Synthetic data only.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp } from 'node:fs/promises';
@@ -46,18 +46,19 @@ try {
   const toast = page.getByRole('status', { name: 'SQLite save status' });
   await toast.filter({ hasText: /Library saved to SQLite/ }).waitFor();
   const opacity = () => toast.evaluate(el => Number(getComputedStyle(el).opacity));
-  const footerTop = () => page.evaluate(() => Math.round(document.querySelector('.sidebar-footer').getBoundingClientRect().top));
+  // The top bar must not move while the library saves (it used to be the sidebar footer).
+  const footerTop = () => page.evaluate(() => { const r = document.querySelector('header.topnav').getBoundingClientRect(); return Math.round(r.top) * 10000 + Math.round(r.height); });
 
-  await check('idle: nothing shown, and the sidebar holds no save status', async () => {
-    await page.waitForTimeout(500);
+  await check('idle: nothing shown, and the top bar holds no save status', async () => {
+    // The startup save can still be fading out on a busy machine; idle is once it has gone.
+    for (let i = 0; i < 30 && await opacity() !== 0; i++) await page.waitForTimeout(100);
     assert.equal(await opacity(), 0);
-    assert.equal(await page.locator('aside [aria-label="SQLite save status"]').count(), 0);
+    assert.equal(await page.locator('header.topnav [aria-label="SQLite save status"]').count(), 0);
     const box = await toast.boundingBox();
-    const side = await page.locator('aside').boundingBox();
-    assert.ok(box.x >= side.x + side.width && box.y > 900 / 2, 'floats bottom-left of the content, clear of the sidebar');
+    assert.ok(box.x >= 16 && box.x < 40 && box.y > 900 / 2, 'floats bottom left, clear of the top bar');
   });
 
-  await check('a slow save shows the toast, the sidebar never moves, then it fades', async () => {
+  await check('a slow save shows the toast, the top bar never moves, then it fades', async () => {
     const top = await footerTop(); const tops = new Set([top]);
     mode = 'slow';
     await page.getByRole('button', { name: 'Add link', exact: true }).first().click();
@@ -72,7 +73,7 @@ try {
     }
     assert.ok(sawVisible, 'toast appeared during the save');
     assert.equal(await opacity(), 0, 'toast faded after the save');
-    assert.deepEqual([...tops], [top], 'sidebar footer moved');
+    assert.deepEqual([...tops], [top], 'top bar moved');
     mode = 'normal';
   });
 

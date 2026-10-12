@@ -1,5 +1,5 @@
 """
-Configuration for the Super Bookmark Manager.
+Configuration for SuperBookmarks.
 
 Telegram API credentials:
   Get yours at https://my.telegram.org
@@ -23,6 +23,10 @@ def __getattr__(name):
 
 
 TELEGRAM_SESSION_FILE = os.environ.get("SBM_TELEGRAM_SESSION_FILE") or str(Path(__file__).parent / "session.session")
+# Telethon adds ".session" to a session name without it; the app must check, protect
+# and remove that same file.
+if not TELEGRAM_SESSION_FILE.endswith(".session"):
+    TELEGRAM_SESSION_FILE += ".session"
 
 # ── AI providers ──────────────────────────────────────────────────────────────
 # Keys are entered in Settings > AI & previews and stored in the user profile

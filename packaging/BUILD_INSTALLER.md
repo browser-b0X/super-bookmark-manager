@@ -1,4 +1,4 @@
-# Super Bookmark Manager — per-user installer
+# SuperBookmarks — per-user installer
 
 Use the commands and pinned prerequisites in [BUILDING.md](../BUILDING.md).
 Inno Setup 6.7.3 compiles `installer.iss`; the wrapper verifies every standalone
@@ -12,11 +12,11 @@ py -3.12 packaging/build_standalone.py
 py -3.12 packaging/build_installer.py
 ```
 
-Outputs: `dist-standalone-v0.2.0/SuperBookmarkManager/`,
-`dist-installer-v0.2.0/SuperBookmarkManager-Setup.exe` and `.exe.sha256`.
+Outputs: `dist-standalone-v0.3.0/SuperBookmarkManager/`,
+`dist-installer-v0.3.0/SuperBookmarkManager-Setup.exe` and `.exe.sha256`.
 
-Version: 0.2.0 (set in `packaging/release_paths.py`). Display name, Start Menu shortcut, optional Desktop shortcut and
-uninstall entry: **Super Bookmark Manager**. Executable: `SuperBookmarkManager.exe`.
+Version: 0.3.0 (set in `packaging/release_paths.py`). Display name, Start Menu shortcut, optional Desktop shortcut and
+uninstall entry: **SuperBookmarks** (shown name since v0.3.0; folders, AppId and the exe keep the old spelling). Executable: `SuperBookmarkManager.exe`.
 Program files go to `%LOCALAPPDATA%\Programs\SuperBookmarkManager\`. The stable AppId
 upgrades earlier installs in place; an old v0.1.x program folder
 (`...\Programs\SavedPostsDashboard\`) is removed only when it holds our executable and
@@ -28,7 +28,7 @@ Public writable state belongs to `%LOCALAPPDATA%\SuperBookmarkManager\`.
 Legacy `%LOCALAPPDATA%\SavedPostsDashboard\` remains untouched and is never
 silently adopted or migrated. Both directories survive uninstall. Browser storage
 has a per-public-profile namespace; source/developer overrides and inherited
-credentials are ignored by the packaged entry. Quit is in Library settings.
+credentials are ignored by the packaged entry. Quit is in the menu behind the logo and in Settings.
 The executable is windowless and uses loopback-only Waitress. Duplicate launch
 reopens the running instance; occupied ports use a free loopback port.
 
@@ -43,6 +43,6 @@ server before reinstall/uninstall. Signing is not performed; no signing identity
 is configured. Current-machine checks do not prove cross-machine compatibility.
 
 For a subsequent candidate without replacing an earlier one, set
-`$env:SBM_BUILD_CANDIDATE="v0.2.0-r2"` before both build commands. Only
-`v0.2.0` or `v0.2.0-rN` (positive integer) is accepted; outputs and compiler
+`$env:SBM_BUILD_CANDIDATE="v0.3.0-r2"` before both build commands. Only
+`v0.3.0` or `v0.3.0-rN` (positive integer) is accepted; outputs and compiler
 scratch paths use that suffix. Clear the variable to use the initial candidate paths.

@@ -46,11 +46,11 @@ async function quitNow() {
   useQuit.setState({ phase: "stopped" });
 }
 
-/** Small power button for the sidebar footer. */
+/** Small power button. Unused since the top bar replaced the sidebar: Quit app lives in its menu. */
 export function QuitButton({ className, label }: { className: string; label?: boolean }) {
   if (!canQuit) return null;
   return (
-    <button className={className} onClick={requestQuit} aria-label="Quit app" title="Quit Super Bookmark Manager">
+    <button className={className} onClick={requestQuit} aria-label="Quit app" title="Quit SuperBookmarks">
       <Power size={15} className="shrink-0" aria-hidden="true" />{label && "Quit"}
     </button>
   );
@@ -77,7 +77,7 @@ export function QuitHost() {
       <div className="quit-screen" role="alertdialog" aria-modal="true" aria-labelledby="quit-screen-title">
         <div className="quit-screen__card">
           <Power size={28} aria-hidden="true" />
-          <h1 id="quit-screen-title">{phase === "stopping" ? "Super Bookmark Manager is stopping…" : "Super Bookmark Manager has stopped"}</h1>
+          <h1 id="quit-screen-title">{phase === "stopping" ? "SuperBookmarks is stopping…" : "SuperBookmarks has stopped"}</h1>
           <p>Your library is saved. You can close this tab — open the app again from the Start Menu or your Desktop shortcut.</p>
         </div>
       </div>
@@ -89,7 +89,7 @@ export function QuitHost() {
   return (
     <dialog ref={dialog} className="quit-dialog" aria-labelledby="quit-title"
       onCancel={e => { if (busy) e.preventDefault(); }} onClose={() => useQuit.setState({ phase: "closed", message: "" })}>
-      <h2 id="quit-title" className="font-semibold">Quit Super Bookmark Manager?</h2>
+      <h2 id="quit-title" className="font-semibold">Quit SuperBookmarks?</h2>
       <p className="mt-2 text-[.82rem] text-[var(--dim)]">
         {blocked
           ? `${pending || "Some"} change${pending === 1 ? " hasn't" : "s haven't"} reached SQLite yet. Save first so nothing is lost; the app quits once everything is saved.`

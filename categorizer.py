@@ -2,14 +2,15 @@
 Hybrid categorizer with free-tier provider failover.
 
 Strategy per post (in order):
-  1. The built-in AI provider chain (ai_providers.py): Gemini -> Groq ->
-     OpenRouter -> NVIDIA -> a local server, using whichever keys are set in Settings.
+  1. The built-in AI provider chain (ai_providers.py): FreeLLMAPI (when set up) ->
+     Gemini -> Groq -> OpenRouter -> NVIDIA -> a local server, using whichever keys are
+     set in Settings.
   2. Keyword scoring for bare URLs, or when no provider is set up or answers.
 
 Classification is REUSE-ONLY. Every tier may only pick a category that already
 exists, or fall back to 'other'. Growing the taxonomy is a separate, deliberate
-act (see taxonomy.py) — letting the per-post path invent categories is exactly
-what produced 32 shelves for 204 links, 23 of them holding one or two.
+act (see taxonomy.py) — letting the per-post path invent categories grows a
+shelf per link, most of them holding one or two.
 
 The LLM path enforces a strict JSON schema:
   category_name:  verbatim copy of one existing category, or 'other'
@@ -231,7 +232,7 @@ def _validate_result(result: dict, existing: list[str]) -> Optional[dict]:
     Reuse-only. A name that is not a live shelf gets snapped to the closest one,
     and only falls through to 'other' when nothing is close. The behaviour this
     replaces — promoting an unmatched name to CREATE_NEW — is precisely how
-    'folkloremythology' appeared alongside 'folklore'.
+    near-duplicate shelves ('recipes' beside 'cooking') appeared.
     """
     if not isinstance(result.get("category_name"), str):
         return None

@@ -10,7 +10,7 @@ established.
 
 ## Official sources
 
-Get Super Bookmark Manager only from
+Get SuperBookmarks only from
 [github.com/browser-b0X/super-bookmark-manager](https://github.com/browser-b0X/super-bookmark-manager)
 (Releases) or its website,
 [browser-b0x.github.io/super-bookmark-manager](https://browser-b0x.github.io/super-bookmark-manager/).
@@ -33,10 +33,11 @@ private URLs, notes and saved content even though they exclude credentials/sessi
 
 ## Security model
 
-Super Bookmark Manager is a local-first, single-user application served on loopback.
-It has no central project account. The Windows package (v0.2.0) keeps local SQLite,
-the thumbnail cache, configuration, AI keys and the Telegram session in
-`%LOCALAPPDATA%\SuperBookmarkManager\`. Data from v0.1.0 in
+SuperBookmarks is a local-first, single-user application served on loopback.
+It has no central project account. The Windows package keeps local SQLite, the
+thumbnail cache, saved copies (`archive\`, including Telegram photos and videos kept
+with a link), the optional video helper (`helpers\`), configuration, AI keys and the
+Telegram session in `%LOCALAPPDATA%\SuperBookmarkManager\`. Data from v0.1.0 in
 `%LOCALAPPDATA%\SavedPostsDashboard\` is never read or migrated automatically.
 
 Telegram API ID/Hash, AI provider keys and sessions stay local and use Windows user-local filesystem
@@ -46,9 +47,16 @@ active login flow and are not persisted. Sessions are excluded from library back
 installer payloads and repository source. No shared project Telegram credentials exist.
 
 Telegram network operations are explicit: connect, test authorization, logout and
-refresh. Metadata enrichment for newly imported links contacts saved-link hosts and
-permitted preview resources as part of normal behavior. AI providers are contacted
-only after the owner adds a key; they receive the title, URL and text of the links
+refresh, plus one refresh when the app starts if the owner turns that on. Metadata
+enrichment for newly imported links contacts saved-link hosts and permitted preview
+resources as part of normal behavior; saved copies (on by default, can be turned off)
+fetch each saved page with its pictures, styles and fonts, and a public X or TikTok
+post's video. The optional video helper is downloaded from yt-dlp's GitHub releases
+only when the owner asks; once installed, saving a video post checks at most once a
+week whether a newer release exists (only its checksum list is fetched), and nothing
+new is downloaded or run until the owner chooses Update. AI providers are contacted
+only after the owner adds a key, when a tidy-up runs (or, with "Keep sorting new links"
+on, when unsorted links arrive); they receive the title, URL and text of the links
 being tidied. Settings shows only the last four characters of a saved key, and keys
 are scrubbed from provider error messages. Local keyword categorization needs no provider. Browser
 imports read selected file copies, not live profile discovery. Do not expose the local

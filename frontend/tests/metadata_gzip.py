@@ -44,8 +44,7 @@ class GzipTests(base.BoundaryTests):
         valid = gzip.compress(raw, mtime=0)
         corrupt = bytearray(valid)
         corrupt[-8] ^= 255
-        bomb = gzip.compress(b"x" * (safe.HTML_LIMIT + 1), mtime=0)
-        cases = [valid[:-4], bytes(corrupt), b"bad gzip", b"", valid + b"garbage", valid + valid, bomb]
+        cases = [valid[:-4], bytes(corrupt), b"bad gzip", b"", valid + b"garbage", valid + valid]
         base.storage.init_db()
         db = base.os.environ["SAVED_POSTS_DB_PATH"]
         # Persist through the actual Library API before attempting rejected enrichment.
@@ -67,7 +66,7 @@ class GzipTests(base.BoundaryTests):
                 count = len(self.http.requests)
                 first = client.post("/api/enrich", json={"url": base.BASE_URL + path})
                 self.assertEqual(first.status_code, 502)
-                self.assertEqual(first.json["error"], "too_large" if index == 6 else "network_error")
+                self.assertEqual(first.json["error"], "network_error")
                 self.assertEqual([first.json[k] for k in ("title", "summary", "thumbnail")], ["", "", ""])
                 second = client.post("/api/enrich", json={"url": base.BASE_URL + path})
                 self.assertEqual(second.json, first.json)
@@ -96,10 +95,16 @@ class GzipTests(base.BoundaryTests):
             def __getattr__(self, name):
                 return getattr(self.inner, name)
         with patch.object(safe.zlib, "decompressobj", Observed):
-            self.assertEqual(self.fetch("/bomb-proof")["error"], "too_large")
+            # A preview reads the first HTML_LIMIT bytes (nothing to find in them here).
+            result = self.fetch("/bomb-proof")
+        self.assertEqual((result["error"], result["title"]), ("", ""))
         self.assertEqual(sum(c["output"] for c in calls), safe.HTML_LIMIT + 1)
         self.assertTrue(all(c["output"] <= c["max_output"] <= safe.HTML_LIMIT + 1 for c in calls))
         self.assertEqual(len(calls), 1)
+        # Everything else that reads through safe_http still refuses it outright.
+        with self.assertRaises(safe.SafeHTTPError) as raised:
+            safe.get(base.BASE_URL + "/bomb-proof")
+        self.assertEqual(raised.exception.code, "too_large")
         print("BOMB_PROOF " + json.dumps({"compressed": len(packed), "decompressed": len(raw), "limit": safe.HTML_LIMIT, "calls": calls,
               "allocation_bound": "body <= limit+1, output <= remaining+1, wire chunk <=65536; no unbounded flush"}))
 
@@ -118,11 +123,20 @@ class GzipTests(base.BoundaryTests):
         self.http.routes["/stream-gzip"] = stream(gzip.compress(raw, mtime=0))
         self.assertEqual(safe.get(base.BASE_URL + "/stream-gzip").body, raw)
         self.http.routes["/stream-bomb"] = stream(gzip.compress(b"x" * (safe.HTML_LIMIT + 1), mtime=0))
-        self.assertEqual(self.fetch("/stream-bomb")["error"], "too_large")
+        self.assertEqual(self.fetch("/stream-bomb")["error"], "")
+        cut = safe.get(base.BASE_URL + "/stream-bomb", truncate=True)
+        self.assertEqual((len(cut.body), cut.truncated), (safe.HTML_LIMIT, True))
+        with self.assertRaises(safe.SafeHTTPError) as raised:
+            safe.get(base.BASE_URL + "/stream-bomb")
+        self.assertEqual(raised.exception.code, "too_large")
         self.route("/exact", gzip.compress(b"x" * safe.HTML_LIMIT, mtime=0))
         self.assertEqual(len(safe.get(base.BASE_URL + "/exact").body), safe.HTML_LIMIT)
+        # Labelled gzip but not gzip: a preview reads it and finds it broken; strictly, it's too big first.
         self.route("/wire", b"x" * (safe.HTML_LIMIT + 1))
-        self.assertEqual(self.fetch("/wire")["error"], "too_large")
+        self.assertEqual(self.fetch("/wire")["error"], "network_error")
+        with self.assertRaises(safe.SafeHTTPError) as raised:
+            safe.get(base.BASE_URL + "/wire")
+        self.assertEqual(raised.exception.code, "too_large")
 
     def test_unsupported_encoding_and_binary_content(self):
         for index, encoding in enumerate(["br", "gzip, br", "gzip,gzip", "gzip;foo", "g zip", "unknown"]):

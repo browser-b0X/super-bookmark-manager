@@ -8,10 +8,10 @@ standalone builder includes this directory. Upstream notices are not edited.
 
 | Component | Version | Confirmed license | Redistribution action / evidence |
 |---|---|---|---|
-| Python | 3.12.10 | PSF license agreement and bundled component notices | Full runtime LICENSE.txt in python-runtime.txt, including OpenSSL and other incorporated notices |
+| Python | 3.12.10 | PSF license agreement and bundled component notices | Full runtime LICENSE.txt in python-runtime.txt, including OpenSSL and other incorporated notices; expat, libmpdec, zlib and the other notices from the Python documentation in python-incorporated-software.txt |
 | Inno Setup | 6.7.3 | Inno Setup License (custom permissive) | Retain existing binary copyright/website notices; unmodified upstream license included |
 | SQLite | Bundled with Python 3.12.10 | [Public domain, upstream statement](https://www.sqlite.org/copyright.html) | Preserve supplied runtime notices |
-| Microsoft VC runtime DLLs | Bundled by Python/PyInstaller | Microsoft redistributable terms; not project MIT | REVIEW upstream Python Windows distribution redistribution terms; do not extract/relicense as standalone product |
+| Microsoft VC runtime DLLs | Bundled by Python/PyInstaller | Microsoft redistributable terms; not project MIT | Covered by "Additional Conditions for this Windows binary build" in python-runtime.txt; do not extract/relicense as standalone product |
 
 ## Python runtime and build dependencies
 
@@ -41,6 +41,7 @@ supported standalone recipe; install them only after reviewing their own metadat
 | pefile | 2024.8.26 | MIT | Preserve upstream license/notices; included |
 | pywin32-ctypes | 0.2.3 | BSD-3-Clause | Preserve upstream license/notices; included |
 | setuptools | 84.0.0 | MIT | Preserve upstream license/notices; included |
+| truststore | 0.10.4 | MIT | Preserve upstream license/notices; included (checks website certificates with the operating system) |
 
 ## Frontend and build graph
 
@@ -225,4 +226,18 @@ Sources: [Python license](https://docs.python.org/3.12/license.html),
 Regenerate/review notices when dependency versions change. MIT/BSD/Apache notices
 and any accompanying attribution must travel with redistributed code/binaries.
 
-- Waitress 3.0.2: Zope Public License 2.1; see `third_party_notices/Waitress-LICENSE.txt`. Production WSGI serving for the packaged application.
+- Waitress 3.0.2: Zope Public License 2.1; see `third_party_notices/Waitress-LICENSE.txt` and its copyright notice, `third_party_notices/Waitress-COPYRIGHT.txt` ("Zope Foundation and Contributors"). Production WSGI serving for the packaged application.
+
+## Fonts (themes Lime and Coral)
+
+Self-hosted so the app works offline; latin subset, weights 400-700, from the Fontsource
+npm packages 5.3.0. The unmodified OFL text for each family ships beside the files in
+`frontend/public/fonts/`. OFL fonts may be bundled with software; the fonts are not sold on
+their own and keep their reserved names.
+
+| Component | Version | Confirmed license | Redistribution action / evidence |
+|---|---|---|---|
+| Space Grotesk | Fontsource 5.3.0 | SIL Open Font License 1.1 | `frontend/public/fonts/space-grotesk-OFL.txt` shipped with the files |
+| Instrument Sans | Fontsource 5.3.0 | SIL Open Font License 1.1 | `frontend/public/fonts/instrument-sans-OFL.txt` shipped with the files |
+| Bricolage Grotesque | Fontsource 5.3.0 | SIL Open Font License 1.1 | `frontend/public/fonts/bricolage-grotesque-OFL.txt` shipped with the files |
+| Figtree | Fontsource 5.3.0 | SIL Open Font License 1.1 | `frontend/public/fonts/figtree-OFL.txt` shipped with the files |

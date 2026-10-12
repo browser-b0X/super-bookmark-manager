@@ -6,6 +6,8 @@ type Status = {
   authorized: boolean | null;
   login_step: string | null;
   expires_in: number | null;
+  /** A refresh or another step holds the session right now; `authorized` may be unknown. */
+  busy: boolean;
 };
 type Phase = "idle" | "phone" | "code" | "password";
 
@@ -26,6 +28,7 @@ const MESSAGES: Record<string, string> = {
   cancelled: "Login cancelled. No session was changed.",
   login_active: "A login is already in progress. Cancel or restart it first.",
   login_step: "That step does not match the current login state. Check the status and try again.",
+  busy: "Telegram is busy with a refresh or another step. Wait for it to finish, then try again.",
   cross_origin: "Cross-origin Telegram requests are blocked. Reload the app and try again.",
   content_type: "Unexpected request format. Reload the app and try again.",
   too_large: "That request was too large. Reload the app and try again.",
@@ -50,6 +53,7 @@ function toStatus(data: unknown): Status | null {
     authorized: d.authorized,
     login_step: d.login_step,
     expires_in: d.expires_in,
+    busy: d.busy === true,
   };
 }
 
@@ -63,6 +67,7 @@ export default function TelegramAccount() {
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const inflight = useRef<AbortController | null>(null);
+  const recheck = useRef<number | undefined>(undefined);
   const connectButton = useRef<HTMLButtonElement>(null);
 
   const clearSecrets = useCallback(() => { setPhone(""); setCode(""); setPassword(""); }, []);
@@ -97,16 +102,20 @@ export default function TelegramAccount() {
     if (!transport) { setStatus(null); return; }
     const next = toStatus(data);
     setStatus(next);
+    window.clearTimeout(recheck.current);
+    // A refresh (photos and videos can take minutes) holds the session: look again
+    // shortly instead of probing behind it or offering to connect a working account.
+    if (next?.busy) { recheck.current = window.setTimeout(() => void loadStatus(), 5000); return; }
     // Resolve real authorization for an existing session without sending a code.
     if (next?.session_exists && next.authorized === null) {
-      const probe = await call({ action: "check" }, 25000);
+      const probe = await call({ action: "check" }, 45000);
       if (probe.transport) setStatus(toStatus(probe.data));
     }
   }, [call]);
 
   useEffect(() => {
     void loadStatus();
-    return () => { inflight.current?.abort(); inflight.current = null; };
+    return () => { inflight.current?.abort(); inflight.current = null; window.clearTimeout(recheck.current); };
   }, [loadStatus]);
 
   const startConnect = () => {
@@ -126,7 +135,7 @@ export default function TelegramAccount() {
       setError(MESSAGES.invalid_phone);
       return;
     }
-    const { data, transport } = await call({ action: "start", phone: value }, 25000);
+    const { data, transport } = await call({ action: "start", phone: value }, 45000);
     setPhone("");
     if (!transport) {
       const code_ = data?.code;
@@ -147,7 +156,7 @@ export default function TelegramAccount() {
   const submitCode = async () => {
     const value = code.trim();
     if (!/^[0-9]{4,8}$/.test(value)) { setError(MESSAGES.code_invalid); return; }
-    const { data, transport } = await call({ action: "code", code: value }, 25000);
+    const { data, transport } = await call({ action: "code", code: value }, 45000);
     setCode("");
     if (!transport) { setError(message(data?.code)); return; }
     const next = toStatus(data);
@@ -160,7 +169,7 @@ export default function TelegramAccount() {
   const submitPassword = async () => {
     const value = password;
     if (!value) { setError(MESSAGES.password_invalid); return; }
-    const { data, transport } = await call({ action: "password", password: value }, 25000);
+    const { data, transport } = await call({ action: "password", password: value }, 45000);
     setPassword("");
     if (!transport) { setError(message(data?.code)); return; }
     const next = toStatus(data);
@@ -180,7 +189,7 @@ export default function TelegramAccount() {
 
   const testConnection = async () => {
     setNotice("");
-    const { data, transport } = await call({ action: "check" }, 25000);
+    const { data, transport } = await call({ action: "check" }, 45000);
     if (!transport) { setError(message(data?.code)); return; }
     const next = toStatus(data);
     if (next) setStatus(next);
@@ -196,7 +205,7 @@ export default function TelegramAccount() {
       : "Remove the local session file only? This does NOT log out on Telegram; the authorization may remain valid there until it expires or you log out in the Telegram app.";
     if (!window.confirm(prompt)) return;
     setNotice("");
-    const { data, transport } = await call({ action: "disconnect", mode }, 25000);
+    const { data, transport } = await call({ action: "disconnect", mode }, 45000);
     if (!transport) {
       const code_ = data?.code;
       setError(message(code_));
@@ -212,8 +221,9 @@ export default function TelegramAccount() {
   };
 
   const connected = status?.authorized === true;
-  const dotColor = status === null ? "var(--amber)" : connected ? "var(--green)" : "var(--red)";
-  const statusLabel = status === null ? "Unknown" : connected ? "Connected" : "Not connected";
+  const waiting = !!status?.busy && !connected;
+  const dotColor = status === null || waiting ? "var(--amber)" : connected ? "var(--green)" : "var(--red)";
+  const statusLabel = status === null ? "Unknown" : connected ? "Connected" : waiting ? "Busy: a Telegram refresh is running" : "Not connected";
   const busyOrIdle = busy;
 
   return (
@@ -233,7 +243,7 @@ export default function TelegramAccount() {
         <p>Local session present: <b>{status === null ? "Unknown" : status.session_exists ? "Yes" : "No"}</b></p>
       </div>
 
-      {!connected && status && !busyOrIdle && phase === "idle" && (
+      {!connected && status && !waiting && !busyOrIdle && phase === "idle" && (
         <ol className="mt-3 list-decimal space-y-0.5 pl-5 text-[.72rem] text-[var(--faint)]">
           <li>Add your Telegram developer credentials above.</li>
           <li>Connect your Telegram account here and enter the verification code.</li>
@@ -251,7 +261,7 @@ export default function TelegramAccount() {
       {phase === "idle" && (
         <div className="mt-3 flex min-w-0 flex-wrap gap-2">
           {status === null && <button type="button" className="btn max-w-full whitespace-normal" disabled={busy} onClick={() => void loadStatus()}>Retry</button>}
-          {!connected && status && (
+          {!connected && status && !waiting && (
             <button ref={connectButton} type="button" className="btn btn-primary max-w-full whitespace-normal"
               disabled={busy || !status.credentials_configured} onClick={startConnect}>Connect Telegram</button>
           )}

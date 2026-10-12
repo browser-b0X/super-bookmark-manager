@@ -2,8 +2,12 @@
 Flask web dashboard for browsing saved posts.
 """
 
+import hashlib
+import hmac
 import json
+import mimetypes
 import os
+import secrets
 import shutil
 import sqlite3
 import subprocess
@@ -18,6 +22,15 @@ from werkzeug.serving import WSGIRequestHandler
 import config
 import metadata_fetcher
 import storage
+
+# On Windows, mimetypes reads file types from the registry, and some PCs map .js
+# (or .css) to text/plain there. Browsers refuse a module script served as
+# text/plain, so the app would open as a blank page. Pin the types the app serves.
+for _type, _extension in (("text/javascript", ".js"), ("text/javascript", ".mjs"), ("text/css", ".css"),
+                          ("text/html", ".html"), ("application/json", ".json"), ("image/svg+xml", ".svg"),
+                          ("image/x-icon", ".ico"), ("image/png", ".png"), ("image/webp", ".webp"),
+                          ("font/woff2", ".woff2"), ("video/mp4", ".mp4")):
+    mimetypes.add_type(_type, _extension)
 
 app = Flask(__name__)
 
@@ -110,7 +123,7 @@ _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 # Routes that already apply their own Origin/content-type rules with
 # route-specific responses; the generic guard below covers everything else.
 _SELF_GUARDED = {"api_telegram_auth", "api_telegram_config", "api_library", "api_backup",
-                 "api_import_firefox", "api_telegram_refresh", "api_enrich"}
+                 "api_import_firefox", "api_telegram_refresh", "api_enrich", "api_archive_import"}
 
 
 def _allowed_hosts() -> set:
@@ -126,7 +139,17 @@ def _local_boundary():
         hostname = ""
     if hostname not in _allowed_hosts():
         return jsonify(ok=False, error="This server only answers on its local address."), 403
-    if request.method in ("GET", "HEAD", "OPTIONS") or request.endpoint in _SELF_GUARDED:
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        # The API is read by the app's own pages. Another website can still make the
+        # browser send a GET (an <img>, a link), and some reads do work: shelf
+        # suggestions call the owner's AI provider on their key.
+        origin = request.headers.get("Origin")
+        if request.path.startswith("/api/") and (
+                request.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site")
+                or (origin is not None and not _library_same_origin(origin))):
+            return jsonify(ok=False, error="Cross-origin requests are not allowed."), 403
+        return None
+    if request.endpoint in _SELF_GUARDED:
         return None
     origin = request.headers.get("Origin")
     if origin is not None and not _library_same_origin(origin):
@@ -148,6 +171,15 @@ class _BadBody(Exception):
 @app.errorhandler(_BadBody)
 def _bad_body(exc):
     return jsonify(ok=False, error=str(exc) or "Expected a JSON object."), 400
+
+
+@app.errorhandler(RecursionError)
+@app.errorhandler(OverflowError)
+def _odd_values(exc):
+    """JSON nested thousands deep, or numbers too big for SQLite: a bad request, not a crash page."""
+    if request.path.startswith("/api/"):
+        return jsonify(ok=False, error="The request held values the app can't use."), 400
+    return "Bad request", 400
 
 
 def _json_object() -> dict:
@@ -174,6 +206,19 @@ def _msg_id(data: dict) -> int:
         return int(value)
     except ValueError:
         raise _BadBody("tg_msg_id must be an integer.") from None
+
+
+@app.after_request
+def _not_for_other_sites(response):
+    """No other website may frame the app (clickjacking) or embed its files (probing what is saved)."""
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    policy = response.headers.get("Content-Security-Policy")
+    if not policy:
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'self'"
+    elif "frame-ancestors" not in policy:
+        response.headers["Content-Security-Policy"] = policy + "; frame-ancestors 'self'"
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    return response
 
 
 @app.after_request
@@ -300,6 +345,19 @@ def api_telegram_config():
         return jsonify(error="Telegram configuration is unavailable. Nothing was confirmed saved."), 503
 
 
+def _drop_copies(payload, result=None):
+    """A deleted link takes its saved copy with it. Never fails the save itself."""
+    urls = [*payload.get("deletedUrls", []), *payload.get("purgeUrls", []), *((result or {}).get("removedUrls") or [])]
+    if not urls:
+        return
+    try:
+        import archive
+        for url in urls:
+            archive.remove_for_url(url)
+    except (OSError, ValueError):
+        pass  # the library change is already committed; a leftover file is harmless
+
+
 @app.route("/api/library", methods=["GET", "POST"])
 def api_library():
     """Local, provider-free durable library. Never acknowledge an uncommitted write."""
@@ -315,12 +373,17 @@ def api_library():
 
         def strict_number(token):
             raise BadRequest("Non-standard JSON number.")
-        result = storage.save_library(json.loads(request.get_data(), parse_constant=strict_number))
+        payload = json.loads(request.get_data(), parse_constant=strict_number)
+        result = storage.save_library(payload)
+        _drop_copies(payload, result)
         return jsonify({"ok": True, **result})
     except storage.LibraryValidationError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except (BadRequest, ValueError, RecursionError):
         return jsonify({"ok": False, "error": "Malformed JSON library request."}), 400
+    except storage.LibraryReplacedError as exc:
+        # A restore replaced the library: the browser drops its copy and reloads it.
+        return jsonify({"ok": False, "error": str(exc), "code": "library_replaced"}), 409
     except storage.LibraryConflictError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 409
     except sqlite3.Error:
@@ -329,7 +392,7 @@ def api_library():
 
 @app.route("/api/backup/<action>", methods=["POST"])
 def api_backup(action):
-    """Explicit export/preview/new-file restore; never replace the active library."""
+    """Explicit export, preview, and restore into the library in use (saved first when it has links)."""
     from library_backup import BackupError, export_backup, preview_backup, restore_backup
     origin = request.headers.get("Origin")
     if origin is not None and not _library_same_origin(origin):
@@ -354,7 +417,7 @@ def api_backup(action):
             return jsonify(ok=True, **preview_backup(raw))
         if action == "restore":
             if data.get("confirm") is not True:
-                raise BackupError("Confirm the preview to create a restored database.")
+                raise BackupError("Confirm the preview to restore.")
             return jsonify(ok=True, **restore_backup(raw, data.get("sha256")))
         return jsonify(ok=False, error="Unknown backup action."), 404
     except (BadRequest, BackupError, storage.LibraryValidationError) as exc:
@@ -390,14 +453,24 @@ def api_telegram_refresh():
     if request.mimetype != "application/json":
         return jsonify(ok=False, error="Refresh requires an explicit JSON request."), 415
     try:
-        if request.get_json() != {"confirm": True}:
+        body = request.get_json()
+        if (not isinstance(body, dict) or body.get("confirm") is not True
+                or not set(body) <= {"confirm", "media", "startup"}
+                or any(not isinstance(body.get(name, False), bool) for name in ("media", "startup"))):
             return jsonify(ok=False, error="Explicit refresh confirmation is required."), 400
     except BadRequest:
         return jsonify(ok=False, error="Malformed refresh request."), 400
-    from telegram_refresh import RefreshError, refresh_saved_messages
+    from telegram_refresh import RefreshError, refresh_saved_messages, claim_startup_check, release_startup_check
+    import archive
+    if body.get("startup") and not claim_startup_check():
+        # "Check when the app starts": once per app run, however many tabs open.
+        return jsonify(ok=True, skipped="already_checked")
     try:
-        return jsonify(refresh_saved_messages())
+        # Photos and videos are kept beside saved copies, so not when copies are off for this run.
+        return jsonify(refresh_saved_messages(keep_media=body.get("media", False) and archive.ENABLED))
     except RefreshError as exc:
+        if body.get("startup") and exc.code in ("network", "busy"):
+            release_startup_check()   # e.g. the app started before the network was up: a later load retries
         return jsonify(ok=False, code=exc.code, error=str(exc)), exc.status
 
 
@@ -765,8 +838,8 @@ def api_categorize_unprocessed():
     import categorizer
     data = _json_object() if request.content_length else {}
     try:
-        batch = min(int(data.get("batch_size", 500)), 2000)
-    except (TypeError, ValueError):
+        batch = max(1, min(int(data.get("batch_size", 500)), 2000))   # SQLite reads a negative LIMIT as "no limit", and 0 returns nothing
+    except (TypeError, ValueError, OverflowError):
         batch = 500
     processed = categorizer.categorize_unprocessed(
         batch_size=batch, untagged_only=bool(data.get("untagged")))
@@ -777,7 +850,8 @@ def api_categorize_unprocessed():
 def serve_thumb(code):
     """Locally cached thumbnails (Instagram CDN URLs expire, so we keep bytes)."""
     import re as _re
-    if not _re.fullmatch(r"[A-Za-z0-9_-]{2,64}", code):
+    # Windows device names (CON, AUX, COM1...) open the device, not a file: never read them.
+    if not _re.fullmatch(r"[A-Za-z0-9_-]{2,64}", code) or _re.fullmatch(r"(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])", code):
         abort(404)
     path = os.path.join(metadata_fetcher.THUMB_CACHE_DIR, code)
     try:
@@ -793,6 +867,312 @@ def serve_thumb(code):
     return response
 
 
+@app.route("/api/thumbs/missing", methods=["POST"])
+def api_thumbs_missing():
+    """Which pictures the links point at (/thumb/<code>) are not on this computer.
+
+    A JSON backup keeps the addresses, not the picture files: after restoring one on a new
+    install, "Fetch missing previews" counts these and fetching stores them again."""
+    import re as _re
+    origin = request.headers.get("Origin")
+    if origin is not None and not _library_same_origin(origin):
+        return jsonify(ok=False, error="Cross-origin requests are not allowed."), 403
+    if request.mimetype != "application/json":
+        return jsonify(ok=False, error="Send the picture codes as JSON."), 415
+    data = request.get_json(silent=True)
+    codes = data.get("codes") if isinstance(data, dict) else None
+    if (not isinstance(codes, list) or len(codes) > 200000
+            or not all(isinstance(code, str) and _re.fullmatch(r"[A-Za-z0-9_-]{2,64}", code) for code in codes)):
+        return jsonify(ok=False, error="Expected a list of picture codes."), 400
+    return jsonify(ok=True, missing=metadata_fetcher.missing_thumbs(codes))
+
+
+# ── Saved copies (archive.py) ─────────────────────────────────────────────────
+
+def _archive_response(document):
+    """A copy is shown with no script, no network and an origin of its own."""
+    import archive
+    from flask import make_response
+    response = make_response(document)
+    response.headers["Content-Type"] = "text/html; charset=utf-8"
+    # allow-popups only lets a link the reader clicks open the live site in a
+    # normal tab; without allow-scripts nothing in the copy can run.
+    # Video only from the copies' own folder: 'self' alone would let a planted
+    # copy point a <video> at the app's API.
+    policy = archive.FILE_CSP.replace("media-src 'self'", f"media-src {request.host_url}archive/")
+    response.headers["Content-Security-Policy"] = (
+        "sandbox allow-popups allow-popups-to-escape-sandbox; " + policy + "; frame-ancestors 'self'")
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+# A saved copy has an origin of its own (the sandbox), so the browser treats its
+# request for its own video as cross-origin and a same-origin-only resource
+# policy blocks it. The copy is served with a per-run token in its video address
+# and only a tokened request is opened to "cross-origin": another website can't
+# guess the token, so it still can't probe which posts are saved.
+_VIDEO_SECRET = secrets.token_bytes(32)
+
+
+def _video_token(key: str) -> str:
+    return hmac.new(_VIDEO_SECRET, key.encode("ascii"), hashlib.sha256).hexdigest()[:32]
+
+
+@app.route("/archive/<key>")
+def archive_view(key):
+    """The saved copy of a link.
+
+    ?view=plain drops the site's own styling; ?banner=0 hides the copy's own
+    "Saved copy of..." strip when the app shows those details itself.
+    """
+    import archive
+    document = archive.read_copy(key) if archive.valid_key(key) else None
+    if document is None:
+        abort(404)
+    if request.args.get("view") == "plain":
+        document = archive.plain_view(document)
+    if request.args.get("banner") == "0":
+        document = archive.without_banner(document)
+    document = document.replace(f'src="{key}.mp4"'.encode("ascii"), f'src="{key}.mp4?t={_video_token(key)}"'.encode("ascii"))
+    return _archive_response(document)
+
+
+@app.route("/archive/<key>.mp4")
+def archive_video(key):
+    """The video of a saved X post, played by that copy's <video> tag.
+
+    Byte ranges are honoured so the player can seek. Served as video/mp4 only,
+    with the same sandbox as the copy, so a file renamed to .mp4 can't run.
+    """
+    import archive
+    from flask import send_file
+    if not archive.valid_key(key) or archive.read_record(key) is None:
+        abort(404)
+    path = archive.video_path(key)
+    if os.path.islink(path) or not os.path.isfile(path):
+        abort(404)
+    response = send_file(path, mimetype="video/mp4", conditional=True, etag=False, max_age=0)
+    response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Cache-Control"] = "no-store"
+    if hmac.compare_digest(request.args.get("t", ""), _video_token(key)):
+        response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+    return response
+
+
+@app.route("/archive/telegram/<key>/<name>")
+def archive_telegram_file(key, name):
+    """One photo or video kept from a Telegram message: served as a file, never run."""
+    import archive
+    from flask import send_file
+    kind = archive.telegram_type(name)
+    path = archive.telegram_file_path(key, name) if kind and archive.valid_key(key) else None
+    if not path:
+        abort(404)
+    response = send_file(path, mimetype=kind, conditional=True, etag=False, max_age=0)
+    response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/api/archive/telegram", methods=["POST"])
+def api_archive_telegram():
+    """The photos and videos kept from a link's Telegram message (by the link's address)."""
+    import archive
+    data = _json_object()
+    url = data.get("url")
+    if not isinstance(url, str) or not url or len(url) > 4096 or set(data) != {"url"}:
+        return jsonify(ok=False, error="invalid_url"), 400
+    record = archive.telegram_media_for_url(url)
+    if not record:
+        return jsonify(ok=True, media=None)
+    items = [{**item, "src": f"/archive/telegram/{record['key']}/{item['name']}"} for item in record["items"]]
+    return jsonify(ok=True, media={"key": record["key"], "message": record["message"], "savedAt": record["savedAt"],
+                                   "items": items, **archive.telegram_counts(record)})
+
+
+@app.route("/api/archive", methods=["GET", "POST"])
+def api_archive():
+    """Ask for a copy of a link (POST) or how copies are doing (GET).
+
+    Saving happens on archive.py's background queue; a POST only enqueues and
+    answers at once, and the browser polls GET ?keys=... until it is done.
+    """
+    import archive
+    if request.method == "GET":
+        raw = request.args.get("keys")
+        if raw is None:
+            return jsonify(ok=True, enabled=archive.ENABLED, **archive.summary())
+        keys = [key for key in raw.split(",") if key]
+        if len(keys) > 200 or any(not archive.valid_key(key) for key in keys):
+            return jsonify(ok=False, error="invalid_keys"), 400
+        return jsonify(ok=True, copies={key: archive.state(key) for key in keys})
+    data = _json_object()
+    url = data.get("url")
+    refresh = data.get("refresh", False)
+    if not isinstance(url, str) or not url or len(url) > 4096 or not isinstance(refresh, bool) or not set(data) <= {"url", "refresh", "post"}:
+        return jsonify(ok=False, status="failed", error="invalid_url"), 400
+    post = data.get("post")
+    if "post" in data:
+        # Only what the bookmark button read on an Instagram post; checked again when the copy is made.
+        import instagram_post
+        try:
+            instagram_post.parse(url, post)
+        except instagram_post.PostDataError:
+            return jsonify(ok=False, status="failed", error="invalid_post"), 400
+    state = archive.request_copy(url, refresh=refresh, post=post)
+    if state["status"] == "failed":
+        code = state.get("error", "internal_error")
+        response = jsonify(ok=False, **state)
+        if code == "busy":
+            response.headers["Retry-After"] = "5"
+        return response, {"invalid_url": 400, "blocked_url": 400, "busy": 429, "disabled": 503}.get(code, 502)
+    return jsonify(ok=True, **state), 200 if state["status"] == "saved" else 202
+
+
+@app.route("/api/archive/export", methods=["POST"])
+def api_archive_export():
+    """The opt-in backup that includes saved copies: one zip, streamed.
+
+    The ordinary JSON backup never contains copies. This adds them next to the
+    same library.json, with an index page, so the zip is useful on its own.
+    """
+    import archive
+    from flask import Response
+    from library_backup import BackupError, export_backup
+    if _json_object() != {"confirm": True}:
+        return jsonify(ok=False, error="Choose the export explicitly."), 400
+    try:
+        backup = export_backup()
+    except (BackupError, storage.LibraryValidationError) as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    except (OSError, sqlite3.Error):
+        return jsonify(ok=False, error="Backup storage unavailable. Nothing was exported."), 503
+    content = json.dumps(backup, ensure_ascii=True, indent=2).encode("ascii")
+    filename = "saved-posts-with-copies-" + backup["exportedAt"][:19].replace(":", "-") + ".zip"
+    response = Response(archive.export_zip(content, backup["exportedAt"]), mimetype="application/zip")
+    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.route("/api/archive/import", methods=["POST"])
+def api_archive_import():
+    """Restore saved copies from a zip made by Export backup with saved copies.
+
+    Adds copies for links in this library only and never replaces an existing
+    copy. The body is the zip itself, written to a temporary file first.
+    """
+    import archive
+    import tempfile
+    origin = request.headers.get("Origin")
+    if ((origin is not None and not _library_same_origin(origin))
+            or request.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site")):
+        return jsonify(ok=False, error="Cross-origin requests are not allowed."), 403
+    if request.mimetype not in ("application/zip", "application/x-zip-compressed", "application/octet-stream"):
+        return jsonify(ok=False, error="Choose the .zip file that Export backup with saved copies made."), 415
+    if not archive.ENABLED:
+        return jsonify(ok=False, error="Saved copies are switched off for this run of the app."), 503
+    if request.content_length is not None and request.content_length > archive.IMPORT_LIMIT:
+        return jsonify(ok=False, error="That zip is bigger than 1 GB."), 413
+    temporary = None
+    try:
+        os.makedirs(archive.ARCHIVE_DIR, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=archive.ARCHIVE_DIR, prefix="import.", suffix=".zip.tmp", delete=False) as target:
+            temporary = target.name
+            size = 0
+            while True:
+                chunk = request.stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > archive.IMPORT_LIMIT:
+                    return jsonify(ok=False, error="That zip is bigger than 1 GB."), 413
+                target.write(chunk)
+        result = archive.import_zip(temporary, storage.library_urls())
+        return jsonify(ok=True, **result)
+    except archive.ArchiveError as exc:
+        if exc.code == "not_zip":
+            return jsonify(ok=False, error="That file is not a zip made by Export backup with saved copies."), 400
+        if exc.code == "too_large":
+            return jsonify(ok=False, error="That zip has too many files to be a backup from this app."), 400
+        return jsonify(ok=False, error="The copies could not be written. Check disk space, then try again."), 503
+    except (OSError, sqlite3.Error):
+        return jsonify(ok=False, error="The copies could not be written. Check disk space, then try again."), 503
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+@app.route("/api/archive/<key>", methods=["DELETE"])
+def api_archive_delete(key):
+    import archive
+    if not archive.valid_key(key):
+        return jsonify(ok=False, error="invalid_keys"), 400
+    return jsonify(ok=True, deleted=archive.remove(key))
+
+
+@app.route("/api/share/picture", methods=["POST"])
+def api_share_picture():
+    """One link-preview picture for a shared-page export, fetched by the app.
+
+    The browser can't read pictures from other sites, so Share asks here.
+    POST {"url"} only (the generic guard refuses other origins and non-JSON),
+    through safe_http (public addresses only, 4 MB), and only real pictures
+    (JPEG, PNG, GIF, WebP) come back.
+    """
+    import archive
+    import safe_http
+    data = _json_object()
+    url = data.get("url")
+    if set(data) != {"url"} or not isinstance(url, str) or not url or len(url) > 4096:
+        return jsonify(ok=False, error="invalid_url"), 400
+    try:
+        answer = safe_http.get(url, deadline=time.monotonic() + 8, limit=safe_http.IMAGE_LIMIT, headers=archive._IMAGE_HEADERS)
+    except safe_http.SafeHTTPError as exc:
+        return jsonify(ok=False, error=exc.code), 400 if exc.code in ("invalid_url", "blocked_url") else 502
+    kind = archive._sniff(answer.body, "")
+    if kind not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+        return jsonify(ok=False, error="invalid_image"), 415
+    response = app.response_class(answer.body, mimetype=kind)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
+    return response
+
+
+@app.route("/api/helpers/video", methods=["GET", "POST"])
+def api_video_helper():
+    """The optional video helper for TikTok (video_helper.py).
+
+    GET reports it; POST {"action": "install" | "check" | "update" | "remove"} changes it.
+    Install, check and update run in the background; Settings polls GET. "check" only
+    looks whether a newer release exists; "update" (the owner's click) installs it.
+    """
+    import archive
+    import video_helper
+    if request.method == "GET":
+        return jsonify(ok=True, enabled=archive.ENABLED, **video_helper.status())
+    if not archive.ENABLED:
+        return jsonify(ok=False, error="disabled"), 503
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or set(body) != {"action"} or body["action"] not in ("install", "check", "update", "remove"):
+        return jsonify(ok=False, error="invalid_request"), 400
+    if body["action"] == "remove":
+        if video_helper.status()["busy"]:
+            return jsonify(ok=False, error="busy"), 409
+        video_helper.remove()
+        return jsonify(ok=True, **video_helper.status())
+    return jsonify(ok=True, **video_helper.start(body["action"])), 202
+
+
 # ── SPA serving (React app from frontend/dist) ────────────────────────────────
 
 @app.route("/assets/<path:filename>")
@@ -803,9 +1183,9 @@ def spa_assets(filename):
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def spa(path):
-    # Anything under /api/*, /posts or /command is handled by its own route;
-    # if we land here with such a path it genuinely doesn't exist.
-    if path.startswith(("api/", "posts", "command")):
+    # Anything under /api/*, /archive/*, /posts or /command is handled by its own
+    # route; if we land here with such a path it genuinely doesn't exist.
+    if path.startswith(("api/", "archive/", "posts", "command")):
         abort(404)
     if path:
         static_file = os.path.join(SPA_DIR, path)
@@ -869,6 +1249,7 @@ def _gpu():
             ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=3,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),   # no console window flashing on Windows
         )
         if out.returncode != 0:
             return None

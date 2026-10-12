@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { importThroughField } from './importField.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
@@ -55,15 +56,15 @@ async function snapshot(name, count) {
 }
 const result = () => page.getByRole('status', { name: 'Telegram refresh result' });
 const button = () => page.getByRole('button', { name: 'Refresh Telegram Saved Messages', exact: true });
-const footerTop = () => page.evaluate(() => Math.round(document.querySelector('.sidebar-footer')?.getBoundingClientRect().top ?? -1));
+const footerTop = () => page.evaluate(() => Math.round(document.querySelector('header.topnav')?.getBoundingClientRect().bottom ?? -1));
 async function refresh(pattern) {
-  // The sidebar must not jump while the refresh saves to SQLite.
+  // The top bar must not jump while the refresh saves to SQLite.
   const before = await footerTop(); const tops = new Set([before]);
   let sampling = true;
   const sampler = (async () => { while (sampling) { tops.add(await footerTop()); await page.waitForTimeout(25); } })();
   await button().click(); await result().filter({ hasText: pattern }).waitFor();
   await page.waitForTimeout(400); sampling = false; await sampler;
-  assert.deepEqual([...tops], [before], 'sidebar footer moved during refresh');
+  assert.deepEqual([...tops], [before], 'top bar moved during refresh');
   assert.equal(await button().isEnabled(), true);
   return await result().innerText();
 }
@@ -96,11 +97,10 @@ try {
   assert.equal(report.requests.filter(r=>r.url.endsWith('/api/telegram/refresh')).length,0);
   if (process.argv[2] === 'files') {
     const fixtures=join(root,'frontend/tests/fixtures');
-    const bookmarkInput=page.getByLabel('Import bookmarks HTML');
     const jsonInput=page.getByLabel('Import Telegram JSON');
     for(const [name,added] of [['firefox',3],['chromium',2]]){
-      await bookmarkInput.setInputFiles(join(fixtures,`bookmarks-${name}.html`));
-      await page.getByRole('status').filter({hasText:`Bookmark import complete — ${added} new`}).waitFor();
+      const result=await importThroughField(page,join(fixtures,`bookmarks-${name}.html`));
+      assert.equal(result.added,added,result.text);
     }
     await saved(5);
     await jsonInput.setInputFiles(join(fixtures,'telegram-saved-messages.json'));
@@ -109,8 +109,8 @@ try {
     const imported=await snapshot('file-imports',8);
     assert.equal(imported.filter(p=>p.telegramMessage?.id==='97001').length,2);
     for(const name of ['firefox','chromium']){
-      await bookmarkInput.setInputFiles(join(fixtures,`bookmarks-${name}.html`));
-      await page.getByRole('status').filter({hasText:'Bookmark import complete — 0 new'}).waitFor();
+      const result=await importThroughField(page,join(fixtures,`bookmarks-${name}.html`));
+      assert.ok(!result.refused,result.text);assert.equal(result.added,0,result.text);
     }
     await jsonInput.setInputFiles(join(fixtures,'telegram-saved-messages.json'));
     await page.getByRole('status',{name:'Telegram import result'}).filter({hasText:'0 new, 4 already present'}).waitFor();

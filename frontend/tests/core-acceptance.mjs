@@ -1,5 +1,6 @@
 // G5 integrated acceptance. Only established synthetic exports, owned guarded
 // SQLite, a fresh loopback origin and fresh browser contexts may be used.
+import { importThroughField } from './importField.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -54,8 +55,13 @@ const posts = async () => (await getState()).posts;
 const status = () => page.getByRole('status', { name: 'SQLite save status' });
 const drawer = () => page.getByRole('dialog', { name: 'Saved post detail' });
 const searchBox = () => page.getByPlaceholder('Search… ( / )');
-// Filters live in the main sidebar since the feed revamp; shelves are links, lists are buttons.
-const filters = () => { const nav = page.getByRole('complementary', { name: 'Navigation' }); return { getByRole: (_role, opts) => nav.getByRole('button', opts).or(nav.getByRole('link', opts)) }; };
+// Filters: Favourites is a top-bar tab; shelves, lists and platforms are links on the All shelves page.
+const filters = () => ({ getByRole: (_role, opts) => ({ click: async () => {
+  const sections = page.getByRole('navigation', { name: 'Sections' });
+  if (String(opts.name) === String(/^Favorites /)) return sections.getByRole('link', { name: 'Favourites' }).click();
+  await sections.getByRole('link', { name: 'All shelves' }).click();
+  await page.getByRole('link', opts).first().click();
+} }) });
 
 async function check(name, test) {
   if (retained.has(name)) return;
@@ -195,10 +201,11 @@ async function compare(name, expected, deletedUrls = []) {
   assert.ok(expected.every(p => new URL(p.url).hostname === 'example.invalid'));
   await output(name, { database, api, browser: browserState });
 }
-async function importBookmark(name, expectedText, count) {
-  await page.getByLabel('Import bookmarks HTML').setInputFiles(fixture(`bookmarks-${name}.html`));
-  const result = page.getByRole('status').filter({ hasText: expectedText }); await result.waitFor();
-  await classified(count); imports.push({ file: name, text: await result.innerText(), count });
+async function importBookmark(name, [added, updated], count) {
+  // One import field since v0.3.0: preview, then Import.
+  const result = await importThroughField(page, fixture(`bookmarks-${name}.html`));
+  assert.deepEqual([result.added, result.updated], [added, updated], result.text);
+  await classified(count); imports.push({ file: name, text: result.text, count });
   await output('import-results.json', imports);
 }
 async function importTelegram(expectedText) {
@@ -209,8 +216,8 @@ async function importTelegram(expectedText) {
 }
 async function reimportAll() {
   await page.goto(base + '/library/settings'); await saved(8);
-  await importBookmark('firefox', '0 new, 3 already present', 8);
-  await importBookmark('chromium', '0 new, 3 already present', 8);
+  await importBookmark('firefox', [0, 3], 8);
+  await importBookmark('chromium', [0, 3], 8);
   await importTelegram('0 new, 4 already present');
 }
 async function detail(post) { await page.goto(`${base}/library/item/${post.id}`); await drawer().waitFor(); return drawer(); }
@@ -228,7 +235,7 @@ async function tabTo(locator, limit = 130) {
 const ninthHtml = '<!DOCTYPE NETSCAPE-Bookmark-file-1><TITLE>Fixture</TITLE><H1>Fixture</H1><DL><p><DT><A HREF="https://example.invalid/disposable">Ninth disposable</A></DL><p>';
 async function ninth() {
   await page.goto(base + '/library/settings');
-  await page.getByLabel('Import bookmarks HTML').setInputFiles({ name: 'ninth.html', mimeType: 'text/html', buffer: Buffer.from(ninthHtml) });
+  await importThroughField(page, { name: 'ninth.html', mimeType: 'text/html', buffer: Buffer.from(ninthHtml) });
 }
 
 try {
@@ -243,8 +250,8 @@ try {
   let expected, first, second;
   if (!resumeFrom) {
   await check('C2 actual Settings bookmark imports and repeat imports', async () => {
-    await importBookmark('firefox', '3 new, 0 already present, 1 duplicate entries in this file, 1 unsupported-scheme', 3);
-    await importBookmark('chromium', '2 new, 1 already present', 5);
+    await importBookmark('firefox', [3, 0], 3);
+    await importBookmark('chromium', [2, 1], 5);
     const initial = sorted(await posts());
     const expected = [
       ['https://example.invalid/cooking?course=main&serves=2', 'Cooking & Kitchen — supplied title'],
@@ -253,14 +260,15 @@ try {
       ['https://example.invalid/budgeting', 'Budget planning café'],
     ].sort((a, b) => a[0].localeCompare(b[0]));
     assert.deepEqual(initial.map(p => [p.url, p.title]), expected); assert.ok(initial.every(p => p.source === 'browser'));
-    await importBookmark('firefox', '0 new, 3 already present', 5);
-    await importBookmark('chromium', '0 new, 3 already present', 5);
+    await importBookmark('firefox', [0, 3], 5);
+    await importBookmark('chromium', [0, 3], 5);
     await compare('bookmark-comparison.json', initial);
     return '3 distinct Firefox + 3 distinct Chromium − 1 overlap = 5; duplicate/unsupported/nested titles retained; repeats add zero';
   });
   await check('C2 malformed empty and unsupported bookmark inputs do not mutate', async () => {
     const wrap = body => `<!DOCTYPE NETSCAPE-Bookmark-file-1><DL><p>${body}</DL><p>`;
-    const invalid = [['', /empty/], ['<html><a href="https://example.invalid/no-export">Not an export</a></html>', /not a Netscape/],
+    // The one import field names the formats it reads when a file is none of them.
+    const invalid = [['', /isn't a bookmark export this app can read/], ['<html><a href="https://example.invalid/no-export">Not an export</a></html>', /isn't a bookmark export this app can read/],
       ['<!DOCTYPE NETSCAPE-Bookmark-file-1><DL><A HREF="https://example.invalid/truncated">Broken', /malformed/],
       
       [wrap('<A>Missing URL</A>'), /No HTTP\(S\).*1 malformed/], [wrap(''), /No bookmarks/],
@@ -269,8 +277,9 @@ try {
     const expected = sorted(await posts()), reports = [];
     for (const [raw, pattern] of invalid) {
       const before = await page.evaluate(() => localStorage.getItem('library-store-v1'));
-      await page.getByLabel('Import bookmarks HTML').setInputFiles({ name: 'invalid.html', mimeType: 'text/html', buffer: Buffer.from(raw) });
-      const result = page.getByRole('status').filter({ hasText: pattern }); await result.waitFor();
+      const outcome = await importThroughField(page, { name: 'invalid.html', mimeType: 'text/html', buffer: Buffer.from(raw) });
+      assert.ok(outcome.refused, outcome.text); assert.match(outcome.text, pattern);
+      const result = page.getByRole('status', { name: 'Import result' });
       assert.equal(await page.evaluate(() => localStorage.getItem('library-store-v1')), before);
       assert.deepEqual(sorted((await snapshot()).posts), expected); reports.push({ input: raw, result: await result.innerText() });
     }
@@ -278,7 +287,7 @@ try {
   });
   await check('C3 documented Telegram import preserves complete source association', async () => {
     assert.match(await page.locator('main').innerText(), /Export chat history[\s\S]*Machine-readable JSON[\s\S]*full date range/);
-    assert.match(await page.locator('main').innerText(), /All messages in the file are checked; there is no item limit/);
+    assert.match(await page.locator('main').innerText(), /Every message in the file is checked/);
     await importTelegram('3 new, 1 already present; 5 messages checked, 1 without eligible links, 1 duplicate URLs');
     const initial = await posts(), raw = JSON.parse(await readFile(fixture('telegram-saved-messages.json'), 'utf8'));
     const urls = ['https://example.invalid/travel', 'https://example.invalid/programming#typescript', 'https://example.invalid/reference', 'http://example.invalid/no-metadata'];
@@ -429,7 +438,7 @@ try {
     const after = timeline.slice(boundary), click = after.find(e => e.event === 'click' && e.ariaLabel === 'Retry SQLite save');
     const writes = after.filter(e => e.event === 'request' && e.method === 'POST');
     assert.ok(click); assert.deepEqual(click.pending, { [first.url]: pendingPost }); assert.equal(writes.length, 1);
-    assert.ok(writes[0].at >= click.at); { const { since: _since, ...payload } = writes[0].payload; /* delta-sync revision */ assert.deepEqual(payload, { posts: [pendingPost], deletedUrls: [] }); }
+    assert.ok(writes[0].at >= click.at); { const { since: _since, epoch, ...payload } = writes[0].payload; /* delta-sync revision; which library (0: never restored) */ assert.equal(epoch, 0); assert.deepEqual(payload, { posts: [pendingPost], deletedUrls: [] }); }
     expected = retryExpected; await compare('retry-comparison.json', expected, ['https://example.invalid/disposable']);
     await page.reload(); await compare('retry-after-reload.json', expected, ['https://example.invalid/disposable']);
     return 'real SQLite abort retained pending note; explicit Retry precedes one exact POST; only A note/timestamp changes';
@@ -497,7 +506,7 @@ try {
     await tabTo(source); expectedExternal = second.url; const popupReady = page.waitForEvent('popup'); await page.keyboard.press('Enter');
     const popup = await popupReady; await popup.waitForLoadState(); assert.equal(popup.url(), second.url); await popup.close(); expectedExternal = undefined; await saved(8);
     const actual = sorted(await posts()), oldB = expected.find(p => p.id === second.id), newB = actual.find(p => p.id === second.id);
-    const expectedB = { ...oldB, userNotes: 'LambdaNotebook: G5 keyboard edited programming', lastOpenedAt: newB.lastOpenedAt, updatedAt: newB.updatedAt };
+    const expectedB = { ...oldB, userNotes: 'LambdaNotebook: G5 keyboard edited programming', lastOpenedAt: newB.lastOpenedAt, openCount: 1, updatedAt: newB.updatedAt };
     assert.ok(newB.lastOpenedAt); assert.deepEqual(newB, expectedB);
     assert.deepEqual(actual.filter(p => p.id !== second.id), expected.filter(p => p.id !== second.id)); expected = actual;
     await page.screenshot({ path: join(evidence, 'g5-detail-curated.png') }); await compare('after-c6-comparison.json', expected, ['https://example.invalid/disposable']);
@@ -525,7 +534,7 @@ try {
   });
   await check('G5 fixture isolation and runtime errors', async () => {
     assert.deepEqual(errors, []); assert.deepEqual(denied, []);
-    assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers'].includes(r.path)));
+    assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers', '/api/archive'].includes(r.path)));
     assert.deepEqual((await snapshot()).blocked, []);
     return 'zero uncaught browser errors, forbidden API calls, outbound requests or fixture guard violations';
   });

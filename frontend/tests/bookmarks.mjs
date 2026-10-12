@@ -2,6 +2,7 @@
 // C2_BASE_URL must serve X-C2-Fixture: bookmarks on /__c2_harness.html.
 // C2_PLAYWRIGHT_MODULE may point to a preinstalled Playwright package; no install needed.
 import assert from 'node:assert/strict';
+import { importThroughField } from './importField.mjs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -160,8 +161,15 @@ try {
   await page.goto(`${base}/library/settings`);
   await page.getByText('Flask backend online — rich metadata enrichment available.', { exact: true }).waitFor();
   await page.waitForFunction(() => JSON.parse(localStorage.getItem('library-store-v1') || '{}').state?.migrated === true);
-  const input = page.getByLabel('Import bookmarks HTML');
-  const status = page.getByRole('status');
+  // One import field since v0.3.0: choose, preview, then Import (tests/importField.mjs).
+  const input = page.getByLabel('Choose a file to import');
+  const importFile = async (file, expected, inFile) => {
+    const result = await importThroughField(page, file);
+    assert.ok(!result.refused, result.text);
+    assert.deepEqual([result.added, result.updated], expected, result.text);
+    if (inFile) inFile(result.preview);
+  };
+  const noRepeats = preview => assert.doesNotMatch(preview, /In the file: [1-9]\d* repeated/);
   const persisted = () => page.evaluate(() => JSON.parse(localStorage.getItem('library-store-v1')).state.posts);
   async function saved(count) {
     await page.getByRole('status', { name: 'SQLite save status', exact: true })
@@ -196,12 +204,10 @@ try {
   }
   await saved(0);
   phase = 'firefox-import';
-  await input.setInputFiles(fixture('firefox'));
-  await status.filter({ hasText: '3 new, 0 already present, 1 duplicate entries in this file, 1 unsupported-scheme' }).waitFor();
+  await importFile(fixture('firefox'), [3, 0], preview => assert.match(preview, /In the file: 1 repeated, 1 non-web/));
   snapshots.firefox = await classified(3);
   phase = 'chromium-import';
-  await input.setInputFiles(fixture('chromium'));
-  await status.filter({ hasText: '2 new, 1 already present' }).waitFor();
+  await importFile(fixture('chromium'), [2, 1]);
   const initial = snapshots.initial = await classified(5);
   assert.equal(initial.length, 5);
   assert.deepEqual(initial.map(p => [p.url, p.title]), expected);
@@ -243,17 +249,14 @@ try {
   'Only the two intentional curation edits and their update timestamps may change');
   phase = 'reimport';
   await page.goto(`${base}/library/settings`);
-  await input.setInputFiles(fixture('firefox'));
-  await status.filter({ hasText: '0 new, 3 already present' }).waitFor();
+  await importFile(fixture('firefox'), [0, 3]);
   assert.deepEqual(await saved(5), curated);
   assertClassifications(5);
-  await input.setInputFiles(fixture('chromium'));
-  await status.filter({ hasText: '0 new, 3 already present, 0 duplicate' }).waitFor();
+  await importFile(fixture('chromium'), [0, 3], noRepeats);
   assert.deepEqual(await saved(5), curated);
   assertClassifications(5);
   // Same-file reselection also fires after the input value is cleared.
-  await input.setInputFiles(fixture('chromium'));
-  await status.filter({ hasText: '0 new, 3 already present, 0 duplicate' }).waitFor();
+  await importFile(fixture('chromium'), [0, 3], noRepeats);
   assert.deepEqual(snapshots.reimport = await saved(5), curated);
   assertClassifications(5);
   phase = 'reload';
@@ -266,8 +269,10 @@ try {
   const beforeInvalidRequests = apiRequests.length;
   for (const [raw, pattern] of invalid) {
     const before = await page.evaluate(() => localStorage.getItem('library-store-v1'));
-    await input.setInputFiles({ name: 'invalid.html', mimeType: 'text/html', buffer: Buffer.from(raw) });
-    await status.filter({ hasText: pattern }).waitFor();
+    const result = await importThroughField(page, { name: 'invalid.html', mimeType: 'text/html', buffer: Buffer.from(raw) });
+    // The one field names the formats it reads when a file is not a bookmarks export at all.
+    assert.ok(result.refused, result.text);
+    assert.match(result.text, /^<!DOCTYPE NETSCAPE/.test(raw) ? pattern : /isn't a bookmark export this app can read/);
     assert.equal(await page.evaluate(() => localStorage.getItem('library-store-v1')), before);
   }
   await page.waitForLoadState('networkidle');

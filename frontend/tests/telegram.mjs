@@ -2,6 +2,7 @@
 // All browser requests are fulfilled/aborted here: no server, DB, or network I/O.
 // C3_PLAYWRIGHT_MODULE and C3_BROWSER_CHANNEL select installed test tooling.
 import assert from 'node:assert/strict';
+import { importThroughField } from './importField.mjs';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -150,10 +151,10 @@ try {
   const readPosts = () => page.evaluate(() => JSON.parse(localStorage.getItem('library-store-v1')).state.posts);
   const telegramInput = page.getByLabel('Import Telegram JSON');
   const result = page.getByRole('status', { name: 'Telegram import result' });
-  const bookmarkInput = page.getByLabel('Import bookmarks HTML');
+  // Bookmarks HTML goes through the one import field (v0.3.0); Telegram JSON keeps its own input.
   for (const name of ['firefox', 'chromium']) {
-    await bookmarkInput.setInputFiles(fixturePath(`bookmarks-${name}.html`));
-    await page.getByRole('status').filter({ hasText: name === 'firefox' ? '3 new, 0 already present' : '2 new, 1 already present' }).waitFor();
+    const imported = await importThroughField(page, fixturePath(`bookmarks-${name}.html`));
+    assert.deepEqual([imported.added, imported.updated], name === 'firefox' ? [3, 0] : [2, 1], imported.text);
   }
   assert.equal((await readPosts()).length, 5);
   await telegramInput.setInputFiles(fixturePath('telegram-saved-messages.json'));
@@ -175,8 +176,8 @@ try {
   assert.deepEqual(curatedTravel.categories, ['other']); assert.equal(curatedTravel.userNotes, 'UI Telegram note');
   await page.goto(`${origin}/library/settings`);
   for (const name of ['firefox', 'chromium']) {
-    await bookmarkInput.setInputFiles(fixturePath(`bookmarks-${name}.html`));
-    await page.getByRole('status').filter({ hasText: '0 new, 3 already present' }).waitFor();
+    const imported = await importThroughField(page, fixturePath(`bookmarks-${name}.html`));
+    assert.deepEqual([imported.added, imported.updated], [0, 3], imported.text);
   }
   for (let i = 0; i < 2; i++) {
     await telegramInput.setInputFiles(fixturePath('telegram-saved-messages.json'));

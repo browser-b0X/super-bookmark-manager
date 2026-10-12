@@ -55,11 +55,12 @@ class AiLibrary(unittest.TestCase):
     def test_provider_reply_is_cleaned_and_clamped(self):
         ai_providers.update('groq', {'key': 'gsk_SYNTHETIC_KEY_0000000'})
         content = json.dumps({'items': [
-            {'id': 'a', 'shelf': 'Food & Drinks', 'tags': ['#Baking', 'Lemon Cake', 'x' * 60, 'baking'],
+            {'id': '1', 'shelf': 'Food & Drinks', 'tags': ['#Baking', 'Lemon Cake', 'x' * 60, 'baking'],
              'title': '"' + 'Lemon cake ' * 12 + '"', 'summary': 'Six ingredients.'},
-            {'id': 'b', 'shelf': 'brand-new-shelf', 'tags': 'not a list', 'title': 'FastAPI tutorial'},
-            {'id': 'zzz', 'shelf': 'technology'},
+            {'id': '2', 'shelf': 'brand-new-shelf', 'tags': 'not a list', 'title': 'FastAPI tutorial'},
+            {'id': '9', 'shelf': 'technology'},
             {'id': 'a', 'shelf': 'technology'},
+            {'id': '1', 'shelf': 'technology'},
         ]})
         with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=lambda *a, **k: reply(content)):
             r = self.post()
@@ -74,6 +75,23 @@ class AiLibrary(unittest.TestCase):
         self.assertEqual(rows['b']['shelf'], 'other')
         self.assertNotIn('tags', rows['b'])
 
+    def test_odd_reply_shapes_are_skipped_not_a_crash(self):
+        # One malformed reply used to answer HTTP 500 and stop the whole "Tidy up" run.
+        ai_providers.update('groq', {'key': 'gsk_SYNTHETIC_KEY_0000000'})
+        content = json.dumps({'items': [{'id': ['1']}, {'id': {'x': 1}}, {'id': True}, {'id': '2', 'title': {'en': 'Hi'}, 'summary': ['x'], 'shelf': 'technology'}]})
+        with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=lambda *a, **k: reply(content)):
+            r = self.post()
+        self.assertEqual(r.status_code, 200)
+        rows = {row['id']: row for row in r.json['items']}
+        self.assertNotIn('title', rows.get('b', {}), "a title that isn't text is left out, never shown as {'en': ...}")
+
+    def test_a_local_server_with_an_odd_model_list_is_reported_not_a_crash(self):
+        ai_providers.update('local', {'base': 'http://127.0.0.1:11434/v1'})
+        with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=lambda *a, **k: io.BytesIO(b'{"data": 1}')):
+            r = self.client.post('/api/ai/providers/local/test', headers=H)
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json['ok'])
+
     def test_unreadable_reply_falls_back_to_keywords(self):
         ai_providers.update('groq', {'key': 'gsk_SYNTHETIC_KEY_0000000'})
         with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=lambda *a, **k: reply('no json here')):
@@ -83,7 +101,7 @@ class AiLibrary(unittest.TestCase):
     def test_one_request_per_batch_and_read_only(self):
         ai_providers.update('groq', {'key': 'gsk_SYNTHETIC_KEY_0000000'})
         before = storage.get_library()
-        content = json.dumps({'items': [{'id': 'a', 'shelf': 'food-drink'}, {'id': 'b', 'shelf': 'technology'}]})
+        content = json.dumps({'items': [{'id': '1', 'shelf': 'food-drink'}, {'id': '2', 'shelf': 'technology'}]})
         with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=lambda *a, **k: reply(content)) as transport:
             self.post(jobs=['shelf'])
         self.assertEqual(transport.call_count, 1)
@@ -96,10 +114,10 @@ class AiLibrary(unittest.TestCase):
         asked = []
         def transport(request, timeout=None):
             content = json.loads(request.data)['messages'][1]['content']
-            ids = [i for i in ('a', 'b') if f'"id": "{i}"' in content]
+            ids = [i for i, text in (('a', 'lemon cake'), ('b', 'FastAPI')) if text in content]
             asked.append(ids)
-            # First reply covers only "a" (cut off); the retry covers "b".
-            return reply(json.dumps({'items': [{'id': ids[0], 'shelf': 'technology'}]}))
+            # First reply covers only the first link (cut off); the retry, numbered afresh, covers "b".
+            return reply(json.dumps({'items': [{'id': '1', 'shelf': 'technology'}]}))
         with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=transport):
             r = self.post(jobs=['shelf'])
         self.assertEqual(asked, [['a', 'b'], ['b']])
@@ -139,13 +157,66 @@ class AiLibrary(unittest.TestCase):
         hosts = []
         def transport(request, timeout=None):
             hosts.append('gemini' if 'generativelanguage' in request.full_url else 'groq')
-            return reply(json.dumps({'items': [{'id': 'a', 'shelf': 'food-drink'}, {'id': 'b', 'shelf': 'technology'}]}))
+            return reply(json.dumps({'items': [{'id': '1', 'shelf': 'food-drink'}, {'id': '2', 'shelf': 'technology'}]}))
         with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=transport):
             first = self.post(jobs=['shelf'], spread=0)
             second = self.post(jobs=['shelf'], spread=1)
             odd = self.post(jobs=['shelf'], spread='x')
         self.assertEqual((first.json['engine'], second.json['engine']), ('gemini', 'groq'))
         self.assertEqual(odd.json['engine'], 'gemini')
+
+    def test_long_link_ids_are_accepted_and_kept_out_of_the_prompt(self):
+        # A bookmark's id is its URL in base64: a long URL made an id over 200 characters,
+        # the server answered "Each link needs an id." and the whole Tidy up run stopped.
+        ai_providers.update('groq', {'key': 'gsk_SYNTHETIC_KEY_0000000'})
+        long_a, long_b = 'browser-' + 'aHR0cHM6Ly9leGFtcGxl' * 30, 'browser-' + 'Zm9vYmFy' * 120
+        items = [{**ITEMS[0], 'id': long_a}, {**ITEMS[1], 'id': long_b}]
+        sent = []
+        def transport(request, timeout=None):
+            sent.append(json.loads(request.data)['messages'][1]['content'])
+            # Models answer with the short keys they were shown, sometimes as numbers.
+            return reply(json.dumps({'items': [{'id': '1', 'shelf': 'food-drink'}, {'id': 2, 'shelf': 'technology'}]}))
+        with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=transport):
+            r = self.client.post('/api/ai/suggest', json={'items': items, 'shelves': SHELVES, 'jobs': ['shelf']}, headers=H)
+        self.assertEqual(r.status_code, 200, r.json)
+        self.assertEqual({row['id']: row['shelf'] for row in r.json['items']}, {long_a: 'food-drink', long_b: 'technology'})
+        self.assertNotIn('missing', r.json)
+        self.assertEqual(len(sent), 1)
+        self.assertNotIn(long_a, sent[0], 'the long id stays out of the prompt (tokens, and models garble it)')
+        self.assertIn('"id": "1"', sent[0])
+
+    def test_an_answer_cut_off_by_a_thinking_model_is_asked_again_in_smaller_groups(self):
+        # Owner report: FreeLLMAPI's model (NVIDIA's Nemotron 3 Super) thought until the answer budget ran out
+        # and FreeLLMAPI answered 502 "truncated JSON". A shorter answer, for fewer links, fits.
+        import urllib.error
+        ai_providers.update('freellmapi', {'key': 'freellmapi-SYNTHETIC00000000000000'})
+        cut = json.dumps({'error': {'message': (
+            'All 1 routed attempt(s) failed with upstream provider errors (format_ignored ×1). Attempt trail: '
+            'nvidia/nvidia/nemotron-3-super-120b-a12b key1: format_ignored. Last error: truncated JSON from Nemotron '
+            '(finish_reason=length — raise max_tokens for this json_object request)'), 'code': 'upstream_failed'}}).encode()
+        items = [{'id': f'link-{n}', 'title': f'Synthetic link {n}', 'url': f'https://example.invalid/{n}'} for n in range(8)]
+        sizes = []
+        def transport(request, timeout=None):
+            user = json.loads(request.data)['messages'][-1]['content']
+            sizes.append(user.count('\n---\n'))
+            if sizes[-1] > 2:
+                raise urllib.error.HTTPError(request.full_url, 502, 'Bad Gateway', {}, io.BytesIO(cut))
+            return reply(json.dumps({'items': [{'id': str(n), 'shelf': 'technology'} for n in range(1, sizes[-1] + 1)]}))
+        with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=transport):
+            r = self.client.post('/api/ai/suggest', json={'items': items, 'shelves': SHELVES, 'jobs': ['shelf']}, headers=H)
+        self.assertEqual(sizes, [8, 4, 2, 2, 4, 2, 2])
+        self.assertEqual(r.json['engine'], 'freellmapi')
+        self.assertNotIn('missing', r.json)
+        self.assertEqual(sorted(row['id'] for row in r.json['items']), sorted(i['id'] for i in items))
+        self.assertEqual(ai_providers.status()['providers'][0]['state'], 'ready')
+        # A single link can't be split: the browser is told to try again shortly, not to wait out a bench.
+        sizes.clear()
+        def always_cut(request, timeout=None):
+            sizes.append(1)
+            raise urllib.error.HTTPError(request.full_url, 502, 'Bad Gateway', {}, io.BytesIO(cut))
+        with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=always_cut):
+            r = self.client.post('/api/ai/suggest', json={'items': items[:1], 'shelves': SHELVES, 'jobs': ['shelf']}, headers=H)
+        self.assertEqual((sizes, r.json['fallbackReason'], r.json['retryIn'], r.json['missing']), ([1], 'bad_response', 0, ['link-0']))
 
     def test_invalid_requests(self):
         bad = [{'items': []}, {'items': [{}]}, {'items': ITEMS * 6}, {'jobs': []}, {'jobs': ['delete']},

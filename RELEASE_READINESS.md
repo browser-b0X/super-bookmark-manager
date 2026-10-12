@@ -1,4 +1,60 @@
-# Super Bookmark Manager — release readiness
+# SuperBookmarks — release readiness
+
+## v0.3.0 — status 2026-10-11
+
+**Source ready; the Windows build, an install check and publication remain.**
+
+The release text is RELEASE_NOTES_DRAFT.md, to paste as it is. The `public-release` branch
+is prepared on the owner's PC the same way as for v0.2.0: one commit on top of the published
+`main` (`654059f`) holding exactly the files in PUBLIC_SOURCE_MANIFEST.md (319), no private
+history.
+
+Checks run on the source (Linux, synthetic data only; `node frontend/tests/run.mjs`):
+
+- Logic and backend: 31 suites pass (`telegram_auth_test` needs Windows ACLs and is skipped).
+- Browser: 27 suites pass in three parts, none needing a retry (including restoring a backup
+  after a fresh install, `backup-e2e`).
+- Packaging: release safety (PyInstaller stubbed) and runtime handoff.
+- Public file set: every manifest file exists and is tracked; no `.verify`, databases,
+  sessions, `ai.json`/`config.json`, internal records or machine paths; no key-like strings
+  except labelled synthetic test keys; the owner's old shelf names and counts are gone
+  (`7ff1a63`).
+- The GitHub check (`.github/workflows/tests.yml`) runs the same suites on every pull request.
+
+Not verifiable here:
+
+- The Windows build and install, upgrading over v0.2.0, and the Windows-only Telegram
+  session checks.
+- Real providers (FreeLLMAPI and the models behind it), a real Telegram account, Instagram
+  through the bookmark button, and real-site saved copies beyond the RUN-ME-4 sample.
+
+### Release checklist (owner)
+
+1. On Windows: double-click `.verify\v030\win\RUN-ME-9.cmd`. It builds the installer from
+   this checkout (`dist-installer-v0.3.0\SuperBookmarkManager-Setup.exe` and its `.sha256`;
+   a later run makes `-r2`, `-r3`) and installs nothing.
+2. Install it once where your own copy can't be touched (Windows Sandbox or another Windows
+   user): first launch, Settings → AI providers → Test, an import, Settings → Backup →
+   Restore backup with a backup from your old install (its links appear at once), Quit,
+   uninstall. Then install it over your own v0.2.0: your library, settings and keys stay.
+3. Push `public-release` and merge it into `main` (GitHub Pages then serves the v0.3.0
+   website from `docs/`).
+4. Create release `v0.3.0` on that commit with `SuperBookmarkManager-Setup.exe` and its
+   `.sha256`; the text is RELEASE_NOTES_DRAFT.md.
+5. GitHub settings: Social preview (upload `docs/assets/social-preview.png`), and the
+   description and topics below.
+6. Optional: put the installer's hash into `InstallerSha256` of the WinGet manifest and
+   submit it (packaging/winget/README.md).
+
+Proposed GitHub metadata:
+
+Description: `A local-first home for links saved from browsers, Telegram and WhatsApp — previews, saved copies, shelves, search and optional AI tidying. Windows.`  
+Topics: `bookmark-manager`, `bookmarks`, `local-first`, `telegram`, `whatsapp`, `read-it-later`, `web-archive`, `sqlite`, `windows`  
+License: MIT, copyright 2026 browser-b0X; the name and logo: TRADEMARKS.md.
+
+**SIGNING NOT PERFORMED — NO CONFIGURED CODE-SIGNING IDENTITY.**
+
+---
 
 ## v0.2.0 — status 2026-10-02
 
@@ -53,7 +109,7 @@ Not verifiable here, or known before this release:
 
 **SUPER BOOKMARK MANAGER GITHUB READINESS PASS — PUBLICATION ONLY REMAINS**
 
-Owner decisions: public name **Super Bookmark Manager**, repository slug
+Owner decisions: public name **Super Bookmark Manager** (renamed **SuperBookmarks** in v0.3.0, shown name only), repository slug
 `super-bookmark-manager`, first public release `v0.1.0`, MIT license with owner-confirmed
 copyright holder `browser-b0X`. Root LICENSE resolves the project-license-selection
 blocker; third-party inventory/notices remain separately applicable.

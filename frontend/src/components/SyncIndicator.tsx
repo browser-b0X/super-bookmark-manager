@@ -5,6 +5,8 @@ import { useLibrary } from "../store/library";
 import { syncLibrary, useLibraryPersistence } from "../lib/libraryPersistence";
 import { useStorageHealth } from "../lib/libraryStorage";
 import { useEnrichmentQueue } from "../lib/metadataEnrichment";
+import { useCopyQueue } from "../lib/savedCopies";
+import { useAiTidy } from "../lib/aiTidy";
 
 export function useSaveMessage() {
   const pending = useLibrary(s => Object.keys(s.pending).length);
@@ -38,9 +40,16 @@ export default function SyncIndicator() {
   const storageError = useStorageHealth(s => s.error);
   const queue = useEnrichmentQueue();
   const error = persistence.status === "error";
+  const copyQueue = useCopyQueue();
   const previews = queue.total > 0 && queue.done < queue.total;
+  const copies = copyQueue.total > 0 && copyQueue.done < copyQueue.total;
+  // Tidy up with AI sorting in the background (Settings > Tidy up with AI).
+  const tidy = useAiTidy(s => s.kind === "background" && s.running);
+  const tidyDone = useAiTidy(s => s.done);
+  const tidyTotal = useAiTidy(s => s.total);
+  const tidyWaiting = useAiTidy(s => s.waiting);
   const problem = error || attention > 0 || !!storageError || demo;
-  const busy = pending > 0 || persistence.status === "syncing" || previews;
+  const busy = pending > 0 || persistence.status === "syncing" || previews || copies || tidy;
   const [visible, setVisible] = useState(false);
   const [lingering, setLingering] = useState(false);
   const shownRef = useRef(false);
@@ -64,6 +73,11 @@ export default function SyncIndicator() {
   const shown = attention ? `${attention} change${attention === 1 ? "" : "s"} need${attention === 1 ? "s" : ""} attention`
     : storageError ? "Browser cache problem"
     : previews && !error && !pending ? `${queue.paused ? "Previews paused" : "Fetching previews"} · ${queue.done}/${queue.total}`
+    // Each finished copy also saves its link, so this line wins over "Saving 1 change…".
+    : copies && !error && !previews ? (copyQueue.total === 1 ? (copyQueue.paused ? "Copy paused" : "Saving a copy…")
+      : `${copyQueue.paused ? "Copies paused" : "Saving copies"} · ${copyQueue.done}/${copyQueue.total}`)
+    // Each sorted batch also saves its links, so this line wins over "Saving 8 changes…".
+    : tidy && !error ? `Sorting with AI · ${tidyWaiting ? `providers busy, ${tidyWaiting}s` : `${tidyDone}/${tidyTotal}`}`
     : pending && !error ? `Saving ${pending} change${pending === 1 ? "" : "s"}…`
     : lingering && !busy ? "Saved"
     : message;
@@ -72,7 +86,7 @@ export default function SyncIndicator() {
   return (
     <div role="status" aria-label="SQLite save status" title={detail}
       className={"save-toast" + (visible ? " is-visible" : "") + (warn ? " is-warning" : "")}>
-      <Link to="/library/settings#library" className="save-toast__link" tabIndex={visible ? undefined : -1}>
+      <Link to={tidy && !previews && !copies && !problem ? "/library/settings#ai" : "/library/settings#library"} className="save-toast__link" tabIndex={visible ? undefined : -1}>
         <span className="dot shrink-0" style={{ background: colour }} aria-hidden="true" />
         {/* The accessible text is always the exact save message; what is drawn
             comes from CSS so the element's text content stays stable. */}
@@ -85,6 +99,10 @@ export default function SyncIndicator() {
       </button>}
       {previews && <span className="save-toast__bar" aria-hidden="true"
         style={{ width: `${Math.round((queue.done / queue.total) * 100)}%` }} />}
+      {copies && !previews && copyQueue.total > 1 && <span className="save-toast__bar" aria-hidden="true"
+        style={{ width: `${Math.round((copyQueue.done / copyQueue.total) * 100)}%` }} />}
+      {tidy && !previews && !copies && tidyTotal > 0 && <span className="save-toast__bar" aria-hidden="true"
+        style={{ width: `${Math.round((tidyDone / tidyTotal) * 100)}%` }} />}
     </div>
   );
 }

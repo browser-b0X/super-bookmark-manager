@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { importThroughField } from './importField.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
@@ -93,9 +94,9 @@ async function saved(count) {
 async function importAll(reimport = false) {
   await page.goto(base + '/library/settings');
   for (const name of ['firefox', 'chromium']) {
-    await page.getByLabel('Import bookmarks HTML').setInputFiles(fixture(`bookmarks-${name}.html`));
-    const expected = reimport ? '0 new, 3 already present' : name === 'firefox' ? '3 new, 0 already present' : '2 new, 1 already present';
-    await page.getByRole('status').filter({ hasText: expected }).waitFor();
+    const result = await importThroughField(page, fixture(`bookmarks-${name}.html`));
+    const expected = reimport ? [0, 3] : name === 'firefox' ? [3, 0] : [2, 1];
+    assert.deepEqual([result.added, result.updated], expected, result.text);
   }
   await page.getByLabel('Import Telegram JSON').setInputFiles(fixture('telegram-saved-messages.json'));
   await page.getByRole('status', { name: 'Telegram import result' }).filter({ hasText: reimport ? '0 new, 4 already present' : '3 new, 1 already present' }).waitFor();
@@ -213,7 +214,7 @@ try {
   pass('failed category writes remain visibly pending across reload; SQLite transaction unchanged; retry and fresh browser retain manual correction and all 8 records');
   assert.deepEqual(errors, []);
   assert.deepEqual(denied, []);
-  assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers'].includes(r.path)));
+  assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers', '/api/archive'].includes(r.path)));
   assert.deepEqual((await control('snapshot')).result.blocked, []);
   pass('no uncaught browser errors, metadata/model calls, personal data or external requests; shelf count stays nine topical plus reserved');
 } catch (error) {

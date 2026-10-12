@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { importThroughField } from './importField.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -136,6 +137,12 @@ const chromiumFile = { name: 'Bookmarks', mimeType: 'application/json', buffer: 
 const telegramFile = { name: 'result.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ messages: [
   { id: 81003, type: 'message', date: '2026-09-24T11:00:00', text: 'Synthetic Telegram caption ' + fixture + '/telegram' },
 ] })) };
+// One import field since v0.3.0 (HTML and Chromium Bookmarks files alike); a refused file fails the check.
+async function imported(file) {
+  const result = await importThroughField(page, file);
+  assert.ok(!result.refused, result.text);
+  return result;
+}
 async function waitMetadata(url, status) {
   await page.waitForFunction(({ url, status }) => JSON.parse(localStorage.getItem('library-store-v1')).state.posts
     .find(p => p.url === url)?.metadataStatus === status, { url, status });
@@ -202,8 +209,7 @@ try {
   // The first import remains usable even when SQLite writes fail. Neither
   // classification nor metadata may run until the durable write succeeds.
   await control('fail-on');
-  await page.getByLabel('Import bookmarks HTML').setInputFiles(initialHtml);
-  await page.getByRole('status').filter({ hasText: 'Bookmark import complete — 4 new' }).waitFor();
+  assert.equal((await imported(initialHtml)).added, 4);
   await page.getByRole('button', { name: 'Retry SQLite save', exact: true }).waitFor();
   assert.equal((await state()).posts.length, 4);
   assert.ok(Object.keys((await state()).pending).length);
@@ -268,8 +274,7 @@ try {
   pass('Real metadata after durable classification; meaningful title/note preserved; failure/empty honest; classifier failure independent');
 
   await page.goto(base + '/library/settings');
-  await page.getByLabel('Select copied Chromium Bookmarks file').setInputFiles(chromiumFile);
-  await page.getByRole('status', { name: 'Chromium import result' }).filter({ hasText: '1 new' }).waitFor();
+  assert.equal((await imported(chromiumFile)).added, 1);
   await waitMetadata(fixture + '/chromium', 'enriched');
   await page.getByLabel('Import Telegram JSON').setInputFiles(telegramFile);
   await page.getByRole('status', { name: 'Telegram import result' }).filter({ hasText: '1 new' }).waitFor();
@@ -277,8 +282,7 @@ try {
   await page.getByRole('button', { name: 'Refresh Telegram Saved Messages', exact: true }).click();
   await page.getByRole('status', { name: 'Telegram refresh result' }).filter({ hasText: '1 new links' }).waitFor();
   await waitMetadata(fixture + '/refresh', 'enriched');
-  await page.getByLabel('Import bookmarks HTML').setInputFiles(htmlFile([[ready.instagram, 'Owner Instagram title']]));
-  await page.getByRole('status').filter({ hasText: 'Bookmark import complete — 1 new' }).waitFor();
+  assert.equal((await imported(htmlFile([[ready.instagram, 'Owner Instagram title']]))).added, 1);
   await waitMetadata(ready.instagram, 'enriched');
   posts = await snapshot('all-imports', 8);
   for (const [path, title, description, source] of [
@@ -326,10 +330,8 @@ try {
   const countBeforeDuplicates = enrichCount();
   const networkBeforeDuplicates = (await control('events')).httpRequests.length;
   await page.goto(base + '/library/settings');
-  await page.getByLabel('Import bookmarks HTML').setInputFiles(initialHtml);
-  await page.getByRole('status').filter({ hasText: 'Bookmark import complete — 0 new' }).waitFor();
-  await page.getByLabel('Select copied Chromium Bookmarks file').setInputFiles(chromiumFile);
-  await page.getByRole('status', { name: 'Chromium import result' }).filter({ hasText: '0 new' }).waitFor();
+  assert.equal((await imported(initialHtml)).added, 0);
+  assert.equal((await imported(chromiumFile)).added, 0);
   await page.getByLabel('Import Telegram JSON').setInputFiles(telegramFile);
   await page.getByRole('status', { name: 'Telegram import result' }).filter({ hasText: '0 new' }).waitFor();
   await page.getByRole('button', { name: 'Refresh Telegram Saved Messages', exact: true }).click();
@@ -370,8 +372,7 @@ try {
   // it still calls production Flask/HTTP; late completion must not resurrect it.
   await page.goto(base + '/library/settings');
   gate = { url: fixture + '/delete', started: deferred(), release: deferred() };
-  await page.getByLabel('Import bookmarks HTML').setInputFiles(htmlFile([['/delete', 'Disposable metadata record']]));
-  await page.getByRole('status').filter({ hasText: 'Bookmark import complete — 1 new' }).waitFor();
+  assert.equal((await imported(htmlFile([['/delete', 'Disposable metadata record']]))).added, 1);
   await bound(gate.started.promise, 15000, 'disposable metadata request');
   const disposable = (await state()).posts.find(p => p.url === gate.url);
   await page.getByTitle('Every saved link, archived ones included', { exact: true }).click();
@@ -389,8 +390,7 @@ try {
   await page.getByRole('button', { name: 'Re-sync from SQLite', exact: true }).click();
   assert.deepEqual(await snapshot('deleted-inflight', 8, []), recovered);
   assert.deepEqual((await state()).deletedUrls, [disposable.url]);
-  await page.getByLabel('Import bookmarks HTML').setInputFiles(htmlFile([['/delete', 'Disposable metadata record']]));
-  await page.getByRole('status').filter({ hasText: 'Bookmark import complete — 0 new' }).waitFor();
+  assert.equal((await imported(htmlFile([['/delete', 'Disposable metadata record']]))).added, 0);
   assert.deepEqual(await snapshot('deleted-reimport', 8, []), recovered);
   await page.reload();
   assert.deepEqual(await snapshot('deleted-reload', 8, []), recovered);

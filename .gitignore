@@ -53,6 +53,8 @@ __pycache__/
 
 # Runtime cache and logs; deleting an index entry must preserve local files
 /thumb_cache/
+/archive_store/
+/video_helper_store/
 *.log
 /vibe_images/
 /Claude outputs/

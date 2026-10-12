@@ -1,63 +1,12 @@
 /**
  * Frozen store migrations.
  *
- * A migration is a historical artifact: it has to keep behaving identically
- * forever, so the mapping below is hard-coded rather than fetched from the API.
- * It mirrors the consolidation already applied to SQLite (taxonomy_plan.json):
- * 31 categories that had been grown one link at a time, collapsed onto 9
- * browsable shelves.
- *
- * Without this, the SQLite side and the persisted browser store disagree — the
- * DB says `arts-culture` while localStorage still says `folkloremythology`.
+ * A migration is a historical artifact: it keeps behaving the same for every
+ * store written before it. Stores from before the default shelves (version 0)
+ * get those shelves; every other shelf in them is kept as one the owner made,
+ * and the server's library brings the links' shelves up to date on the next sync.
  */
 import type { Category, SavedPost } from "../types";
-
-/** Old category name → canonical shelf. */
-export const SHELF_MERGE: Record<string, string> = {
-  "food-recipes": "food-drink",
-  coffee: "food-drink",
-
-  technology: "technology",
-  science: "technology",
-  automotive: "technology",
-
-  socialmedia: "social-media",
-
-  fitness: "health-fitness",
-  health: "health-fitness",
-  biohacking: "health-fitness",
-  "self-improvement": "health-fitness",
-
-  art: "arts-culture",
-  music: "arts-culture",
-  filmproduction: "arts-culture",
-  designtips: "arts-culture",
-  folklore: "arts-culture",
-  folkloremythology: "arts-culture",
-  philosophy: "arts-culture",
-
-  humor: "entertainment",
-  news: "entertainment",
-  modelas: "entertainment",
-  adultcontent: "entertainment",
-
-  finance: "business-money",
-  business: "business-money",
-  legal: "business-money",
-  localbusiness: "business-money",
-  communityresources: "business-money",
-
-  fashion: "style-beauty",
-  haircare: "style-beauty",
-  naturalcosmetics: "style-beauty",
-
-  travel: "travel",
-
-  // No shelf to join.
-  gardening: "other",
-  other: "other",
-  uncategorized: "uncategorized",
-};
 
 /** The canonical shelves, in the order they should appear in the sidebar. */
 export const CANONICAL_SHELVES: { name: string; description: string }[] = [
@@ -66,7 +15,7 @@ export const CANONICAL_SHELVES: { name: string; description: string }[] = [
   { name: "social-media", description: "Platform tactics, growth, creators and content strategy." },
   { name: "health-fitness", description: "Training, medical, wellness, biohacking, self-improvement." },
   { name: "arts-culture", description: "Art, music, film, design, folklore and philosophy." },
-  { name: "entertainment", description: "Humour, news, models and adult content." },
+  { name: "entertainment", description: "Humour, news, games, TV and things to enjoy." },
   { name: "business-money", description: "Finance, business, legal and local commerce." },
   { name: "style-beauty", description: "Fashion, hair and natural cosmetics." },
   { name: "travel", description: "Destinations, trips and places to go." },
@@ -89,12 +38,8 @@ export function migrateToCanonicalShelves(
   persisted: PersistedLibrary,
   palette: string[],
 ): PersistedLibrary {
-  // An unknown name is one the user made by hand, so it survives untouched.
-  const shelfFor = (name: string) => {
-    const n = norm(name);
-    if (!n) return "uncategorized";
-    return SHELF_MERGE[n] ?? n;
-  };
+  // A name that isn't a default shelf is one the owner made, so it survives untouched.
+  const shelfFor = (name: string) => norm(name) || "uncategorized";
 
   const posts = (persisted.posts ?? []).map(p => {
     const mapped = [...new Set((p.categories ?? []).map(shelfFor))];
@@ -114,7 +59,7 @@ export function migrateToCanonicalShelves(
 
   const canonIds = new Set(canon.map(c => c.id));
   const custom = (persisted.categories ?? [])
-    .filter(c => !canonIds.has(c.id) && !(norm(c.id) in SHELF_MERGE))
+    .filter(c => !canonIds.has(c.id) && !canonIds.has(norm(c.id)) && c.id !== "other" && c.id !== "uncategorized")
     .map((c, i) => ({ ...c, order: canon.length + i }));
 
   return { ...persisted, posts, categories: [...canon, ...custom, ...RESERVED_SHELVES] };

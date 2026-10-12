@@ -1,4 +1,4 @@
-// Quitting the installed app: a power button in the sidebar footer (and the
+// Quitting the installed app: "Quit app" in the menu behind the initials in the top bar (and the
 // Settings control) open one confirmation; pending SQLite changes block the quit
 // until saved; a confirmed quit ends on a "stopped" screen. The packaged runtime
 // is simulated: its instance meta tag and /api/runtime endpoints are mocked.
@@ -51,20 +51,19 @@ try {
 
   await page.goto(base + '/');
   await page.getByRole('status', { name: 'SQLite save status' }).filter({ hasText: /Library saved to SQLite/ }).waitFor();
-  const power = page.locator('aside').getByRole('button', { name: 'Quit app' });
-  const dialog = page.getByRole('dialog', { name: 'Quit Super Bookmark Manager?' });
+  // Quit sits in the menu behind the initials, apart from the everyday items.
+  const menuButton = page.locator('header.topnav').getByRole('button', { name: 'Menu' });
+  const power = { click: async () => { await menuButton.click(); await page.getByRole('menu', { name: 'Menu' }).getByRole('menuitem', { name: 'Quit app' }).click(); } };
+  const dialog = page.getByRole('dialog', { name: 'Quit SuperBookmarks?' });
 
-  await check('a power button sits in the sidebar footer, in both sidebar widths', async () => {
-    await power.waitFor();
-    const footer = await page.locator('.sidebar-footer').boundingBox();
-    const box = await power.boundingBox();
-    assert.ok(box.y >= footer.y && box.y + box.height <= footer.y + footer.height + 1, 'inside the footer');
-    assert.equal(await power.getAttribute('title'), 'Quit Super Bookmark Manager');
-    await page.locator('.sidebar-footer').getByTitle('Collapse').click();
-    await power.waitFor();
-    const narrow = await page.locator('aside').boundingBox(), b = await power.boundingBox();
-    assert.ok(b.x >= narrow.x && b.x + b.width <= narrow.x + narrow.width, 'fits the collapsed rail');
-    await page.locator('.sidebar-footer').getByTitle('Expand').click();
+  await check('Quit app sits in the top bar menu, after a divider', async () => {
+    await menuButton.click();
+    const menu = page.getByRole('menu', { name: 'Menu' });
+    const items = await menu.getByRole('menuitem').allTextContents();
+    assert.equal(items.at(-1).trim(), 'Quit app', 'last item');
+    assert.equal((await menu.locator('hr + button').textContent()).trim(), 'Quit app', 'set apart by a divider');
+    await page.keyboard.press('Escape');
+    await menu.waitFor({ state: 'detached' });
   });
 
   await check('it asks first; Cancel and Escape quit nothing', async () => {
@@ -97,10 +96,10 @@ try {
   await check('the Settings control opens the same confirmation, and quitting ends on a stopped screen', async () => {
     failWrites = false;
     await page.goto(base + '/library/settings');
-    await page.getByRole('button', { name: 'Quit Super Bookmark Manager', exact: true }).click();
+    await page.getByRole('button', { name: 'Quit SuperBookmarks', exact: true }).click();
     await dialog.waitFor();
     await dialog.getByRole('button', { name: /Save and quit|Quit now/ }).click();
-    await page.getByRole('alertdialog').getByText('Super Bookmark Manager has stopped').waitFor({ timeout: 15000 });
+    await page.getByRole('alertdialog').getByText('SuperBookmarks has stopped').waitFor({ timeout: 15000 });
     assert.deepEqual(quits, [{ confirm: true }]);
     const saved = await (await fetch(base + '/api/library')).json();
     assert.ok(saved.posts.some(p => p.url === 'https://example.invalid/owned'), 'pending link was saved before quitting');
@@ -110,8 +109,9 @@ try {
   await check('a plain source run shows no Quit button', async () => {
     const plain = await context.browser().newPage();
     await plain.goto(base + '/');
-    await plain.locator('.sidebar-footer').waitFor();
-    assert.equal(await plain.getByRole('button', { name: 'Quit app' }).count(), 0);
+    await plain.locator('header.topnav').getByRole('button', { name: 'Menu' }).click();
+    await plain.getByRole('menu', { name: 'Menu' }).waitFor();
+    assert.equal(await plain.getByRole('menuitem', { name: 'Quit app' }).count(), 0);
     await plain.close();
   });
 

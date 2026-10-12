@@ -102,8 +102,13 @@ const cooking = byPath('/cooking'), programming = byPath('/programming');
 const results = [], externalTargets = [];
 let expectedExternal;
 const searchBox = () => page.getByPlaceholder('Search… ( / )');
-// Filters live in the main sidebar since the feed revamp; shelves are links, lists are buttons.
-const filters = () => { const nav = page.getByRole('complementary', { name: 'Navigation' }); return { getByRole: (_role, opts) => nav.getByRole('button', opts).or(nav.getByRole('link', opts)) }; };
+// Filters: Favourites is a top-bar tab; shelves, lists and platforms are links on the All shelves page.
+const filters = () => ({ getByRole: (_role, opts) => ({ click: async () => {
+  const sections = page.getByRole('navigation', { name: 'Sections' });
+  if (String(opts.name) === String(/^Favorites /)) return sections.getByRole('link', { name: 'Favourites' }).click();
+  await sections.getByRole('link', { name: 'All shelves' }).click();
+  await page.getByRole('link', opts).first().click();
+} }) });
 const drawer = () => page.getByRole('dialog', { name: 'Saved post detail' });
 async function check(name, test) {
   if (process.env.C6_CHECK && name !== process.env.C6_CHECK && name !== 'fixture isolation and runtime errors') return;
@@ -275,7 +280,7 @@ try {
   });
   await check('fixture isolation and runtime errors', async () => {
     assert.deepEqual(errors, []); assert.deepEqual(denied, []);
-    assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers'].includes(r.path)));
+    assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers', '/api/archive'].includes(r.path)));
     assert.deepEqual((await control('snapshot')).result.blocked, []);
     return 'no provider/personal/external network access or uncaught browser errors';
   });

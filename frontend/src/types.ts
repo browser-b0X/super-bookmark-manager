@@ -47,6 +47,9 @@ export interface SavedPost {
 
   userNotes?: string;
   aiSummary?: string;
+  /** When "Tidy up with AI" last looked at this link and the owner applied that run: a link the AI
+   *  couldn't place isn't asked about again until its preview changes (enrichedAt is newer). */
+  aiCheckedAt?: string;
   /** The title before an accepted AI clean-up, so it can be restored. */
   originalTitle?: string;
   /** Place in the owner's own order ("My order"); lower comes first. */
@@ -55,6 +58,12 @@ export interface SavedPost {
   createdAt: string;
   updatedAt: string;
   lastOpenedAt?: string;
+  /** How many times the link was opened from the app. */
+  openCount?: number;
+  /** "Follow up by": a calendar day (YYYY-MM-DD) on this computer. */
+  followUpAt?: string;
+  /** Kept in the quick row on Home. */
+  useOften?: boolean;
   metadataStatus: MetadataStatus;
   metadataError?: string;
 
@@ -63,7 +72,7 @@ export interface SavedPost {
   /** Import run that created this post (for history and undo). */
   importBatchId?: string;
 
-  fieldSources?: Partial<Record<"title" | "description" | "thumbnailUrl", FieldSource>>;
+  fieldSources?: Partial<Record<"title" | "description" | "thumbnailUrl" | "status", FieldSource>>;
   siteName?: string;
   author?: string;
   publishedAt?: string;
@@ -79,6 +88,24 @@ export interface SavedPost {
   metadataAttempts?: number;
   /** Earliest time a failed enrichment may be retried automatically. */
   metadataRetryAt?: string;
+  /** When a preview fetch the owner asked for ("Fetch missing previews") last failed; cleared when a fetch succeeds. */
+  metadataTriedAt?: string;
+
+  /**
+   * Saved copy of the page (archive.py). `pending`: wanted, not made yet (the
+   * copy queue picks these up, also after a restart). The file itself lives in
+   * the app's data folder; `archiveKey` is its name there.
+   */
+  archiveStatus?: "pending" | "saved" | "failed" | "too_large";
+  archiveKey?: string;
+  archivedAt?: string;
+  archiveBytes?: number;
+  /** Why the last attempt failed (a fixed code). Kept beside an older copy when an update fails. */
+  archiveError?: string;
+  /** The page builds itself with scripts, so the copy holds little. */
+  archiveLimited?: boolean;
+  /** A saved social post whose video wasn't kept (no video helper, or the video failed). */
+  archiveNoVideo?: boolean;
 }
 
 export interface Category {
@@ -104,7 +131,7 @@ export interface SavedView {
 }
 
 export interface LibraryFilter {
-  kind?: "all" | "inbox" | "to-review" | "in-progress" | "reference" | "archived" | "favorites" | "category" | "tag" | "platform" | "project" | "uncategorized";
+  kind?: "all" | "inbox" | "to-review" | "in-progress" | "reference" | "archived" | "favorites" | "category" | "tag" | "platform" | "project" | "uncategorized" | "followup";
   categoryId?: string;
   tag?: string;
   platform?: Platform;

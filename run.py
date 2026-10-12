@@ -95,8 +95,10 @@ def do_serve():
 
 
 def main():
+    from tls_trust import use_system_trust
+    use_system_trust()  # check website certificates the way the operating system does
     parser = argparse.ArgumentParser(
-        description="Super Bookmark Manager. Default: serve only; no automatic Telegram/provider work.",
+        description="SuperBookmarks. Default: serve only; no automatic Telegram/provider work.",
         epilog="Serve a prebuilt app: py -3.12 run.py --serve-only (no Telegram/provider work). "
                "Build first in frontend: npm run build. SAVED_POSTS_DB_PATH overrides the SQLite file.",
     )

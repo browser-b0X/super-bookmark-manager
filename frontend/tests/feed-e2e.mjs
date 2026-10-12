@@ -1,5 +1,5 @@
 // Feed revamp: new-links strip on top of the library, hover detail cells,
-// drag-to-reorder ("My order"), filters in the main sidebar. Synthetic data only.
+// drag-to-reorder ("My order"), filters on the All shelves page. Synthetic data only.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp } from 'node:fs/promises';
@@ -44,32 +44,56 @@ try {
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   await page.goto(base + '/');
   await page.getByRole('status', { name: 'SQLite save status' }).filter({ hasText: /Library saved to SQLite/ }).waitFor();
-  const rail = page.getByRole('region', { name: /New to sort/ });
+  const deck = page.getByRole('region', { name: 'New to sort' });
   const grid = () => page.locator('.tile-grid article');
+  const status = async id => (await api()).posts.find(p => p.id === id).status;
+  const synced = () => page.waitForFunction(() => !Object.keys(JSON.parse(localStorage.getItem('library-store-v1')).state.pending).length);
 
-  await check('new links ride in the strip; the grid holds the rest', async () => {
-    await rail.waitFor();
-    // Six new links, each shown once for people and assistive tech (the loop copy is hidden).
-    assert.equal(await rail.locator('article:not([aria-hidden])').count(), 6);
-    assert.equal(await grid().count(), 10);
-    assert.equal(await page.locator('.tile-grid a[href="/library/item/f0"]').count(), 0);
+  await check('Home shows new links one at a time, Up next, and the shelves as rows', async () => {
+    await deck.waitFor();
+    assert.equal(await deck.locator('article[data-post-id]').getAttribute('data-post-id'), 'f0', 'newest first');
+    assert.match(await deck.innerText(), /1 of 6 · from your browser/);
+    const upNext = page.getByRole('region', { name: 'Up next' });
+    assert.deepEqual(await upNext.getByRole('listitem').locator('b').allTextContents(), ['Story 1', 'Story 2', 'Story 3']);
+    assert.match(await upNext.getByRole('link', { name: /See all 6/ }).getAttribute('href'), /\/library\/inbox$/);
+    for (const [shelf, n] of [['technology', 5], ['travel', 5]]) {
+      const row = page.getByRole('region', { name: shelf });
+      assert.match(await row.innerText(), new RegExp(`${n} links`));
+      assert.equal(await row.getByRole('listitem').count(), n);
+    }
+    assert.equal(await page.locator('.shelf-row a[href="/library/item/f0"]').count(), 0, 'new links are not in the rows yet');
   });
-  await check('the strip pauses while the pointer is on it', async () => {
-    const state = () => rail.locator('.rail__track').evaluate(el => getComputedStyle(el).animationPlayState);
-    assert.equal(await state(), 'running');
-    const box = await rail.locator('.rail__viewport').boundingBox();
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.waitForFunction(el => getComputedStyle(el).animationPlayState === 'paused', await rail.locator('.rail__track').elementHandle());
-    await page.mouse.move(5, 5);
-    await rail.getByRole('button', { name: 'Pause' }).click();
-    assert.equal(await state(), 'paused');
+  await check('the keyboard sorts: → keeps, ← archives, ↓ later, Z undoes, Enter opens', async () => {
+    await page.keyboard.press('ArrowRight');
+    await deck.locator('article[data-post-id="f1"]').waitFor();
+    await page.keyboard.press('ArrowLeft');
+    await deck.locator('article[data-post-id="f2"]').waitFor();
+    await page.keyboard.press('ArrowDown');
+    await deck.locator('article[data-post-id="f3"]').waitFor();
+    assert.match(await deck.innerText(), /4 of 6/);
+    await synced();
+    assert.deepEqual([await status('f0'), await status('f1'), await status('f2')], ['reference', 'archived', 'to-review']);
+    await page.keyboard.press('z');
+    await deck.locator('article[data-post-id="f2"]').waitFor();
+    await synced();
+    assert.equal(await status('f2'), 'inbox');
+    await page.keyboard.press('Enter');
+    await page.getByRole('dialog', { name: 'Saved post detail' }).waitFor();
+    assert.match(page.url(), /\/library\/item\/f2$/);
+    await page.keyboard.press('Escape');
+    await page.waitForURL(base + '/');
+    await deck.locator('article[data-post-id="f2"]').waitFor();
   });
-  await check('keeping a link from the strip moves it into the library', async () => {
-    await rail.getByRole('button', { name: 'Keep Story 0' }).click();
-    await page.waitForFunction(() => document.querySelectorAll('.tile-grid article').length === 11);
-    await page.waitForFunction(() => !Object.keys(JSON.parse(localStorage.getItem('library-store-v1')).state.pending).length);
-    assert.equal((await api()).posts.find(p => p.id === 'f0').status, 'reference');
+  await check('the buttons do the same, and Keep in Up next files a link without opening it', async () => {
+    await deck.getByRole('button', { name: 'Keep: Story 2' }).click();
+    await deck.locator('article[data-post-id="f3"]').waitFor();
+    await page.getByRole('region', { name: 'Up next' }).getByRole('button', { name: 'Keep Story 5' }).click();
+    await synced();
+    assert.deepEqual([await status('f2'), await status('f5')], ['reference', 'reference']);
+    assert.equal(await page.getByRole('region', { name: 'technology' }).getByRole('listitem').count(), 7, 'kept links join their shelf row');
   });
+  await page.goto(base + '/library');
+  await grid().first().waitFor();
   await check('hovering a tile opens a details cell without covering the picture', async () => {
     const tile = grid().first();
     await tile.hover();
@@ -97,13 +121,16 @@ try {
     await page.getByRole('status', { name: 'SQLite save status' }).filter({ hasText: /Library saved to SQLite/ }).waitFor();
     assert.deepEqual(await grid().evaluateAll(els => els.map(e => e.dataset.postId)), after);
   });
-  await check('shelves, lists and platforms filter from the main sidebar', async () => {
-    const nav = page.getByRole('complementary', { name: 'Navigation' });
-    await nav.getByRole('link', { name: /^travel/ }).click();
+  await check('shelves, lists and platforms filter from the All shelves page', async () => {
+    const sections = page.getByRole('navigation', { name: 'Sections' });
+    await sections.getByRole('link', { name: 'All shelves' }).click();
+    await page.waitForURL(/\/shelves$/);
+    await page.getByRole('link', { name: /^travel \d/ }).click();
     await page.waitForURL(/\/library\/category\//);
     const ids = await page.locator('main article[data-post-id]').evaluateAll(els => els.map(e => e.dataset.postId));
     assert.ok(ids.length > 0 && ids.every(id => Number(id.slice(1)) % 2 === 1));
-    await nav.getByRole('button', { name: /^Kept/ }).click();
+    await sections.getByRole('link', { name: 'All shelves' }).click();
+    await page.getByRole('complementary', { name: 'Lists, platforms and saved views' }).getByRole('link', { name: /^Kept / }).click();
     await page.waitForURL(/status=reference/);
     assert.equal(await page.locator('.library-filters, nav[aria-label="Library filters"]').count(), 0, 'no second filter column');
   });

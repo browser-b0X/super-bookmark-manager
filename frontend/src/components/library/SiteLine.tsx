@@ -6,8 +6,12 @@ function shortDate(iso?: string): string {
   if (!iso) return "";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
+  // A page that gives only a day ("2026-03-04") is stored as midnight UTC: show that
+  // day as written, not the evening before in the Americas.
+  const dayOnly = /^\d{4}-\d{2}-\d{2}(?:T00:00:00(?:\.000)?Z)?$/.test(iso);
   const sameYear = date.getFullYear() === new Date().getFullYear();
-  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }) });
+  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }),
+    ...(dayOnly ? { timeZone: "UTC" } : {}) });
 }
 
 /** Locally cached site icon; falls back to nothing rather than a broken image. */
