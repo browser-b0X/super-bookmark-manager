@@ -3,6 +3,9 @@
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-dark.webp">
     <img src="docs/assets/readme-hero-light.webp" width="840" alt="SuperBookmarks. Saved for a reason. Found when it matters. Your bookmarks, Telegram Saved Messages and WhatsApp links in one library on your Windows PC. Free, open source, runs on your PC. Beside it, the app's Home screen with sample links.">
   </picture>
+
+https://github.com/user-attachments/assets/2b40dee2-304f-4e44-9e5c-49e4531d1da5
+
 </p>
 
 <p align="center">
