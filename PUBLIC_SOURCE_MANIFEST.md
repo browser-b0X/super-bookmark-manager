@@ -1,6 +1,6 @@
 # SuperBookmarks — public source manifest
 
-Exact curated source set for the public repository: **437 files** (v0.4.0).
+Exact curated source set for the public repository: **463 files** (v0.4.0).
 Only these files may enter the public branch. Listing a file here is not by itself
 permission to commit, push or publish.
 
@@ -48,9 +48,35 @@ documented Python/Playwright overrides. See BUILDING.md.
 - `config.py`
 - `creator_profile.py`
 - `docs/.nojekyll`
+- `docs/assets/demo-dark-still.webp`
+- `docs/assets/demo-dark.mp4`
+- `docs/assets/demo-dark.webm`
+- `docs/assets/demo-light-still.webp`
+- `docs/assets/demo-light.mp4`
+- `docs/assets/demo-light.webm`
 - `docs/assets/favicon.svg`
-- `docs/assets/flow-portrait-dark.webp`
-- `docs/assets/flow-portrait-light.webp`
+- `docs/assets/film-poster.webp`
+- `docs/assets/fonts/figtree-OFL.txt`
+- `docs/assets/fonts/figtree-latin-400-normal.woff2`
+- `docs/assets/fonts/figtree-latin-600-normal.woff2`
+- `docs/assets/fonts/figtree-latin-700-normal.woff2`
+- `docs/assets/pictures/azores.svg`
+- `docs/assets/pictures/batard.svg`
+- `docs/assets/pictures/boring.svg`
+- `docs/assets/pictures/cabin.svg`
+- `docs/assets/pictures/cliff-article.svg`
+- `docs/assets/pictures/ferry.svg`
+- `docs/assets/pictures/focaccia.svg`
+- `docs/assets/pictures/lisbon.svg`
+- `docs/assets/pictures/local-first.svg`
+- `docs/assets/pictures/noodles.svg`
+- `docs/assets/pictures/plant.svg`
+- `docs/assets/pictures/ridge.svg`
+- `docs/assets/pictures/salad.svg`
+- `docs/assets/pictures/seeded-rye.svg`
+- `docs/assets/pictures/synth.svg`
+- `docs/assets/pictures/type.svg`
+- `docs/assets/pictures/watch.svg`
 - `docs/assets/readme-flow-dark.webp`
 - `docs/assets/readme-flow-light.webp`
 - `docs/assets/release-v0.3.0-dark.webp`

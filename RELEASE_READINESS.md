@@ -1,16 +1,17 @@
 # SuperBookmarks — release readiness
 
-## v0.4.0 — status 2026-11-09
+## v0.4.0 — status 2026-11-17
 
-**Source, the final build (r10) and the public commit are ready. Open: the owner's Claude
-Desktop check (checklist, step 1), then his push and the release.**
+**Released on 2026-11-17: tag `v0.4.0` on `5fc2b3e`, with the r10 installer and four more files,
+each verified by downloading it from the release. The redesigned website follows as its own
+public commit.**
 
-The release text is RELEASE_NOTES_DRAFT.md, to paste as it is. The public commit is prepared
-the same way as for v0.3.0, as the local branch `public-release-v0.4.0`: one commit on top of
-the published `main` (`398f63b`: v0.3.0 plus the video line the owner added to the README)
-holding exactly the files in PUBLIC_SOURCE_MANIFEST.md (437), no private history. It was
-remade from the final `v0.4.0` on 2026-11-09, and the 437 files were scanned again for the
-owner's paths, names and addresses, for keys and for session links: none.
+The release text is RELEASE_NOTES_DRAFT.md. The release's public commit `5fc2b3e` was made the
+same way as for v0.3.0: one commit on top of the published `main` (`398f63b`: v0.3.0 plus the
+video line the owner added to the README) holding exactly the 437 files the list named then,
+no private history, scanned for the owner's paths, names and addresses, for keys and for
+session links: none. The website update is one more such commit; PUBLIC_SOURCE_MANIFEST.md
+now lists 463 files.
 
 The final candidate is r10, built 2026-11-09 from a clean copy of `3f158a2`, with the Get
 started card, the reader fixes for real X, Instagram and TikTok pages and, since r9, Home's

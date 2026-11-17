@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#1a1a2e" media="(prefers-color-scheme: dark)">
-  <meta name="theme-color" content="#f1f0fa" media="(prefers-color-scheme: light)">
-  <meta name="description" content="SuperBookmarks gathers browser bookmarks, Telegram Saved Messages and WhatsApp links into one library on your own Windows PC: new links one at a time, shelves of pictures, and an offline copy of every page.">
+  <meta name="theme-color" content="#0b0a0f" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#faf9fe" media="(prefers-color-scheme: light)">
+  <meta name="description" content="SuperBookmarks gathers browser bookmarks, Telegram Saved Messages, WhatsApp links and the posts you save from X, Instagram and TikTok into one library on your own Windows PC: new links one at a time, shelves of pictures, and an offline copy of every page.">
   <meta property="og:title" content="SuperBookmarks — Saved for a reason.">
   <meta property="og:description" content="Browser bookmarks, Telegram and WhatsApp links in one library on your own Windows PC, with offline copies. Free and open source, with optional free AI tidying.">
   <meta property="og:type" content="website">
@@ -17,654 +17,734 @@
   <meta name="twitter:card" content="summary_large_image">
   <title>SuperBookmarks — Saved for a reason.</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="assets/fonts/figtree-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
   <script>
     // Follow the system theme unless the visitor picked one here before.
     (() => {
       let theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
       try { theme = localStorage.getItem("sbm-site-theme") || theme; } catch {}
       document.documentElement.dataset.theme = theme;
+      document.documentElement.classList.add("js");
     })();
   </script>
   <style>
+    @font-face { font-family: "Figtree"; font-style: normal; font-weight: 400; font-display: swap; src: url("assets/fonts/figtree-latin-400-normal.woff2") format("woff2"); }
+    @font-face { font-family: "Figtree"; font-style: normal; font-weight: 600; font-display: swap; src: url("assets/fonts/figtree-latin-600-normal.woff2") format("woff2"); }
+    @font-face { font-family: "Figtree"; font-style: normal; font-weight: 700; font-display: swap; src: url("assets/fonts/figtree-latin-700-normal.woff2") format("woff2"); }
+
+    /* Two colours from the jar: sky is the brand's canvas, violet is every action. Everything else is the app's own
+       midnight or morning, and the colour comes from the links' pictures. */
     :root {
-      --bg: #1a1a2e; --bg-2: #20203a; --panel: rgba(32, 31, 56, .72); --panel-solid: #1f1e36;
-      --ink: #f3f1fb; --dim: #b4b1cf; --faint: #8582a6; --line: rgba(214, 205, 255, .12); --line-hi: rgba(214, 205, 255, .24);
-      --pink: #f72585; --cyan: #4cc9f0; --purple: #7209b7; --blue: #4361ee; --lav: #b3a6ff;
-      --button: #4361ee; --button-hi: #5a74ff; --geo-alpha: .32; --spark: #fff;
-      --shadow: 0 30px 80px rgba(5, 4, 20, .55);
+      --canvas: #1a1a2e; --band: #211f38; --raised: #26243f;
+      --ink: #f3f1fb; --dim: #b8b5d3; --faint: #9895b8;
+      --line: rgba(214, 205, 255, .14); --line-hi: rgba(214, 205, 255, .26);
+      --link: #b3a6ff; --focus: #b3a6ff; --step: #9c8cf2;
+      --violet: #6f5ce0; --violet-hi: #7f6df0;
+      --sky: #4cc9f0; --on-sky: #11102a; --on-sky-dim: #173246;
+      --invert: #f3f1fb; --on-invert: #1b1930; --on-invert-dim: #4c4868; --invert-link: #5a46c8;
+      --stage: linear-gradient(180deg, #0b0a0f 0%, #0c1016 16%, #0e1c28 34%, #14354a 56%, #215679 80%, #2a6491 100%);
+      --stage-glow: radial-gradient(52% 46% at 86% 104%, rgba(177, 117, 240, .40), transparent 72%);
+      --on-stage: #ffffff; --on-stage-dim: #f0eefb; --stage-line: rgba(255, 255, 255, .3);
+      --jar-a: #9c8cf2; --jar-b: #4cc9f0;
+      /* The sorting card is the app itself, drawn with the app's own tokens. */
+      --app-solid: #16151f; --app-surface: rgba(22, 21, 34, .78); --app-track: rgba(36, 34, 54, .72);
+      --app-border: rgba(214, 205, 255, .09); --app-border-hi: rgba(214, 205, 255, .18);
+      --app-text: #eceaf6; --app-dim: #a29fba; --app-accent: #9c8cf2; --app-accent-text: #9c8cf2; --app-accent-bg: rgba(156, 140, 242, .16);
+      --app-on-accent: #1a1a2e; --app-shadow: 0 18px 44px rgba(3, 2, 12, .55); --app-green: #4ade80;
+      --radius-tile: 3px;
       color-scheme: dark;
     }
     [data-theme="light"] {
-      --bg: #f1f0fa; --bg-2: #e9e7f8; --panel: rgba(255, 255, 255, .78); --panel-solid: #ffffff;
-      --ink: #1b1930; --dim: #57537a; --faint: #8a86a8; --line: rgba(40, 28, 90, .12); --line-hi: rgba(40, 28, 90, .22);
-      --lav: #5b48d6; --button: #4361ee; --button-hi: #3550e0; --geo-alpha: .24; --spark: #6c5bd4;
-      --shadow: 0 30px 70px rgba(46, 32, 110, .16);
+      --canvas: #f1f0fa; --band: #e7e5f6; --raised: #ffffff;
+      --ink: #1b1930; --dim: #585470; --faint: #5e5a7b;
+      --line: rgba(40, 28, 90, .14); --line-hi: rgba(40, 28, 90, .24);
+      --link: #5a46c8; --focus: #5a46c8; --step: #6e5bd8;
+      --invert: #1b1930; --on-invert: #f3f1fb; --on-invert-dim: #c3c0dc; --invert-link: #b3a6ff;
+      --stage: linear-gradient(180deg, #faf9fe 0%, #f6f4fc 18%, #eef1fa 36%, #e3ecf8 54%, #e4e3fa 72%, #e2d4fb 88%, #d9c4fb 100%);
+      --stage-glow: radial-gradient(52% 46% at 86% 104%, rgba(177, 117, 240, .22), transparent 72%);
+      --on-stage: #1b1930; --on-stage-dim: #4b4766; --stage-line: rgba(40, 28, 90, .22);
+      --jar-a: #6e5bd8; --jar-b: #2fa4d6;
+      --app-solid: #ffffff; --app-surface: rgba(255, 255, 255, .78); --app-track: rgba(241, 238, 252, .85);
+      --app-border: rgba(40, 28, 90, .09); --app-border-hi: rgba(40, 28, 90, .18);
+      --app-text: #1d1a2e; --app-dim: #585470; --app-accent: #6e5bd8; --app-accent-text: #5a46c8; --app-accent-bg: rgba(110, 91, 216, .12);
+      --app-on-accent: #ffffff; --app-shadow: 0 18px 40px rgba(46, 32, 110, .18); --app-green: #15803d;
       color-scheme: light;
     }
-    * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; scroll-padding-top: 90px; }
-    body {
-      margin: 0; background: var(--bg); color: var(--ink);
-      font-family: "Segoe UI Variable Display", "Segoe UI", Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
-      font-size: 16px; line-height: 1.6; -webkit-font-smoothing: antialiased;
-      transition: background-color .3s, color .3s;
-    }
-    a { color: inherit; }
-    img { display: block; max-width: 100%; }
-    svg { flex-shrink: 0; }
-    :focus-visible { outline: 2px solid var(--cyan); outline-offset: 4px; border-radius: 6px; }
-    ::selection { background: var(--blue); color: #fff; }
-    .wrap { width: min(1160px, calc(100% - 48px)); margin-inline: auto; }
-    .icon { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-    .skip { position: fixed; top: 12px; left: 12px; z-index: 100; padding: 10px 14px; background: #fff; color: #111; border-radius: 8px; transform: translateY(-200%); }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; scroll-padding-top: 24px; }
+    @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+    body { margin: 0; background: var(--canvas); color: var(--ink); font-family: Figtree, "Segoe UI", system-ui, -apple-system, sans-serif;
+      font-size: 20px; line-height: 1.45; letter-spacing: -.007em; -webkit-font-smoothing: antialiased; }
+    img, svg, video { display: block; max-width: 100%; }
+    a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: .2em; }
+    a:hover { text-decoration-thickness: 2px; }
+    :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: 6px; }
+    h1, h2, h3 { margin: 0; font-weight: 700; letter-spacing: -.022em; text-wrap: balance; }
+    p { margin: 0; }
+    code, kbd { font-family: "Cascadia Code", Consolas, ui-monospace, monospace; font-size: .88em; }
+    .wrap { width: min(1200px, calc(100% - 48px)); margin-inline: auto; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+    .skip { position: fixed; top: 12px; left: 12px; z-index: 50; padding: 12px 18px; border-radius: 999px; background: #fff; color: #11102a;
+      font-weight: 600; text-decoration: none; transform: translateY(-200%); }
     .skip:focus { transform: none; }
+    .icon { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
 
-    /* Geometric field — the same backdrop the app uses. */
-    .field { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
-    .field::before { content: ""; position: absolute; inset: -20%;
-      background: radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--blue) 22%, transparent), transparent 55%);
-      animation: glow 10s ease-in-out infinite; }
-    [data-theme="light"] .field::before { background: radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--blue) 12%, transparent), transparent 60%); }
-    .shape { position: absolute; opacity: var(--geo-alpha); animation: var(--a) var(--d, 16s) ease-in-out infinite; animation-delay: var(--dl, 0s); }
-    .sq { width: var(--s); height: var(--s); border: 2px solid var(--pink); border-radius: 6px; --a: spin; animation-timing-function: linear; }
-    .ci { width: var(--s); height: var(--s); border-radius: 50%; border: 2px solid var(--cyan); --a: pulse;
-      background: radial-gradient(circle, color-mix(in srgb, var(--cyan) 25%, transparent), transparent 70%); }
-    .tr { width: 0; height: 0; border-left: calc(var(--s) / 2) solid transparent; border-right: calc(var(--s) / 2) solid transparent;
-      border-bottom: calc(var(--s) * .86) solid color-mix(in srgb, var(--purple) 70%, transparent); --a: float; }
-    .re { width: var(--s); height: calc(var(--s) / 3.2); border-radius: 4px; background: color-mix(in srgb, var(--blue) 55%, transparent); --a: slide; }
-    .spark { position: absolute; width: 2px; height: 2px; border-radius: 50%; background: var(--spark); opacity: 0; animation: spark 8s ease-in-out infinite; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.35); opacity: calc(var(--geo-alpha) * .45); } }
-    @keyframes float { 0%, 100% { transform: translateY(0) rotate(0); } 50% { transform: translateY(-34px) rotate(160deg); } }
-    @keyframes slide { 0%, 100% { transform: translateX(-40px); } 50% { transform: translateX(40px); } }
-    @keyframes spark { 0%, 100% { opacity: 0; } 50% { opacity: .85; } }
-    @keyframes glow { 0%, 100% { opacity: .7; } 50% { opacity: 1; } }
+    /* Pills are for actions only; content keeps near-square corners. */
+    .pill { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 58px; padding: 0 30px; border: 0;
+      border-radius: 999px; background: var(--violet); color: #fff; font: 600 19px/1 Figtree, "Segoe UI", system-ui, sans-serif;
+      letter-spacing: -.005em; text-decoration: none; cursor: pointer; box-shadow: 0 2px 8px rgba(0, 0, 0, .15); transition: background-color .2s; }
+    .pill:hover { background: var(--violet-hi); }
+    .pill .icon { width: 22px; height: 22px; }
+    .pill--small { min-height: 44px; padding: 0 20px; font-size: 16px; box-shadow: 0 1px 4px rgba(0, 0, 0, .2); }
 
-    /* Header */
-    .header { position: sticky; top: 0; z-index: 20; backdrop-filter: blur(16px) saturate(1.2);
-      background: color-mix(in srgb, var(--bg) 78%, transparent); border-bottom: 1px solid var(--line); }
-    .nav { min-height: 72px; display: flex; align-items: center; gap: 28px; }
-    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 650; font-size: 15px; line-height: 1.2; letter-spacing: -.02em; }
-    .brand svg { width: 42px; height: 42px; }
-    .links { display: flex; gap: 26px; margin-left: auto; font-size: 14px; }
-    .links a { text-decoration: none; color: var(--dim); padding: 10px 0; }
-    .links a:hover { color: var(--ink); }
-    .tools { display: flex; align-items: center; gap: 10px; }
-    .round { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line-hi);
-      background: var(--panel); color: var(--ink); cursor: pointer; text-decoration: none; }
-    .round:hover { border-color: var(--lav); }
+    /* Header: thin, transparent and not sticky, over the stage. */
+    .site-head { position: absolute; inset: 0 0 auto; z-index: 5; color: var(--on-stage); }
+    .nav { display: flex; align-items: center; gap: 28px; min-height: 80px; }
+    .brand { display: inline-flex; align-items: center; gap: 10px; color: inherit; text-decoration: none; font-weight: 700; font-size: 19px; letter-spacing: -.02em; }
+    .brand svg { width: 36px; height: 36px; }
+    .nav-links { display: flex; gap: 26px; margin: 0 0 0 auto; padding: 0; list-style: none; font-size: 16px; }
+    .nav-links a { color: var(--on-stage-dim); text-decoration: none; padding: 10px 0; }
+    .nav-links a:hover { color: var(--on-stage); text-decoration: underline; }
+    .nav-tools { display: flex; align-items: center; gap: 12px; }
+    .icon-btn { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--stage-line);
+      background: transparent; color: inherit; cursor: pointer; }
+    .icon-btn:hover { border-color: currentColor; }
     .moon { display: none; }
     [data-theme="light"] .moon { display: block; }
     [data-theme="light"] .sun { display: none; }
 
-    .btn { display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 12px 20px; border-radius: 12px;
-      border: 1px solid var(--line-hi); background: var(--panel); color: var(--ink); text-decoration: none; font-weight: 600; font-size: 15px;
-      transition: transform .2s, background-color .2s, border-color .2s; }
-    .btn:hover { transform: translateY(-2px); border-color: var(--lav); }
-    .btn.primary { background: var(--button); border-color: transparent; color: #fff; box-shadow: 0 10px 30px color-mix(in srgb, var(--blue) 35%, transparent); }
-    .btn.primary:hover { background: var(--button-hi); }
+    /* The stage: the app's own sky, with one object on it. */
+    .stage { position: relative; background: var(--stage-glow), var(--stage); color: var(--on-stage); padding: 116px 0 84px; }
+    .stage__inner { display: flex; flex-direction: column; align-items: center; }
+    .stage__copy { text-align: center; }
+    .stage__copy h1 { font-size: clamp(30px, 3.05vw, 44px); line-height: 1.1; letter-spacing: -.03em; }
+    .stage__copy p { margin-top: 12px; color: var(--on-stage-dim); font-size: 19px; }
+    .demo { width: min(920px, 100%); margin-top: 40px; }
 
-    /* Hero */
-    .hero { padding: 84px 0 0; }
-    .hero-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 40px; }
-    .news { display: inline-flex; align-items: center; gap: 10px; padding: 7px 14px 7px 8px; border-radius: 99px; text-decoration: none;
-      border: 1px solid var(--line-hi); background: var(--panel); font-size: 13px; color: var(--dim); }
-    .news b { padding: 2px 9px; border-radius: 99px; background: var(--pink); color: #fff; font-size: 12px; font-weight: 650; }
-    .news:hover { color: var(--ink); }
-    h1 { margin: 26px 0 0; font-size: clamp(46px, 7.4vw, 92px); line-height: .98; letter-spacing: -.055em; font-weight: 700; max-width: 11ch; text-wrap: balance; }
-    .lede { max-width: 54ch; margin: 26px 0 0; color: var(--dim); font-size: 18px; line-height: 1.65; }
-    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
-    .facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; font-size: 14px; color: var(--dim); }
-    .facts li { display: flex; align-items: center; gap: 10px; }
-    .facts .icon { width: 18px; height: 18px; color: var(--cyan); }
+    .deck__head { display: flex; align-items: baseline; gap: 12px; }
+    .deck__name { font-size: 27px; font-weight: 700; letter-spacing: -.02em; }
+    .deck__count { margin-left: auto; color: var(--on-stage-dim); font-size: 15px; }
+    .deck__progress { height: 5px; margin: 10px 0 16px; border-radius: 999px; background: var(--app-track); overflow: hidden; }
+    .deck__progress span { display: block; height: 100%; border-radius: inherit; background: var(--app-accent); transition: width .35s cubic-bezier(.25, 1, .5, 1); }
+    .deck__stack { position: relative; padding-bottom: 22px; }
+    .deck__layer { position: absolute; left: 22px; right: 22px; bottom: 11px; height: 40px; border-radius: 22px; background: var(--app-surface); border: 1px solid var(--app-border); }
+    .deck__layer--3 { left: 44px; right: 44px; bottom: 0; opacity: .7; }
+    .deck__card { position: relative; z-index: 1; display: grid; grid-template-columns: 44% 1fr; min-height: 340px; overflow: hidden; border-radius: 24px;
+      background: var(--app-solid); border: 1px solid var(--app-border-hi); box-shadow: var(--app-shadow); color: var(--app-text);
+      transition: transform .23s cubic-bezier(.4, 0, .2, 1), opacity .23s cubic-bezier(.4, 0, .2, 1); }
+    .deck__card.is-in { animation: deck-in .32s cubic-bezier(.16, 1, .3, 1) backwards; }
+    @keyframes deck-in { from { opacity: 0; transform: translateY(18px) scale(.97); } }
+    .deck__card.is-leaving-archive { transform: translateX(-110%) rotate(-6deg); opacity: 0; }
+    .deck__card.is-leaving-keep { transform: translateX(110%) rotate(6deg); opacity: 0; }
+    .deck__card.is-leaving-later { transform: translateY(70%) scale(.92); opacity: 0; }
+    .deck__media { position: relative; background: var(--app-track); }
+    .deck__media img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .deck__body { display: flex; flex-direction: column; gap: 10px; padding: 26px 30px; min-width: 0; }
+    .deck__meta { color: var(--app-dim); font-size: 14px; }
+    .deck__title { font-size: 28px; font-weight: 700; line-height: 1.2; letter-spacing: -.015em; }
+    .deck__desc { color: var(--app-dim); font-size: 16px; line-height: 1.55; }
+    .deck__chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: auto; padding-top: 10px; }
+    .deck__label { color: var(--app-dim); font-size: 13px; }
+    .chip { display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 999px; font-size: 12px; font-weight: 600;
+      color: var(--app-accent-text); border: 1px solid var(--app-accent); background: var(--app-accent-bg); }
+    .deck__actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 6px; }
+    .deck__btn { display: inline-flex; align-items: center; justify-content: center; gap: 10px; height: 58px; border-radius: 18px; cursor: pointer;
+      font: 600 16px/1 Figtree, "Segoe UI", system-ui, sans-serif; background: var(--app-surface); border: 1px solid var(--app-border-hi); color: var(--app-text);
+      transition: transform .18s cubic-bezier(.34, 1.4, .64, 1), border-color .2s; }
+    .deck__btn:hover { transform: translateY(-2px); border-color: var(--app-accent); }
+    .deck__btn:active { transform: scale(.98); }
+    .deck__btn kbd { display: inline-grid; place-items: center; width: 26px; height: 22px; border-radius: 6px; border: 1.5px solid currentColor; opacity: .8; font: 600 13px/1 Figtree, sans-serif; }
+    .deck__btn--keep { background: var(--app-accent); border-color: var(--app-accent); color: var(--app-on-accent); }
+    .deck__keys { margin-top: 12px; text-align: center; color: var(--on-stage-dim); font-size: 14px; }
+    .deck__area { position: relative; }
+    .deck__area.is-done #deck-live, .deck__area.is-done .deck__keys { visibility: hidden; }
+    .deck__done { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+      padding: 28px; border-radius: 24px; text-align: center; border: 1px dashed var(--app-border-hi); background: var(--app-surface);
+      color: var(--app-dim); font-size: 17px; }
+    .deck__done p { max-width: 30em; }
+    .deck__done svg { width: 30px; height: 30px; color: var(--app-green); }
+    .deck__done b { color: var(--app-text); }
+    .deck__again { margin-top: 6px; padding: 12px 20px; border-radius: 999px; border: 1px solid var(--app-border-hi); background: transparent;
+      color: var(--app-text); font: 600 15px/1 Figtree, sans-serif; cursor: pointer; }
+    .deck__again:hover { border-color: var(--app-accent); }
+    [hidden] { display: none !important; }
 
-    .shot { margin: 56px 0 0; position: relative; }
-    .shot-frame { border-radius: 18px; overflow: hidden; border: 1px solid var(--line-hi); box-shadow: var(--shadow); background: var(--panel-solid); }
-    .shot-bar { display: flex; align-items: center; gap: 7px; padding: 11px 14px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--faint); }
-    .shot-bar i { width: 10px; height: 10px; border-radius: 50%; background: var(--line-hi); }
-    .shot-bar span { margin-left: 10px; }
-    .shot img { width: 100%; height: auto; }
+    /* The brand band: the wordmark, the promise and the download. */
+    .brandband { background: var(--sky); color: var(--on-sky); text-align: center; padding: 100px 0 108px; --focus: #11102a; }
+    .wordmark { font-size: clamp(36px, 12vw, 144px); line-height: .95; letter-spacing: -.045em; }
+    .tagline { margin-top: 20px; font-size: clamp(22px, 2.4vw, 32px); font-weight: 600; letter-spacing: -.015em; }
+    .brandband .lead { margin: 30px auto 0; max-width: 34em; color: var(--on-sky-dim); text-wrap: balance; }
+    .brandband .pill { margin-top: 38px; }
+    .brandband .fine { margin-top: 18px; font-size: 16px; color: var(--on-sky-dim); }
+    .brandband a:not(.pill) { color: var(--on-sky); font-weight: 600; }
+
+    /* Bands: one idea each, top to bottom like a printed brochure. */
+    .band { padding: 96px 0; }
+    .band--alt { background: var(--band); }
+    .band-head h2 { font-size: clamp(34px, 4.3vw, 58px); line-height: 1.03; letter-spacing: -.03em; max-width: 16em; }
+    .band-head p { margin-top: 18px; max-width: 34em; color: var(--dim); }
+    .shot { border-radius: var(--radius-tile); overflow: hidden; border: 1px solid var(--line); background: var(--band); }
+    figure { margin: 0; }
+    .shot img, .shot video { width: 100%; height: auto; }
     .img-light { display: none; }
     [data-theme="light"] .img-light { display: block; }
     [data-theme="light"] .img-dark { display: none; }
-    .shot figcaption { margin-top: 14px; font-size: 13px; color: var(--faint); }
-    .flow { margin: 40px auto 0; max-width: 960px; }
-    .flow img { width: 100%; height: auto; border-radius: 18px; border: 1px solid var(--line-hi); box-shadow: var(--shadow); }
-    @media (max-width: 640px) { .flow { max-width: 420px; } }
-    .tour { display: grid; gap: 64px; margin-top: 44px; }
-    .tour .shot { margin: 0; }
-    .tour figcaption { margin: 0 0 18px; max-width: 64ch; font-size: inherit; color: inherit; }
-    .tour h3 { margin: 0 0 8px; font-size: 22px; letter-spacing: -.025em; line-height: 1.25; }
-    .tour p { margin: 0; color: var(--dim); font-size: 15.5px; }
+    .caption { margin-top: 14px; color: var(--faint); font-size: 16px; }
 
-    /* Sources strip */
-    .sources { margin-top: 72px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
-    .sources p { margin: 0 14px 0 0; font-size: 14px; color: var(--dim); }
-    .chip { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 99px; font-size: 14px;
-      background: var(--panel); border: 1px solid var(--line); }
-    .chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+    .film { position: relative; margin-top: 48px; }
+    .film__frame { aspect-ratio: 16 / 9; border-radius: var(--radius-tile); overflow: hidden; background: #11102a; }
+    .film img, .film video { width: 100%; height: 100%; object-fit: cover; }
+    .film video { background: #11102a; }
+    .film .pill { position: absolute; left: 32px; bottom: 32px; }
 
-    section { padding: 110px 0 0; }
-    h2 { margin: 0; font-size: clamp(32px, 4.4vw, 52px); line-height: 1.05; letter-spacing: -.045em; font-weight: 700; text-wrap: balance; }
-    .sub { margin: 18px 0 0; max-width: 58ch; color: var(--dim); font-size: 17px; }
+    .wall { display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px; margin: 60px 0 0; padding: 0 3px; list-style: none; }
+    .wall li { position: relative; aspect-ratio: 4 / 3; overflow: hidden; border-radius: var(--radius-tile); background: var(--band); }
+    .wall img { width: 100%; height: 100%; object-fit: cover; }
+    /* Artwork for posts without a picture, as the app draws it (PlatformArt.tsx): colours, a motif, the site's name as text. */
+    .wall .pa { display: flex; align-items: flex-end; padding: 12px 14px; color: #fff; background: var(--pa-bg); isolation: isolate; }
+    .pa svg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; }
+    .pa::after { content: ""; position: absolute; inset: auto 0 0 0; height: 60%; z-index: -1; background: linear-gradient(to top, rgba(0, 0, 0, .32), transparent); }
+    .pa__label { display: flex; flex-direction: column; gap: 1px; }
+    .pa__name { font-weight: 700; font-size: 17px; line-height: 1.1; letter-spacing: -.01em; text-shadow: 0 1px 12px rgba(0, 0, 0, .18); }
+    .pa__kind { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: rgba(255, 255, 255, .72); }
+    .pa--instagram { --pa-bg: linear-gradient(140deg, #3b1f73 0%, #8a2a8c 42%, #d43a6c 74%, #f08a3c 100%); }
+    .pa--youtube { --pa-bg: radial-gradient(120% 100% at 80% 20%, #3b1515 0%, #1a1a1a 55%, #0f0f0f 100%); }
+    .pa--whatsapp { --pa-bg: radial-gradient(rgba(255, 255, 255, .07) 1px, transparent 1.2px) 0 0 / 12px 12px, linear-gradient(160deg, #0b3b2c, #0f6a4b 70%, #13865b); }
+    .pa--tiktok { --pa-bg: linear-gradient(180deg, #121216, #050506); }
+    .pa--telegram { --pa-bg: linear-gradient(160deg, #1b78b8, #2fa0dc 58%, #6ec9f0); }
+    .pa--reddit { --pa-bg: linear-gradient(160deg, #b83000, #f5521a 60%, #ff8448); }
+    .pa--x { --pa-bg: radial-gradient(rgba(255, 255, 255, .06) 1px, transparent 1.2px) 0 0 / 10px 10px, linear-gradient(180deg, #17191d, #000); }
+    .wall-note { margin-top: 18px; }
 
-    /* The feed, explained */
-    .story { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; margin-top: 48px; }
-    .story article { padding: 30px; border-radius: 22px; background: var(--panel); border: 1px solid var(--line); position: relative; overflow: hidden; }
-    .story article.wide { grid-column: span 2; display: grid; grid-template-columns: 1.1fr 1fr; gap: 32px; align-items: center; }
-    .story h3 { margin: 0 0 10px; font-size: 22px; letter-spacing: -.025em; line-height: 1.25; }
-    .story p { margin: 0; color: var(--dim); font-size: 15.5px; }
-    .story .tag { display: inline-block; margin-bottom: 18px; font-size: 13px; font-weight: 650; color: var(--c); }
+    .steps { display: grid; gap: 84px; margin: 64px 0 0; padding: 0; list-style: none; }
+    .words { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 16px 64px; align-items: start; }
+    .words h3 { display: flex; align-items: baseline; gap: 14px; font-size: clamp(26px, 2.9vw, 38px); line-height: 1.08; letter-spacing: -.026em; }
+    .words h2 { font-size: clamp(34px, 4.3vw, 58px); line-height: 1.03; letter-spacing: -.03em; }
+    .step__n { color: var(--step); }
+    .words p { color: var(--dim); max-width: 34em; }
+    .words p + p { margin-top: 12px; }
+    .step .shot, .step .sources, .words + .shot { margin-top: 40px; }
+    .sources { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 0; list-style: none; }
+    .sources li { display: grid; grid-template-columns: 14px 1fr; gap: 4px 12px; align-content: end; min-height: 112px; padding: 20px 22px;
+      border-radius: var(--radius-tile); background: var(--raised); }
+    .sources i { width: 14px; height: 14px; margin-top: 5px; border-radius: 2px; background: var(--c); }
+    .sources b { font-size: 20px; line-height: 1.2; }
+    .sources span { grid-column: 2; color: var(--dim); font-size: 16px; line-height: 1.35; }
+    /* A screenshot shown through a window on the part that matters, so it stays readable. */
+    .crop { position: relative; overflow: hidden; aspect-ratio: var(--ratio, 3 / 2); }
+    .crop img, .crop video { position: absolute; left: var(--x, 0%); top: var(--y, 0%); width: var(--w, 100%); max-width: none; height: auto; }
+    /* The demo loops by itself, so it gets a pause button (and plays only on request when motion is reduced). */
+    .demo-toggle { position: absolute; right: 14px; bottom: 14px; z-index: 1; width: 44px; height: 44px; display: grid; place-items: center; border: 0;
+      border-radius: 50%; background: rgba(17, 16, 42, .82); color: #fff; cursor: pointer; }
+    .demo-toggle:hover { background: #11102a; }
+    .demo-toggle:focus-visible { outline: 3px solid #fff; outline-offset: 2px; border-radius: 50%; box-shadow: 0 0 0 8px #11102a; }
+    .demo-toggle svg { width: 20px; height: 20px; fill: currentColor; stroke: none; }
+    .demo-toggle .i-pause, .demo-toggle[data-playing="true"] .i-play { display: none; }
+    .demo-toggle[data-playing="true"] .i-pause { display: block; }
+    .crop--demo { --ratio: 1280 / 800; }
+    .crop--search { --ratio: 1440 / 400; }
+    .crop--copy { --ratio: 1440 / 900; }
 
-    /* Mini drifting strip inside the feed card */
-    .drift { overflow: hidden; mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent); }
-    .drift-track { display: flex; gap: 12px; width: max-content; animation: drift 40s linear infinite; }
-    .drift:hover .drift-track { animation-play-state: paused; }
-    @keyframes drift { to { transform: translateX(calc(-50% - 6px)); } }
-    .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 22px; }
-    .tile { position: relative; aspect-ratio: 4/5; border-radius: 14px; background: var(--g); overflow: hidden; border: 1px solid var(--line); }
-    .tile.is-open { transform: translateY(-6px); box-shadow: 0 18px 40px -18px rgba(67,97,238,.7); }
-    .pop { position: absolute; inset: auto 0 0 0; padding: 10px; background: var(--panel-solid); display: grid; gap: 4px; }
-    .pop small { font-size: 10.5px; color: var(--dim); }
-    .pop b { font-size: 12px; line-height: 1.25; }
-    .pop span { display: flex; gap: 5px; }
-    .pop i { font-style: normal; font-size: 10.5px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line-hi); }
-    .mini { width: 150px; flex-shrink: 0; border-radius: 14px; overflow: hidden; background: var(--panel-solid); border: 1px solid var(--line); }
-    .mini .pic { height: 92px; background: var(--g); }
-    .mini b { display: block; padding: 9px 11px 11px; font-size: 12.5px; line-height: 1.3; font-weight: 600; }
+    .news { display: grid; grid-template-columns: 1fr 1fr; gap: 56px 44px; margin-top: 64px; }
+    .news h3 { margin-top: 22px; font-size: 27px; line-height: 1.15; }
+    .news p { margin-top: 10px; color: var(--dim); font-size: 18px; }
+    .chat { display: flex; flex-direction: column; justify-content: center; gap: 26px; padding: 8% 9%; background: var(--raised); border: 1px solid var(--line);
+      border-radius: var(--radius-tile); aspect-ratio: 3 / 2; }
+    .bubble { position: relative; align-self: flex-start; max-width: 22em; margin: 0; padding: 16px 20px; border-radius: 10px; background: var(--sky);
+      font-size: 19px; font-weight: 600; line-height: 1.3; }
+    .bubble, .news .bubble, .band--invert .bubble { color: var(--on-sky); }
+    .bubble::after { content: ""; position: absolute; left: 26px; bottom: -10px; border: 10px solid transparent; border-bottom: 0; border-top-color: var(--sky); }
+    .chat .bubble { align-self: flex-end; margin-top: 0; }
+    .chat .bubble::after { left: auto; right: 26px; }
+    .chat .reply { align-self: flex-start; max-width: 24em; margin: 0; padding: 16px 20px; border-radius: 10px; background: var(--canvas); color: var(--ink); font-size: 17px; line-height: 1.4; }
+    .chat .reply ul { margin: 8px 0 0; padding: 0 0 0 1.1em; color: var(--dim); }
 
-    /* Platform cards sample */
-    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 22px; }
-    .pc { border-radius: 14px; padding: 12px; min-height: 108px; font-size: 12px; line-height: 1.35; display: flex; flex-direction: column; gap: 6px; }
-    .pc .who { display: flex; align-items: center; gap: 6px; font-weight: 650; font-size: 11.5px; }
-    .pc .who i { width: 16px; height: 16px; border-radius: 50%; background: var(--c); }
-    .pc.x { background: #0b0d10; color: #f2f4f7; }
-    .pc.tt { background: radial-gradient(circle at 80% 20%, rgba(61,218,215,.3), transparent 45%), radial-gradient(circle at 20% 85%, rgba(255,64,110,.25), transparent 45%), #060607; color: #fafafa; justify-content: flex-end; }
-    .pc.fb { background: var(--panel-solid); border-top: 5px solid #4f8ef7; }
-    .pc.rd { background: color-mix(in srgb, #ff8f50 14%, var(--panel-solid)); }
-    .pc.rd .sub-chip { align-self: flex-start; padding: 1px 8px; border-radius: 99px; background: #ff8f50; color: #fff; font-weight: 700; font-size: 11px; }
-    .pc.web { background: linear-gradient(90deg, var(--cyan) 0 4px, transparent 4px), var(--panel-solid); padding-left: 16px; }
-    .pc.web strong { font-size: 13px; }
-    .pc.ig { background: color-mix(in srgb, #e1306c 24%, var(--panel-solid)); }
+    .band--invert { background: var(--invert); color: var(--on-invert); --focus: var(--invert-link); }
+    .band--invert a { color: var(--invert-link); }
+    .band--invert .band-head p, .band--invert .nos p { color: var(--on-invert-dim); }
+    .local-head { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 48px; align-items: end; }
+    .local-head .bubble { justify-self: start; }
+    .nos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 44px 56px; margin: 64px 0 0; padding: 0; list-style: none; }
+    .nos h3 { font-size: 24px; line-height: 1.2; }
+    .nos p { margin-top: 10px; font-size: 18px; }
 
-    /* AI providers row */
-    .providers { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
-    .providers span { padding: 6px 12px; border-radius: 10px; border: 1px solid var(--line-hi); font-size: 13px; color: var(--ink); }
+    .band--sky { background: var(--sky); color: var(--on-sky); --focus: #11102a; }
+    .band--sky .band-head p { color: var(--on-sky-dim); }
+    .band--sky a:not(.pill) { color: var(--on-sky); font-weight: 600; }
+    .install { display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 5fr); gap: 64px; margin-top: 64px; }
+    .install ol { display: grid; gap: 26px; margin: 0; padding: 0; list-style: none; counter-reset: i; }
+    .install li { position: relative; padding-left: 58px; counter-increment: i; }
+    .install li::before { content: counter(i); position: absolute; left: 0; top: -2px; width: 40px; height: 40px; display: grid; place-items: center;
+      border-radius: 50%; border: 2px solid var(--on-sky); font-weight: 700; font-size: 19px; }
+    .install li b { display: block; font-size: 22px; line-height: 1.25; }
+    .install li span { display: block; margin-top: 4px; color: var(--on-sky-dim); font-size: 18px; }
+    .install .side p { color: var(--on-sky-dim); font-size: 18px; }
+    .install .side p + p { margin-top: 14px; }
+    .code { margin: 18px 0 0; padding: 18px 20px; border-radius: var(--radius-tile); background: #11102a; color: #ecebf8; overflow-x: auto; font-size: 15px; line-height: 1.5; }
+    .install .pill { margin-top: 30px; }
+    .more { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: 26px 0 0; padding: 0; list-style: none; font-size: 17px; }
 
-    /* Steps */
-    .steps { list-style: none; padding: 0; margin: 46px 0 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; counter-reset: s; }
-    .steps li { padding: 0 28px 0 0; counter-increment: s; }
-    .steps li + li { padding-left: 28px; border-left: 1px solid var(--line-hi); }
-    .steps li::before { content: counter(s); display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%;
-      background: var(--blue); color: #fff; font-weight: 700; font-size: 15px; margin-bottom: 18px; }
-    .steps h3 { margin: 0 0 8px; font-size: 19px; letter-spacing: -.02em; }
-    .steps p { margin: 0; color: var(--dim); font-size: 15px; }
+    .feedback { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 64px; }
+    .feedback h2 { font-size: clamp(30px, 3.4vw, 44px); line-height: 1.08; letter-spacing: -.028em; }
+    .asks { display: grid; gap: 22px; margin: 32px 0 0; padding: 0; list-style: none; }
+    .asks li { display: grid; grid-template-columns: 30px 1fr; gap: 14px; align-items: start; }
+    .asks svg { width: 26px; height: 26px; margin-top: 2px; color: var(--step); }
+    .asks b { display: block; }
+    .asks span { color: var(--dim); font-size: 18px; }
+    .support p { margin-top: 18px; color: var(--dim); font-size: 18px; }
+    .support .pill { margin-top: 26px; }
+    .support blockquote { margin: 26px 0 0; padding: 0 0 0 18px; border-left: 3px solid var(--line-hi); color: var(--dim); font-size: 17px; }
 
-    /* Install */
-    .install { display: grid; grid-template-columns: minmax(0,.95fr) minmax(0,1.05fr); gap: 56px; align-items: start; margin-top: 46px; }
-    .install > * { min-width: 0; }
-    .install ol { margin: 0; padding-left: 22px; color: var(--dim); }
-    .install ol li { margin: 0 0 14px; padding-left: 6px; }
-    .install ol strong { color: var(--ink); }
-    .note { margin: 18px 0 0; font-size: 14px; color: var(--faint); max-width: 52ch; }
-    .terminal { border-radius: 16px; overflow: hidden; background: #12121f; border: 1px solid var(--line-hi); color: #dcd6f0; }
-    [data-theme="light"] .terminal { background: #1d1b33; }
-    .term-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 13px; color: #b9b2d8; }
-    .copy { min-height: 38px; padding: 6px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,.18); background: transparent; color: #e5e0f8; cursor: pointer; font: inherit; font-size: 13px; }
-    .copy:hover { background: rgba(255,255,255,.08); }
-    .terminal pre { margin: 0; padding: 20px; overflow: auto; font-size: 13px; line-height: 1.85; }
-    .terminal code { font-family: "Cascadia Code", Consolas, ui-monospace, monospace; }
-    .term-foot { padding: 12px 20px; border-top: 1px solid rgba(255,255,255,.08); font-size: 13px; color: #a79fcb; }
-    .status { min-height: 20px; margin: 10px 0 0; font-size: 14px; color: var(--lav); }
+    .foot { padding: 72px 0 56px; background: var(--band); color: var(--dim); font-size: 16px; }
+    .foot__top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 18px 32px; }
+    .foot .brand { color: var(--ink); }
+    .foot nav ul { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 0; padding: 0; list-style: none; }
+    .foot nav a { color: var(--ink); }
+    .foot p { margin-top: 18px; max-width: 64em; }
+    .foot p:first-of-type { margin-top: 36px; }
 
-    /* Feedback */
-    .feedback { margin: 110px 0 0; padding: 40px; border-radius: 26px; display: grid; grid-template-columns: 1fr auto; gap: 28px; align-items: center;
-      background: linear-gradient(120deg, color-mix(in srgb, var(--purple) 22%, var(--panel-solid)), color-mix(in srgb, var(--blue) 14%, var(--panel-solid)));
-      border: 1px solid var(--line-hi); }
-    .feedback h2 { font-size: clamp(28px, 3.4vw, 40px); }
-    .feedback .actions { margin: 0; }
-    .feedback .sub a { color: var(--ink); text-underline-offset: 3px; }
-    .feedback .support { font-size: 15px; margin-top: 10px; }
-
-    footer { margin-top: 90px; border-top: 1px solid var(--line); padding: 28px 0 40px; }
-    .foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 18px; font-size: 14px; color: var(--faint); }
-    .foot nav { display: flex; flex-wrap: wrap; gap: 6px 22px; }
-    .foot a { color: var(--dim); text-decoration: none; }
-    .foot a:hover { color: var(--ink); }
-    .text-link { color: var(--lav); text-underline-offset: 3px; }
-
-    @media (max-width: 960px) {
-      .hero-grid, .install, .feedback { grid-template-columns: 1fr; }
-      .story { grid-template-columns: 1fr; }
-      .story article.wide { grid-column: auto; grid-template-columns: 1fr; }
-      .steps { grid-template-columns: 1fr; gap: 28px; }
-      .steps li, .steps li + li { padding: 0; border: 0; }
-      .links { display: none; }
-      .tools { margin-left: auto; }
+    @media (max-width: 1020px) {
+      .nav-links { display: none; }
+      .nav-tools { margin-left: auto; }
+      .wall { grid-template-columns: repeat(4, 1fr); }
+      .wall li:nth-child(n+17) { display: none; }
+      .words, .install, .feedback, .local-head { grid-template-columns: minmax(0, 1fr); }
+      .install, .feedback, .local-head { gap: 36px; }
+      .sources { grid-template-columns: 1fr 1fr; }
+      .nos { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 720px) {
+      body { font-size: 18px; }
+      .wrap { width: calc(100% - 32px); }
+      .stage { padding: 92px 0 64px; }
+      .stage__copy p { font-size: 17px; }
+      .demo { margin-top: 30px; }
+      .deck__name { font-size: 22px; }
+      .deck__card { grid-template-columns: 1fr; grid-template-rows: 200px auto; min-height: 0; }
+      .deck__body { padding: 20px 22px; }
+      .deck__title { font-size: 22px; min-height: 2.4em; }
+      .deck__desc { font-size: 15px; min-height: 4.65em; }
+      .deck__btn { height: 50px; gap: 8px; font-size: 15px; }
+      .deck__actions { gap: 10px; }
+      .deck__keys { font-size: 13px; }
+      .brandband { padding: 72px 0 80px; }
+      .band { padding: 76px 0; }
+      .wall { grid-template-columns: repeat(3, 1fr); margin-top: 44px; }
+      .wall li:nth-child(n+13) { display: none; }
+      .wall .pa { padding: 8px 9px; }
+      .pa__name { font-size: 13px; }
+      .pa__kind { font-size: 9px; }
+      .steps { gap: 72px; margin-top: 52px; }
+      .news { grid-template-columns: minmax(0, 1fr); gap: 52px; margin-top: 52px; }
+      .chat { aspect-ratio: auto; padding: 28px 22px; }
+      .js .crop--demo { --ratio: 5 / 4; --w: 172%; --x: -1.5%; --y: -11%; }
+      .crop--search { --ratio: 2 / 1; --w: 232%; --x: -24.2%; --y: -30.6%; }
+      .crop--copy { --ratio: 4 / 3; --w: 205.7%; --x: -4.3%; --y: -7.6%; }
+      .nos { grid-template-columns: minmax(0, 1fr); gap: 32px; margin-top: 52px; }
+      .sources li { min-height: 92px; padding: 16px; }
+      .sources b { font-size: 18px; }
+      .step .shot, .step .sources, .words + .shot { margin-top: 28px; }
+      .film .pill { position: static; margin-top: 16px; }
+      .pill { font-size: 18px; }
     }
     @media (max-width: 560px) {
-      .wrap { width: calc(100% - 32px); }
-      .hero { padding-top: 48px; }
-      .lede { font-size: 16px; }
-      .cards { grid-template-columns: 1fr 1fr; }
-      .feedback { padding: 26px; }
-      .actions .btn { width: 100%; justify-content: center; }
-      .brand span { display: none; }
+      .nav-tools .pill { display: none; }
+      .sources { grid-template-columns: minmax(0, 1fr); }
     }
     @media (prefers-reduced-motion: reduce) {
-      html { scroll-behavior: auto; }
-      .shape, .spark, .field::before, .drift-track { animation: none !important; }
-      .spark { opacity: .4; }
-      .btn { transition: none; }
-      .btn:hover { transform: none; }
+      .deck__card, .deck__card.is-in { animation: none; transition: none; }
+      .deck__btn, .deck__progress span { transition: none; }
     }
   </style>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
-
-  <svg width="0" height="0" aria-hidden="true" style="position:absolute" xmlns="http://www.w3.org/2000/svg">
-    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <defs>
+      <linearGradient id="jar-gradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" style="stop-color:var(--jar-a)"/><stop offset="1" style="stop-color:var(--jar-b)"/></linearGradient>
+    </defs>
+    <symbol id="i-jar" viewBox="0 0 64 64"><g fill="none" stroke="url(#jar-gradient)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><rect x="20" y="6" width="24" height="7" rx="2"/><path d="M22 13 v4 c-6 3 -9 8 -9 15 v18 a8 8 0 0 0 8 8 h22 a8 8 0 0 0 8 -8 v-18 c0 -7 -3 -12 -9 -15 v-4"/><circle cx="32" cy="38" r="10"/><path d="M22 38 h20"/><path d="M32 28 c-4 3 -4 17 0 20 c4 -3 4 -17 0 -20"/><path d="M45 22 v9 l-2.5 -2 l-2.5 2 v-9" stroke-width="2.6"/></g></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12.5-7.5z"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
     <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
     <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></symbol>
-    <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></symbol>
     <symbol id="i-bug" viewBox="0 0 24 24"><path d="M8 2l1.9 1.9M16 2l-1.9 1.9M9 7.1V6a3 3 0 0 1 6 0v1.1M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6Zm0 0v-9M6.5 13H3m18 0h-3.5M6 9.5 3.5 8M18 9.5 20.5 8M6 17l-2.5 1.5M18 17l2.5 1.5"/></symbol>
+    <symbol id="i-idea" viewBox="0 0 24 24"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V16h5.2v-.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3Z"/></symbol>
+    <symbol id="i-hands" viewBox="0 0 24 24"><path d="M16 4.5a3.5 3.5 0 0 1 5 0 3.6 3.6 0 0 1 0 5L12 18.5 3 9.5a3.6 3.6 0 0 1 0-5 3.5 3.5 0 0 1 5 0l4 4 2.5-2.5"/></symbol>
   </svg>
 
-  <div class="field" aria-hidden="true">
-    <span class="shape sq" style="--s:64px;left:8%;top:18%;--d:20s"></span>
-    <span class="shape ci" style="--s:120px;left:78%;top:12%;--d:15s;--dl:-4s"></span>
-    <span class="shape tr" style="--s:70px;left:62%;top:58%;--d:12s;--dl:-2s"></span>
-    <span class="shape re" style="--s:110px;left:18%;top:72%;--d:18s;--dl:-7s"></span>
-    <span class="shape sq" style="--s:40px;left:88%;top:66%;--d:22s;--dl:-9s"></span>
-    <span class="shape ci" style="--s:60px;left:34%;top:38%;--d:13s;--dl:-6s"></span>
-    <span class="shape tr" style="--s:48px;left:4%;top:48%;--d:14s;--dl:-3s"></span>
-    <span class="shape re" style="--s:80px;left:70%;top:86%;--d:17s;--dl:-1s"></span>
-    <span class="shape sq" style="--s:90px;left:48%;top:8%;--d:24s;--dl:-12s"></span>
-    <span class="shape ci" style="--s:44px;left:92%;top:40%;--d:11s;--dl:-5s"></span>
-    <span class="shape tr" style="--s:90px;left:26%;top:90%;--d:16s;--dl:-8s"></span>
-    <span class="shape re" style="--s:70px;left:56%;top:30%;--d:19s;--dl:-4s"></span>
-    <span class="spark" style="left:16.1%;top:14.2%;animation-delay:-7.3s"></span>
-    <span class="spark" style="left:37.0%;top:70.0%;animation-delay:-7.3s"></span>
-    <span class="spark" style="left:65.1%;top:49.8%;animation-delay:-2.2s"></span>
-    <span class="spark" style="left:60.9%;top:86.4%;animation-delay:-7.2s"></span>
-    <span class="spark" style="left:76.3%;top:1.4%;animation-delay:-7.0s"></span>
-    <span class="spark" style="left:45.0%;top:20.8%;animation-delay:-3.0s"></span>
-    <span class="spark" style="left:8.3%;top:63.4%;animation-delay:-0.1s"></span>
-    <span class="spark" style="left:21.4%;top:10.9%;animation-delay:-7.1s"></span>
-    <span class="spark" style="left:12.8%;top:7.5%;animation-delay:-5.6s"></span>
-    <span class="spark" style="left:92.1%;top:14.3%;animation-delay:-3.6s"></span>
-    <span class="spark" style="left:26.0%;top:32.6%;animation-delay:-4.7s"></span>
-    <span class="spark" style="left:23.9%;top:81.6%;animation-delay:-3.1s"></span>
-    <span class="spark" style="left:18.7%;top:87.1%;animation-delay:-1.6s"></span>
-    <span class="spark" style="left:80.7%;top:97.0%;animation-delay:-1.8s"></span>
-    <span class="spark" style="left:34.8%;top:0.8%;animation-delay:-2.0s"></span>
-    <span class="spark" style="left:89.1%;top:71.2%;animation-delay:-0.4s"></span>
-    <span class="spark" style="left:57.4%;top:54.2%;animation-delay:-7.6s"></span>
-    <span class="spark" style="left:23.6%;top:33.8%;animation-delay:-5.1s"></span>
-    <span class="spark" style="left:29.3%;top:41.0%;animation-delay:-6.6s"></span>
-    <span class="spark" style="left:18.5%;top:91.9%;animation-delay:-3.4s"></span>
-    <span class="spark" style="left:6.3%;top:63.5%;animation-delay:-0.7s"></span>
-    <span class="spark" style="left:96.1%;top:98.3%;animation-delay:-4.3s"></span>
-    <span class="spark" style="left:6.1%;top:25.0%;animation-delay:-4.1s"></span>
-    <span class="spark" style="left:99.0%;top:74.6%;animation-delay:-4.0s"></span>
-    <span class="spark" style="left:40.6%;top:91.9%;animation-delay:-3.2s"></span>
-    <span class="spark" style="left:88.0%;top:3.7%;animation-delay:-3.5s"></span>
-    <span class="spark" style="left:62.1%;top:55.2%;animation-delay:-6.4s"></span>
-    <span class="spark" style="left:39.3%;top:38.1%;animation-delay:-3.4s"></span>
-    <span class="spark" style="left:48.3%;top:50.2%;animation-delay:-6.6s"></span>
-    <span class="spark" style="left:38.8%;top:87.4%;animation-delay:-4.2s"></span>
-    <span class="spark" style="left:16.9%;top:50.3%;animation-delay:-3.7s"></span>
-    <span class="spark" style="left:94.3%;top:91.6%;animation-delay:-1.8s"></span>
-    <span class="spark" style="left:56.6%;top:65.5%;animation-delay:-0.9s"></span>
-    <span class="spark" style="left:14.1%;top:57.0%;animation-delay:-5.3s"></span>
-    <span class="spark" style="left:84.8%;top:0.1%;animation-delay:-3.4s"></span>
-    <span class="spark" style="left:94.8%;top:55.9%;animation-delay:-5.6s"></span>
-    <span class="spark" style="left:78.2%;top:45.5%;animation-delay:-0.9s"></span>
-    <span class="spark" style="left:75.7%;top:39.2%;animation-delay:-7.7s"></span>
-    <span class="spark" style="left:83.8%;top:81.0%;animation-delay:-6.7s"></span>
-    <span class="spark" style="left:41.5%;top:32.2%;animation-delay:-5.9s"></span>
-    <span class="spark" style="left:63.6%;top:90.6%;animation-delay:-5.0s"></span>
-    <span class="spark" style="left:36.6%;top:93.1%;animation-delay:-3.0s"></span>
-    <span class="spark" style="left:66.6%;top:92.1%;animation-delay:-0.6s"></span>
-    <span class="spark" style="left:16.6%;top:34.9%;animation-delay:-6.5s"></span>
-    <span class="spark" style="left:13.3%;top:35.5%;animation-delay:-2.2s"></span>
-    <span class="spark" style="left:48.7%;top:18.2%;animation-delay:-1.0s"></span>
-    <span class="spark" style="left:63.4%;top:69.1%;animation-delay:-5.1s"></span>
-    <span class="spark" style="left:30.2%;top:39.2%;animation-delay:-1.2s"></span>
-    <span class="spark" style="left:95.2%;top:59.7%;animation-delay:-0.7s"></span>
-    <span class="spark" style="left:29.8%;top:5.3%;animation-delay:-0.8s"></span>
-  </div>
-
-  <header class="header">
-    <div class="wrap nav">
-      <a href="#main" class="brand" aria-label="SuperBookmarks home">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="SuperBookmarks logo">
-          <defs>
-            <linearGradient id="brand-gradient" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
-              <stop offset="0" stop-color="#9c8cf2"/>
-              <stop offset="1" stop-color="#4cc9f0"/>
-            </linearGradient>
-          </defs>
-          <g fill="none" stroke="url(#brand-gradient)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="20" y="6" width="24" height="7" rx="2"/>
-            <path d="M22 13 v4 c-6 3 -9 8 -9 15 v18 a8 8 0 0 0 8 8 h22 a8 8 0 0 0 8 -8 v-18 c0 -7 -3 -12 -9 -15 v-4"/>
-            <circle cx="32" cy="38" r="10"/><path d="M22 38 h20"/><path d="M32 28 c-4 3 -4 17 0 20 c4 -3 4 -17 0 -20"/>
-            <path d="M45 22 v9 l-2.5 -2 l-2.5 2 v-9" stroke-width="2.6"/>
-          </g>
-        </svg>
-        <span>SuperBookmarks</span>
-      </a>
-      <nav class="links" aria-label="Main navigation">
-        <a href="#feed">The feed</a>
-        <a href="#sources">Bring your links</a>
-        <a href="#ai">Optional AI</a>
-        <a href="#install">Install</a>
-      </nav>
-      <div class="tools">
-        <button class="round" id="theme" type="button" aria-label="Switch between light and dark">
+  <header class="site-head">
+    <nav class="wrap nav" aria-label="Main">
+      <a class="brand" href="#main" aria-label="SuperBookmarks, back to the top"><svg aria-hidden="true"><use href="#i-jar"/></svg><span>SuperBookmarks</span></a>
+      <ul class="nav-links">
+        <li><a href="#how">How it works</a></li>
+        <li><a href="#new">New in 0.4.0</a></li>
+        <li><a href="#local">Local, by design</a></li>
+        <li><a href="#install">Install</a></li>
+        <li><a href="https://github.com/browser-b0X/super-bookmark-manager">GitHub</a></li>
+      </ul>
+      <div class="nav-tools">
+        <button class="icon-btn" id="theme" type="button" aria-label="Switch between light and dark">
           <svg class="icon sun" aria-hidden="true"><use href="#i-sun"/></svg>
           <svg class="icon moon" aria-hidden="true"><use href="#i-moon"/></svg>
         </button>
-        <a class="round" href="https://github.com/browser-b0X/super-bookmark-manager" aria-label="SuperBookmarks on GitHub">
-          <svg class="icon" aria-hidden="true"><use href="#i-github"/></svg>
-        </a>
+        <a class="pill pill--small" href="#download">Download</a>
       </div>
-    </div>
+    </nav>
   </header>
 
   <main id="main">
-    <div class="wrap">
-      <section class="hero" aria-labelledby="hero-title" style="padding-top:84px">
-        <a class="news" href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest">
-          <b>v0.4.0</b> The browser extension, Claude Desktop with no API key, and creators
-        </a>
-        <div class="hero-grid">
-          <div>
-            <h1 id="hero-title">Saved for a reason. Found when it matters.</h1>
-            <p class="lede">
-              Browser bookmarks, Telegram Saved Messages and the links you send yourself on WhatsApp land in one
-              library on your own PC. New links wait on Home one at a time for you to keep, read later or archive;
-              everything you keep sits below on shelves of pictures, with an offline copy of each page.
-            </p>
-            <div class="actions">
-              <a class="btn primary" href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest">
-                <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg> Download for Windows
-              </a>
-              <a class="btn" href="#feed">See how it works <svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+    <section class="stage" aria-labelledby="hero-title">
+      <div class="wrap stage__inner">
+        <div class="stage__copy">
+          <h1 id="hero-title">One library for every link you’ve saved, on your own PC.</h1>
+          <p>Try it with four made-up links. New links wait on Home like this, one at a time.</p>
+        </div>
+
+        <div class="demo" id="demo" role="group" aria-label="Try the New to sort card with made-up links" aria-describedby="deck-keys">
+          <div class="deck__head">
+            <span class="deck__name">New to sort</span>
+            <span class="deck__count" id="deck-count">1 of 4 · from Telegram</span>
+          </div>
+          <div class="deck__progress" id="deck-progress" role="progressbar" aria-label="Sorted" aria-valuemin="0" aria-valuemax="4" aria-valuenow="0"><span style="width:25%"></span></div>
+          <div class="deck__area" id="deck-area">
+          <div id="deck-live">
+            <div class="deck__stack">
+              <span class="deck__layer deck__layer--2" aria-hidden="true"></span>
+              <span class="deck__layer deck__layer--3" aria-hidden="true"></span>
+              <article class="deck__card" id="deck-card">
+                <div class="deck__media"><img id="deck-picture" src="assets/pictures/cliff-article.svg" width="1200" height="750" alt=""></div>
+                <div class="deck__body">
+                  <span class="deck__meta" id="deck-meta">coastwalks.example · saved 1h ago</span>
+                  <p class="deck__title" id="deck-title">The cliff path from the old harbour</p>
+                  <p class="deck__desc" id="deck-desc">Nine kilometres from the harbour wall to the lighthouse, with one steep climb.</p>
+                  <div class="deck__chips"><span class="deck__label">Suggested shelf</span><span class="chip" id="deck-shelf">travel</span></div>
+                </div>
+              </article>
+            </div>
+            <div class="deck__actions">
+              <button class="deck__btn" type="button" data-move="archive" aria-keyshortcuts="ArrowLeft">Archive <kbd aria-hidden="true">←</kbd></button>
+              <button class="deck__btn" type="button" data-move="later" aria-keyshortcuts="ArrowDown">Later <kbd aria-hidden="true">↓</kbd></button>
+              <button class="deck__btn deck__btn--keep" type="button" data-move="keep" aria-keyshortcuts="ArrowRight">Keep <kbd aria-hidden="true">→</kbd></button>
             </div>
           </div>
-          <ul class="facts">
-            <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Free and open source (MIT)</li>
-            <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Your library stays in SQLite on your PC</li>
-            <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Works without any AI key</li>
-            <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Keeps an offline copy of each page</li>
+          <p class="deck__keys" id="deck-keys">← Archive · ↓ Later · → Keep · Z undoes</p>
+          <div class="deck__done" id="deck-done" hidden>
+            <svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>
+            <p><b>Nothing new to sort.</b> Links you save from Telegram, your browser or by hand wait here, one at a time.</p>
+            <button class="deck__again" id="deck-again" type="button">Sort them again</button>
+          </div>
+          </div>
+          <p class="sr-only" id="deck-status" aria-live="polite"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="brandband" id="download" aria-labelledby="download-title">
+      <div class="wrap">
+        <h2 class="wordmark" id="download-title">SuperBookmarks</h2>
+        <p class="tagline">Saved for a reason. Found when it matters.</p>
+        <p class="lead">A free, open-source Windows app for anyone who saves links “for later” in more than one place and then can’t
+          find them. Pages are copied as they come in, so a link still opens after the site is gone. There’s no account and no cloud.</p>
+        <a class="pill" href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest/download/SuperBookmarkManager-Setup.exe">
+          <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for Windows</a>
+        <p class="fine">Free for Windows 10 and 11, about 16 MB.
+          <a href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest">Release notes and checksum</a></p>
+      </div>
+    </section>
+
+    <section class="band" id="film" aria-labelledby="film-title">
+      <div class="wrap">
+        <div class="band-head">
+          <h2 id="film-title">See it in a minute</h2>
+          <p>A 60-second film of the app at work, with music. It loads from GitHub when you press play. The screens show made-up links.</p>
+        </div>
+        <div class="film">
+          <div class="film__frame" id="film-frame">
+            <img src="assets/film-poster.webp" width="1280" height="720" loading="lazy" alt="The film's opening card: Saved it for later? In more than one place. Then you can't find it.">
+          </div>
+          <a class="pill" id="film-play" href="https://github.com/user-attachments/assets/2b40dee2-304f-4e44-9e5c-49e4531d1da5"><svg class="icon" aria-hidden="true" style="fill:currentColor;stroke:none"><use href="#i-play"/></svg>Play the film</a>
+        </div>
+        <p class="caption" id="film-note" role="status" hidden>The film didn’t load here.
+          <a href="https://github.com/browser-b0X/super-bookmark-manager#readme">Watch it at the top of the README on GitHub.</a></p>
+      </div>
+    </section>
+
+    <section class="band band--alt" id="library" aria-labelledby="library-title">
+      <div class="wrap band-head">
+        <h2 id="library-title">Every link, as a picture</h2>
+        <p>Pages bring their own picture. Posts that come without one are drawn in their site’s colours, so a shelf reads at a
+          glance. In the app, point at a link and its details rise: the site, status, shelf and quick actions.</p>
+      </div>
+      <ul class="wall" aria-hidden="true">
+        <li><img src="assets/pictures/cliff-article.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li class="pa pa--instagram"><svg viewBox="0 0 160 100" preserveAspectRatio="xMaxYMid slice"><g fill="#fff"><rect x="90" y="4" width="18" height="18" rx="4" opacity=".42"/><rect x="112" y="4" width="18" height="18" rx="4" opacity=".2"/><rect x="134" y="4" width="18" height="18" rx="4" opacity=".3"/><rect x="90" y="26" width="18" height="18" rx="4" opacity=".18"/><rect x="112" y="26" width="18" height="18" rx="4" opacity=".5"/><rect x="134" y="26" width="18" height="18" rx="4" opacity=".24"/><rect x="90" y="48" width="18" height="18" rx="4" opacity=".3"/><rect x="112" y="48" width="18" height="18" rx="4" opacity=".16"/><rect x="134" y="48" width="18" height="18" rx="4" opacity=".36"/></g></svg><span class="pa__label"><span class="pa__name">Instagram</span><span class="pa__kind">Reel</span></span></li>
+        <li><img src="assets/pictures/focaccia.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li><img src="assets/pictures/ferry.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li class="pa pa--x"><svg viewBox="0 0 160 100" preserveAspectRatio="xMaxYMid slice"><g fill="#fff"><circle cx="74" cy="16" r="7" opacity=".9"/><rect x="88" y="10" width="42" height="4.5" rx="2.25" opacity=".95"/><rect x="88" y="19" width="62" height="3.5" rx="1.75" opacity=".5"/><rect x="88" y="26" width="48" height="3.5" rx="1.75" opacity=".5"/><g opacity=".45"><circle cx="74" cy="50" r="7" opacity=".9"/><rect x="88" y="44" width="42" height="4.5" rx="2.25" opacity=".95"/><rect x="88" y="53" width="62" height="3.5" rx="1.75" opacity=".5"/><rect x="88" y="60" width="48" height="3.5" rx="1.75" opacity=".5"/></g></g><line x1="64" y1="39" x2="160" y2="39" stroke="#fff" stroke-opacity=".14"/></svg><span class="pa__label"><span class="pa__name">X</span><span class="pa__kind">Post</span></span></li>
+        <li><img src="assets/pictures/cabin.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li class="pa pa--telegram"><svg viewBox="0 0 160 100" preserveAspectRatio="xMaxYMid slice"><path d="M62 58 C 80 50, 96 22, 132 10" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width="2" stroke-dasharray="4 5" stroke-linecap="round"/><circle cx="132" cy="10" r="3" fill="#fff"/><rect x="98" y="28" width="54" height="14" rx="7" fill="#fff" opacity=".94"/><rect x="110" y="47" width="42" height="14" rx="7" fill="#fff" opacity=".68"/></svg><span class="pa__label"><span class="pa__name">Telegram</span><span class="pa__kind">Channel post</span></span></li>
+        <li><img src="assets/pictures/noodles.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li><img src="assets/pictures/azores.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li class="pa pa--tiktok"><svg viewBox="0 0 160 100" preserveAspectRatio="xMaxYMid slice"><rect x="74" y="8" width="38" height="72" rx="8" fill="#fff" opacity=".08"/><rect x="82" y="11" width="38" height="70" rx="8" fill="#fff" opacity=".12"/><rect x="87" y="13" width="38" height="68" rx="8" fill="none" stroke="#25f4ee" stroke-width="2"/><rect x="93" y="17" width="38" height="68" rx="8" fill="none" stroke="#fe2c55" stroke-width="2"/><rect x="90" y="15" width="38" height="68" rx="8" fill="#0d0d10" stroke="#fff" stroke-opacity=".9" stroke-width="1.5"/><rect x="96" y="62" width="22" height="3" rx="1.5" fill="#fff" opacity=".85"/><rect x="96" y="69" width="14" height="3" rx="1.5" fill="#fff" opacity=".5"/><circle cx="140" cy="36" r="3" fill="#fff" opacity=".75"/><circle cx="140" cy="46" r="3" fill="#fff" opacity=".75"/><circle cx="140" cy="56" r="3" fill="#fff" opacity=".75"/></svg><span class="pa__label"><span class="pa__name">TikTok</span><span class="pa__kind">Video</span></span></li>
+        <li><img src="assets/pictures/plant.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li><img src="assets/pictures/lisbon.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li><img src="assets/pictures/synth.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li><img src="assets/pictures/ridge.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li class="pa pa--whatsapp"><svg viewBox="0 0 160 100" preserveAspectRatio="xMaxYMid slice"><rect x="70" y="6" width="64" height="15" rx="7.5" fill="#fff" opacity=".92"/><rect x="90" y="27" width="62" height="15" rx="7.5" fill="#d6f8cd"/><rect x="70" y="48" width="46" height="15" rx="7.5" fill="#fff" opacity=".7"/><rect x="78" y="12" width="38" height="3.5" rx="1.75" fill="#0b3b2c" opacity=".35"/><rect x="98" y="33" width="40" height="3.5" rx="1.75" fill="#0b3b2c" opacity=".35"/></svg><span class="pa__label"><span class="pa__name">WhatsApp</span><span class="pa__kind">Group invite</span></span></li>
+        <li><img src="assets/pictures/watch.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li><img src="assets/pictures/batard.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li class="pa pa--youtube"><svg viewBox="0 0 160 100" preserveAspectRatio="xMaxYMid slice"><rect x="60" y="6" width="92" height="46" rx="8" fill="#fff" fill-opacity=".07" stroke="#fff" stroke-opacity=".28" stroke-width="1.5"/><rect x="68" y="14" width="30" height="4" rx="2" fill="#fff" opacity=".45"/><rect x="60" y="59" width="92" height="3.5" rx="1.75" fill="#fff" opacity=".25"/><rect x="60" y="59" width="58" height="3.5" rx="1.75" fill="#ff4242"/><circle cx="118" cy="60.75" r="4.5" fill="#ff4242" stroke="#141414" stroke-width="1.5"/></svg><span class="pa__label"><span class="pa__name">YouTube</span><span class="pa__kind">Video</span></span></li>
+        <li><img src="assets/pictures/salad.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li><img src="assets/pictures/boring.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li class="pa pa--reddit"><svg viewBox="0 0 160 100" preserveAspectRatio="xMaxYMid slice"><polyline points="66,20 72,14 78,20" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><rect x="67" y="26" width="10" height="4" rx="2" fill="#fff" opacity=".8"/><polyline points="66,36 72,42 78,36" fill="none" stroke="#fff" stroke-opacity=".4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><line x1="90" y1="10" x2="90" y2="64" stroke="#fff" stroke-opacity=".35" stroke-width="1.5"/><rect x="98" y="10" width="54" height="6" rx="3" fill="#fff" opacity=".95"/><rect x="98" y="20" width="38" height="4" rx="2" fill="#fff" opacity=".55"/><line x1="104" y1="32" x2="104" y2="64" stroke="#fff" stroke-opacity=".3" stroke-width="1.5"/><rect x="112" y="33" width="40" height="6" rx="3" fill="#fff" opacity=".8"/><rect x="112" y="43" width="26" height="4" rx="2" fill="#fff" opacity=".45"/><rect x="120" y="55" width="32" height="6" rx="3" fill="#fff" opacity=".65"/></svg><span class="pa__label"><span class="pa__name">Reddit</span><span class="pa__kind">Thread</span></span></li>
+        <li><img src="assets/pictures/seeded-rye.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li><img src="assets/pictures/type.svg" width="1200" height="750" alt="" loading="lazy"></li>
+        <li><img src="assets/pictures/local-first.svg" width="1200" height="750" alt="" loading="lazy"></li>
+      </ul>
+      <div class="wrap">
+        <p class="caption wall-note">Made-up links. Sites are named in plain text; no logos are drawn.</p>
+      </div>
+    </section>
+
+    <section class="band" id="how" aria-labelledby="how-title">
+      <div class="wrap">
+        <div class="band-head">
+          <h2 id="how-title">From scattered to sorted</h2>
+          <p>Where your links come from, what you do with them, and how you get them back.</p>
+        </div>
+        <ol class="steps">
+          <li class="step">
+            <div class="words">
+              <h3><span class="step__n">1</span>Bring your links in</h3>
+              <p>Import browser bookmarks from Chrome, Edge, Brave or Firefox, Telegram Saved Messages, WhatsApp chats, and
+                Pocket and Instapaper exports. Then save as you go, with the browser extension, the bookmark button on your
+                bookmarks bar, or any link you paste.</p>
+            </div>
+            <ul class="sources" aria-label="Where links can come from">
+              <li style="--c:#9c8cf2"><i></i><b>Browser bookmarks</b><span>Chrome, Edge, Brave and Firefox</span></li>
+              <li style="--c:#2fa0dc"><i></i><b>Telegram</b><span>Saved Messages</span></li>
+              <li style="--c:#13865b"><i></i><b>WhatsApp</b><span>Chats you export</span></li>
+              <li style="--c:#f08a3c"><i></i><b>Pocket and Instapaper</b><span>Their export files</span></li>
+              <li style="--c:#d43a6c"><i></i><b>The browser extension</b><span>Pages, links, and posts on X, Instagram and TikTok</span></li>
+              <li style="--c:#4cc9f0"><i></i><b>The bookmark button</b><span>Or any link you paste</span></li>
+            </ul>
+          </li>
+          <li class="step">
+            <div class="words">
+              <h3><span class="step__n">2</span>Sort what’s new on Home</h3>
+              <div>
+                <p>New links wait one at a time for Keep, Later or Archive, with a click or an arrow key. Up next and follow-ups
+                  due sit beside them, and each shelf with links is a row of pictures below.</p>
+                <p>Got a pile? Group any shelf by website and move a whole site at once, with Undo, or let optional AI with free
+                  keys suggest shelves, tags, clean titles and one-line summaries.</p>
+              </div>
+            </div>
+            <figure class="shot crop crop--demo" id="demo-figure">
+              <!-- The still under each video loads only when it is near the screen; the video loads only when it plays. -->
+              <img class="img-dark" src="assets/demo-dark-still.webp" width="1280" height="800" loading="lazy" alt="">
+              <img class="img-light" src="assets/demo-light-still.webp" width="1280" height="800" loading="lazy" alt="">
+              <video class="img-dark" data-demo muted loop playsinline controls preload="none" width="1280" height="800"
+                     aria-label="SuperBookmarks Home: three new links sorted one at a time with Keep, Later and Archive, each card flying the way its button points, while Up next and the New count go down">
+                <source src="assets/demo-dark.webm" type="video/webm"><source src="assets/demo-dark.mp4" type="video/mp4">
+              </video>
+              <video class="img-light" data-demo muted loop playsinline controls preload="none" width="1280" height="800"
+                     aria-label="SuperBookmarks Home in light mode: three new links sorted one at a time with Keep, Later and Archive">
+                <source src="assets/demo-light.webm" type="video/webm"><source src="assets/demo-light.mp4" type="video/mp4">
+              </video>
+              <button class="demo-toggle" id="demo-toggle" type="button" data-playing="false" aria-label="Play the demo" hidden>
+                <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5z"/></svg>
+                <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>
+              </button>
+            </figure>
+          </li>
+          <li class="step">
+            <div class="words">
+              <h3><span class="step__n">3</span>Find it again</h3>
+              <div>
+                <p>Search reads <code>or</code>, <code>-word</code>, “phrases”, groups and dates like <code>site:</code>,
+                  <code>#tag</code>, <code>creator:</code> and <code>saved:30d</code>, and says under the box what it read.</p>
+                <p>Save a search as a smart shelf, give a link a day to come back to, and keep the ones you open every day in a
+                  quick row on Home.</p>
+              </div>
+            </div>
+            <figure class="shot crop crop--search">
+              <img class="img-dark" src="screenshots/search-dark.webp" width="1440" height="730" loading="lazy" alt="The library searched for (#bread or #rye) -sourdough saved:30d, with chips under the box: any of #bread, #rye; not the word sourdough; saved 30d">
+              <img class="img-light" src="screenshots/search-light.webp" width="1440" height="730" loading="lazy" alt="The library in light mode with a search read back as chips under the box">
+            </figure>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="band band--alt" id="copies" aria-labelledby="copies-title">
+      <div class="wrap">
+        <div class="words">
+          <h2 id="copies-title">Pages that don’t disappear</h2>
+          <div>
+          <p>A quarter of all web pages that existed at some point between 2013 and 2023 were gone by October 2023, according
+            to the <a href="https://www.pewresearch.org/data-labs/2024/05/17/when-online-content-disappears/">Pew Research Center</a>.</p>
+          <p>SuperBookmarks keeps its own copy of each page you save, and of public X, TikTok and Reddit posts, so a link still
+            opens after the site changes or disappears. Copies open in a reader inside the app, as saved or as text only, and
+            scripts never run in them.</p>
+          </div>
+        </div>
+        <figure class="shot crop crop--copy">
+          <img class="img-dark" src="screenshots/saved-copy-dark.webp" width="1440" height="900" loading="lazy" alt="A saved copy of a recipe page open in the app's reader, with As saved and Text only views, beside the link's panel showing its saved copy, status, follow-up and shelves">
+          <img class="img-light" src="screenshots/saved-copy-light.webp" width="1440" height="900" loading="lazy" alt="A saved copy of a recipe page open in the app's reader in light mode, beside the link's panel">
+        </figure>
+      </div>
+    </section>
+
+    <section class="band" id="new" aria-labelledby="new-title">
+      <div class="wrap">
+        <div class="band-head">
+          <h2 id="new-title">New in 0.4.0</h2>
+          <p>A browser extension that saves the posts you see, Claude Desktop with no API key, creators, a search that says
+            what it read, and History, which undoes bulk changes. Shown with made-up links.
+            <a href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest">Release notes</a></p>
+        </div>
+        <div class="news">
+          <figure>
+            <div class="shot crop" style="--w:225%;--x:-62.5%;--y:-7%">
+              <img class="img-dark" src="screenshots/save-posts-dark.webp" width="1440" height="730" loading="lazy" alt="The extension's Save window on an X search: posts already loaded in the tab, two ticked, one already saved, with status, tags and Save 2 posts">
+              <img class="img-light" src="screenshots/save-posts-light.webp" width="1440" height="730" loading="lazy" alt="The extension's Save window in light mode: posts already loaded in the tab, two ticked, one already saved">
+            </div>
+            <figcaption><h3>Save the posts you see</h3><p>On X, Instagram and TikTok the extension lists the posts already loaded in
+              your tab and saves the ones you tick. It never scrolls, opens posts or keeps a login, and it needs no permission for those sites.</p></figcaption>
+          </figure>
+          <figure>
+            <div class="shot crop" style="--w:193.3%;--x:-22.15%;--y:-18%">
+              <img class="img-dark" src="screenshots/creators-dark.webp" width="1440" height="730" loading="lazy" alt="Creators: a card for each creator with their handles on X, Instagram, TikTok and Reddit, how many posts were saved and when, one marked +1 new since you looked">
+              <img class="img-light" src="screenshots/creators-light.webp" width="1440" height="730" loading="lazy" alt="Creators in light mode: a card for each creator with their handles and how many posts were saved">
+            </div>
+            <figcaption><h3>Who made what you saved</h3><p>Creators are worked out from the posts themselves: names and handles
+              across sites, merge two that are the same person, and see what’s new since you looked.</p></figcaption>
+          </figure>
+          <figure>
+            <div class="shot crop" style="--w:194.6%;--x:-60.81%;--y:-14%">
+              <img class="img-dark" src="screenshots/cleanup-dark.webp" width="1440" height="730" loading="lazy" alt="Settings, Clean up and undo: an X post saved at two addresses with Merge, a removed link with Bring back, and History with Undo on a bulk edit">
+              <img class="img-light" src="screenshots/cleanup-light.webp" width="1440" height="730" loading="lazy" alt="Settings in light mode, Clean up and undo: the same post saved twice, a removed link and History">
+            </div>
+            <figcaption><h3>Clean up, then undo if you need to</h3><p>Links of one post saved at two addresses are listed for you to
+              merge, links you remove are remembered so you can bring one back, and History undoes bulk edits, merges,
+              removals, imports and AI runs, not only the last.</p></figcaption>
+          </figure>
+          <figure>
+            <div class="chat" role="img" aria-label="A made-up chat: someone asks Claude which links they saved about bread, and the answer lists three from the library">
+              <p class="bubble" aria-hidden="true">Which links did I save about bread?</p>
+              <div class="reply" aria-hidden="true">Three, all on your food-drink shelf:
+                <ul><li>Shaping a batard in 30 seconds</li><li>Seeded rye, step by step</li><li>Rye ratios, explained</li></ul></div>
+            </div>
+            <figcaption><h3>Claude Desktop, no API key</h3><p>Search and tidy your library from a Claude chat with the SuperBookmarks
+              extension for Claude Desktop, under your own Claude plan, with Undo for what it changes.</p></figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="band band--invert" id="local" aria-labelledby="local-title">
+      <div class="wrap">
+        <div class="local-head">
+          <div class="band-head">
+            <h2 id="local-title">Local, by design</h2>
+            <p>SuperBookmarks is for one person on one PC, with no account or cloud service behind it, and that is the point.</p>
+          </div>
+          <p class="bubble">There’s no SuperBookmarks server for anything to go to.</p>
+        </div>
+        <ul class="nos">
+          <li><h3>No account</h3><p>There’s nothing to sign up for. Your library is one SQLite file in your user folder, with export and restore backups.</p></li>
+          <li><h3>No cloud</h3><p>The app listens only on <code>127.0.0.1</code>. It fetches previews and saved copies from the sites you
+            saved; <a href="https://github.com/browser-b0X/super-bookmark-manager#network-activity">Network activity</a> says what it contacts and when.</p></li>
+          <li><h3>No tracking</h3><p>There’s no analytics and no crash reporting, and the app never checks for a new version of itself.</p></li>
+          <li><h3>No scanning</h3><p>The app reads only files you select and never scans live browser profiles. The extension reads a page
+            when you press its button or menu item, unless you switch on its optional Download buttons.</p></li>
+          <li><h3>No scripts in your copies</h3><p>Saved copies are inert: scripts never run in them.</p></li>
+          <li><h3>No AI unless you ask</h3><p>Without a key the app never contacts an AI provider, and built-in keyword rules sort what you import.</p></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="band band--sky" id="install" aria-labelledby="install-title">
+      <div class="wrap">
+        <div class="band-head">
+          <h2 id="install-title">Install in a minute</h2>
+          <p>Used on Windows 11. It isn’t blocked on Windows 10, but it hasn’t been tested there.</p>
+        </div>
+        <div class="install">
+          <ol>
+            <li><b>Download the installer</b><span><code>SuperBookmarkManager-Setup.exe</code> and its checksum are on the
+              <a href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest">release page</a>.</span></li>
+            <li><b>Run it for your Windows user</b><span>Administrator rights, Python, Node and npm are not required.</span></li>
+            <li><b>Open SuperBookmarks from the Start Menu</b><span>It opens in your browser at <code>127.0.0.1:5001</code>, or on another
+              free port if that one is taken, and runs quietly in the background.</span></li>
+          </ol>
+          <div class="side">
+            <p>The installer is unsigned, so Windows SmartScreen or your antivirus may warn you. If SmartScreen shows “Windows
+              protected your PC”, choose <b>More info</b>, then <b>Run anyway</b>. Check the file’s SHA-256 against the published
+              checksum before running it:</p>
+            <pre class="code" tabindex="0" role="region" aria-label="PowerShell command that prints the installer's SHA-256"><code>Get-FileHash .\SuperBookmarkManager-Setup.exe -Algorithm SHA256</code></pre>
+            <a class="pill" href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest/download/SuperBookmarkManager-Setup.exe">
+              <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for Windows</a>
+          </div>
+        </div>
+        <ul class="more">
+          <li><a href="https://github.com/browser-b0X/super-bookmark-manager#browser-extension">Set up the browser extension</a></li>
+          <li><a href="https://github.com/browser-b0X/super-bookmark-manager#claude-desktop">Set up Claude Desktop</a></li>
+          <li><a href="https://github.com/browser-b0X/super-bookmark-manager#where-it-runs">Where it runs</a></li>
+          <li><a href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/BUILDING.md">Build from source</a></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="band" id="feedback" aria-labelledby="feedback-title">
+      <div class="wrap feedback">
+        <div>
+          <h2 id="feedback-title">Feedback &amp; suggestions</h2>
+          <p style="margin-top:14px;color:var(--dim)">Help make <b>browser-b0X</b> better.</p>
+          <ul class="asks">
+            <li><svg class="icon" aria-hidden="true"><use href="#i-bug"/></svg><div><b>Found a bug?</b>
+              <span><a href="https://github.com/browser-b0X/super-bookmark-manager/issues/new/choose">Open an issue</a>.</span></div></li>
+            <li><svg class="icon" aria-hidden="true"><use href="#i-idea"/></svg><div><b>Have an idea or question?</b>
+              <span><a href="https://github.com/browser-b0X/super-bookmark-manager/discussions">Start a discussion</a>.</span></div></li>
+            <li><svg class="icon" aria-hidden="true"><use href="#i-hands"/></svg><div><b>Want to contribute?</b>
+              <span>Pull requests and improvements are always welcome; start with the
+              <a href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/CONTRIBUTING.md">contributing guide</a>.</span></div></li>
           </ul>
         </div>
-
-        <figure class="shot">
-          <div class="shot-frame">
-            <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>127.0.0.1:5001 — SuperBookmarks</span></div>
-            <img class="img-dark" src="screenshots/home-dark.webp" width="1440" height="1064"
-                 alt="Home in dark mode: the newest link to sort with Archive, Later and Keep; Follow up and Up next beside it; a shelf row below where posts without a picture show their site's artwork.">
-            <img class="img-light" src="screenshots/home-light.webp" width="1440" height="1064"
-                 alt="Home in light mode: the newest link to sort with Archive, Later and Keep; Follow up and Up next beside it; a shelf row below.">
-          </div>
-          <figcaption>Home, shown with sample links. Your own library never leaves your computer.</figcaption>
-        </figure>
-      </section>
-
-      <div class="sources" id="sources" aria-label="Where links can come from">
-        <p>Bring links from</p>
-        <span class="chip" style="--c:#4cc9f0"><i></i>Chrome, Edge &amp; Brave</span>
-        <span class="chip" style="--c:#ff8f50"><i></i>Firefox</span>
-        <span class="chip" style="--c:#2aabee"><i></i>Telegram Saved Messages</span>
-        <span class="chip" style="--c:#25d366"><i></i>WhatsApp chat exports</span>
-        <span class="chip" style="--c:#9c8cf2"><i></i>The bookmark button</span>
-        <span class="chip" style="--c:#b3a6ff"><i></i>Any link you paste</span>
-      </div>
-
-      <section id="feed" aria-labelledby="feed-title">
-        <h2 id="feed-title">One feed. New on top, keepers below.</h2>
-        <p class="sub">Catch up the way you scroll a social feed — except everything in it is something you chose to save.</p>
-
-        <div class="story">
-          <article class="wide">
-            <div>
-              <span class="tag" style="--c:var(--cyan)">New to sort</span>
-              <h3>One new link at a time, your shelves below</h3>
-              <p>The newest save waits at the top of Home: keep it, save it for later or archive it with a click or an
-                arrow key. Up next, follow-ups due and the links you use often sit beside it, and every shelf below is a
-                row of pictures that drifts along when you point at it.</p>
-            </div>
-            <div class="drift" aria-hidden="true">
-              <div class="drift-track">
-                <div class="mini" style="--g:linear-gradient(135deg,#f72585,#7209b7)"><div class="pic"></div><b>Weeknight noodle recipe</b></div><div class="mini" style="--g:linear-gradient(135deg,#4361ee,#4cc9f0)"><div class="pic"></div><b>Repo: offline-first sync</b></div><div class="mini" style="--g:linear-gradient(135deg,#06d6a0,#118ab2)"><div class="pic"></div><b>Trail map for the coast walk</b></div><div class="mini" style="--g:linear-gradient(135deg,#7209b7,#4361ee)"><div class="pic"></div><b>Thread on type design</b></div><div class="mini" style="--g:linear-gradient(135deg,#ffb703,#fb8500)"><div class="pic"></div><b>Cabin rentals to compare</b></div><div class="mini" style="--g:linear-gradient(135deg,#4cc9f0,#7209b7)"><div class="pic"></div><b>Talk: local-first apps</b></div><div class="mini" style="--g:linear-gradient(135deg,#80ed99,#38a3a5)"><div class="pic"></div><b>Houseplant care sheet</b></div><div class="mini" style="--g:linear-gradient(135deg,#f72585,#ffb703)"><div class="pic"></div><b>Synth patch walkthrough</b></div><div class="mini" style="--g:linear-gradient(135deg,#f72585,#7209b7)"><div class="pic"></div><b>Weeknight noodle recipe</b></div><div class="mini" style="--g:linear-gradient(135deg,#4361ee,#4cc9f0)"><div class="pic"></div><b>Repo: offline-first sync</b></div><div class="mini" style="--g:linear-gradient(135deg,#06d6a0,#118ab2)"><div class="pic"></div><b>Trail map for the coast walk</b></div><div class="mini" style="--g:linear-gradient(135deg,#7209b7,#4361ee)"><div class="pic"></div><b>Thread on type design</b></div><div class="mini" style="--g:linear-gradient(135deg,#ffb703,#fb8500)"><div class="pic"></div><b>Cabin rentals to compare</b></div><div class="mini" style="--g:linear-gradient(135deg,#4cc9f0,#7209b7)"><div class="pic"></div><b>Talk: local-first apps</b></div><div class="mini" style="--g:linear-gradient(135deg,#80ed99,#38a3a5)"><div class="pic"></div><b>Houseplant care sheet</b></div><div class="mini" style="--g:linear-gradient(135deg,#f72585,#ffb703)"><div class="pic"></div><b>Synth patch walkthrough</b></div>
-              </div>
-            </div>
-          </article>
-
-          <article>
-            <span class="tag" style="--c:var(--pink)">Picture-first library</span>
-            <h3>The picture stays clear; details rise on hover</h3>
-            <p>Every saved link is a tile led by its preview. Point at one and a panel slides up with the site,
-              summary, shelf and quick actions. Drag tiles into your own order and it is remembered.</p>
-            <div class="tiles" aria-hidden="true">
-              <div class="tile" style="--g:linear-gradient(135deg,#ffb703,#f72585)"></div>
-              <div class="tile is-open" style="--g:linear-gradient(135deg,#4cc9f0,#4361ee)">
-                <div class="pop"><small>travel · 4 min read</small><b>A slow week on the Azores</b><span><i>Keep</i><i>Later</i></span></div>
-              </div>
-              <div class="tile" style="--g:linear-gradient(135deg,#80ed99,#38a3a5)"></div>
-            </div>
-          </article>
-
-          <article>
-            <span class="tag" style="--c:var(--blue)">No picture? Still a good card</span>
-            <h3>Posts look like where they came from</h3>
-            <p>When a site won't share a thumbnail, the card shows the post's words, styled for its platform. No words either?
-              Twelve social and messaging sites get artwork in their own colours.</p>
-            <div class="cards" aria-hidden="true">
-              <div class="pc x"><span class="who"><i style="--c:#3a8f6e"></i>@devnotes</span>Ship less. Delete the settings page nobody opens.</div>
-              <div class="pc tt"><span class="who">@kitchenlab</span>Crispy chickpeas in 12 minutes</div>
-              <div class="pc fb"><span class="who"><i style="--c:#4f8ef7"></i>Lisbon walks</span>Pastel de nata walk, Saturday at 9</div>
-              <div class="pc rd"><span class="sub-chip">r/homelab</span><b>My tiny 10-inch rack</b></div>
-              <div class="pc ig"><span class="who"><i style="--c:#e1306c"></i>Instagram reel</span>Lemon olive oil cake</div>
-              <div class="pc web"><span class="who">example.com</span><strong>How mechanical watches keep time</strong></div>
-            </div>
-          </article>
-
-          <article id="ai">
-            <span class="tag" style="--c:var(--lav)">Optional AI, free keys</span>
-            <h3>Tidy messy captions into clean titles</h3>
-            <p>Point it at FreeLLMAPI (one key for many free AI services) or a model on your PC, and the app suggests a shelf,
-              a few tags, a clean title and a one-line summary. Review every suggestion, or let it sort hundreds of links in the
-              background and undo it if you change your mind; your own edits are never overwritten. Without a key, local keyword rules sort your links.</p>
-            <div class="providers"><span>FreeLLMAPI</span><span>Ollama / local</span><span>Google Gemini</span><span>Groq</span><span>OpenRouter</span><span>NVIDIA NIM</span></div>
-          </article>
-
-          <article>
-            <span class="tag" style="--c:#25d366">Your data, your machine</span>
-            <h3>Local first, with backups you own</h3>
-            <p>Links and notes live in a SQLite file on your PC; keys stay in your user profile. Previews and saved copies contact the saved
-              sites, Telegram actions contact Telegram, and AI is used only if you add a key.
-              <a class="text-link" href="https://github.com/browser-b0X/super-bookmark-manager#local-data-and-privacy">Privacy details</a></p>
-          </article>
-        </div>
-      </section>
-
-      <section id="new" aria-labelledby="new-title">
-        <h2 id="new-title">New in v0.4.0</h2>
-        <p class="sub">Save the posts you see, tidy from a Claude chat, know who made what you saved, and undo anything. Shown with sample links.</p>
-        <div class="tour">
-          <figure class="shot">
-            <figcaption><h3>Save the posts you see</h3><p>The browser extension lists the posts already loaded in your tab on X, Instagram or TikTok; tick the ones to keep. It never scrolls, opens posts or keeps a login, and it talks only to the app on your PC.</p></figcaption>
-            <div class="shot-frame">
-              <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>Save to SuperBookmarks</span></div>
-              <img class="img-dark" src="screenshots/save-posts-dark.webp" width="1440" height="730" loading="lazy"
-                   alt="The extension's Save window in dark mode on an X search: posts already loaded in the tab, two ticked, one already saved, with status, tags and Save 2 posts.">
-              <img class="img-light" src="screenshots/save-posts-light.webp" width="1440" height="730" loading="lazy"
-                   alt="The extension's Save window in light mode: posts already loaded in the tab, two ticked, one already saved.">
-            </div>
-          </figure>
-          <figure class="shot">
-            <figcaption><h3>Who made what you saved</h3><p>Creators are worked out from the posts themselves: names and handles across sites, merge two that are the same person, and see what's new since you looked. Nothing is checked online.</p></figcaption>
-            <div class="shot-frame">
-              <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>127.0.0.1:5001 — SuperBookmarks</span></div>
-              <img class="img-dark" src="screenshots/creators-dark.webp" width="1440" height="730" loading="lazy"
-                   alt="Creators in dark mode: a card for each creator with their handles on X, Instagram, TikTok and Reddit, how many posts were saved and when.">
-              <img class="img-light" src="screenshots/creators-light.webp" width="1440" height="730" loading="lazy"
-                   alt="Creators in light mode: a card for each creator with their handles, how many posts were saved and when, one marked +1 new since you looked.">
-            </div>
-          </figure>
-          <figure class="shot">
-            <figcaption><h3>A search that says what it read</h3><p><code>or</code>, <code>-word</code>, "phrases", groups and dates, read back under the box. Save a search as a smart shelf, built from rules.</p></figcaption>
-            <div class="shot-frame">
-              <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>127.0.0.1:5001 — SuperBookmarks</span></div>
-              <img class="img-dark" src="screenshots/search-dark.webp" width="1440" height="730" loading="lazy"
-                   alt="The library in dark mode searched for (#bread or #rye) -sourdough saved:30d, with the chips that read it back under the box.">
-              <img class="img-light" src="screenshots/search-light.webp" width="1440" height="730" loading="lazy"
-                   alt="The library in light mode with a search read back as chips: any of #bread, #rye; not the word sourdough; saved 30d.">
-            </div>
-          </figure>
-          <figure class="shot">
-            <figcaption><h3>Clean up, and undo anything</h3><p>Links of one post saved at two addresses merge into one; links you remove are remembered so they can come back; History undoes any change to many links at once.</p></figcaption>
-            <div class="shot-frame">
-              <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>127.0.0.1:5001 — SuperBookmarks</span></div>
-              <img class="img-dark" src="screenshots/cleanup-dark.webp" width="1440" height="730" loading="lazy"
-                   alt="Settings in dark mode, Clean up and undo: an X post saved at two addresses with Merge, a removed link with Bring back, and History.">
-              <img class="img-light" src="screenshots/cleanup-light.webp" width="1440" height="730" loading="lazy"
-                   alt="Settings in light mode, Clean up and undo: the same post saved twice, removed links and History with Undo.">
-            </div>
-          </figure>
-        </div>
-        <p class="note">Claude Desktop: the SuperBookmarks extension for Claude Desktop lets you find and file links from a Claude chat under your own Claude plan, with no API key; every change it makes can be undone in the app.</p>
-      </section>
-
-      <section id="tour" aria-labelledby="tour-title">
-        <h2 id="tour-title">A closer look</h2>
-        <p class="sub">The library, a page kept on your PC and a big shelf sorted by website, shown with sample links.</p>
-        <div class="tour">
-          <figure class="shot">
-            <figcaption><h3>Every link is a picture</h3><p>Point at a tile and its details rise: the site, status, shelf and quick actions. Social posts without a picture are drawn in their site's colours.</p></figcaption>
-            <div class="shot-frame">
-              <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>127.0.0.1:5001 — SuperBookmarks</span></div>
-              <img class="img-dark" src="screenshots/library-dark.webp" width="1440" height="820" loading="lazy"
-                   alt="The library in dark mode: picture tiles, social posts drawn in their site's colours, and one tile's panel with its site, status, shelf and Open, Later, Archive and Details.">
-              <img class="img-light" src="screenshots/library-light.webp" width="1440" height="820" loading="lazy"
-                   alt="The library in light mode: picture tiles, social posts drawn in their site's colours, and one tile's panel with its site, status, shelf and quick actions.">
-            </div>
-          </figure>
-          <figure class="shot">
-            <figcaption><h3>Pages that don't disappear</h3><p>The app keeps its own copy of each page you save. It opens in a reader inside the app, as saved or as text only, even after the site has changed or gone. Scripts never run in it.</p></figcaption>
-            <div class="shot-frame">
-              <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>127.0.0.1:5001 — SuperBookmarks</span></div>
-              <img class="img-dark" src="screenshots/saved-copy-dark.webp" width="1440" height="900" loading="lazy"
-                   alt="A saved copy of a recipe page open in the app's reader in dark mode, beside the link's panel with its saved copy, status, follow-up and shelves.">
-              <img class="img-light" src="screenshots/saved-copy-light.webp" width="1440" height="900" loading="lazy"
-                   alt="A saved copy of a recipe page open in the app's reader in light mode, beside the link's panel.">
-            </div>
-          </figure>
-          <figure class="shot">
-            <figcaption><h3>Sort a big shelf in minutes</h3><p>Group any shelf by website and move a whole site to another shelf at once, with Undo.</p></figcaption>
-            <div class="shot-frame">
-              <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>127.0.0.1:5001 — SuperBookmarks</span></div>
-              <img class="img-dark" src="screenshots/by-website-dark.webp" width="1440" height="730" loading="lazy"
-                   alt="A shelf with 114 links grouped by website in dark mode: github.com, medium.com and youtube.com rows, each with Move all to shelf.">
-              <img class="img-light" src="screenshots/by-website-light.webp" width="1440" height="730" loading="lazy"
-                   alt="A shelf with 114 links grouped by website in light mode.">
-            </div>
-          </figure>
-        </div>
-      </section>
-
-      <section aria-labelledby="how-title">
-        <h2 id="how-title">From scattered to sorted in three steps</h2>
-        <p class="sub">Where your links come from, what the app does with them, and what you get.</p>
-        <figure class="flow">
-          <picture class="img-dark">
-            <source media="(max-width: 640px)" srcset="assets/flow-portrait-dark.webp" width="800" height="2100">
-            <img src="assets/readme-flow-dark.webp" width="1680" height="1040" loading="lazy" alt="How links flow in. On the left, where they come from: browser bookmarks from Chrome, Edge, Brave or Firefox; Telegram Saved Messages; WhatsApp chats; the bookmark button; and pasted links. In the middle, SuperBookmarks on your Windows PC adds pictures and titles, files links onto shelves and keeps an offline copy. On the right, what you get: Home with one link at a time, shelves and search, follow-ups and the links you use often, and sharing and backups. Your library stays on your PC.">
-          </picture>
-          <picture class="img-light">
-            <source media="(max-width: 640px)" srcset="assets/flow-portrait-light.webp" width="800" height="2100">
-            <img src="assets/readme-flow-light.webp" width="1680" height="1040" loading="lazy" alt="How links flow in. On the left, where they come from: browser bookmarks from Chrome, Edge, Brave or Firefox; Telegram Saved Messages; WhatsApp chats; the bookmark button; and pasted links. In the middle, SuperBookmarks on your Windows PC adds pictures and titles, files links onto shelves and keeps an offline copy. On the right, what you get: Home with one link at a time, shelves and search, follow-ups and the links you use often, and sharing and backups. Your library stays on your PC.">
-          </picture>
-        </figure>
-        <ol class="steps">
-          <li><h3>Bring your links in</h3><p>Drop a browser export, a Telegram JSON file or a WhatsApp chat export into Settings, connect Telegram, or use the bookmark button. The format is detected and you see a preview before anything is saved.</p></li>
-          <li><h3>Sort on Home</h3><p>Keep, later or archive each new link with a click or an arrow key — or open it to read first. Any shelf groups by website, so a whole site moves to a shelf at once.</p></li>
-          <li><h3>Find it again</h3><p>Search with filters like <code>site:</code>, <code>#tag</code> and <code>is:later</code>, save views, give a link a day to come back to, and open its saved copy if the page is gone.</p></li>
-        </ol>
-      </section>
-
-      <section id="install" aria-labelledby="install-title">
-        <h2 id="install-title">Install in a minute</h2>
-        <div class="install">
-          <div>
-            <ol>
-              <li><strong>Download the latest release</strong> — the Windows installer and its checksum are on GitHub.</li>
-              <li><strong>Install and open it</strong> from the Start Menu. No Python or Node needed; it opens in your browser at <code>127.0.0.1:5001</code>.</li>
-              <li><strong>Bring your links</strong> in Settings. Telegram uses your own API keys; AI keys are optional.</li>
-              <li><strong>Optional:</strong> the browser extension and the Claude Desktop extension are on the same release page; <a class="text-link" href="https://github.com/browser-b0X/super-bookmark-manager#browser-extension">how to set them up</a>.</li>
-            </ol>
-            <div class="actions">
-              <a class="btn primary" href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest">
-                <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg> Get the latest release
-              </a>
-            </div>
-            <p class="note">The installer is unsigned and Windows SmartScreen may warn you. Check its SHA-256 against the published checksum before running it.</p>
-          </div>
-          <div>
-            <div class="terminal">
-              <div class="term-head"><span>Build from source · PowerShell</span><button class="copy" id="copy" type="button" hidden>Copy</button></div>
-              <pre tabindex="0" aria-label="Source setup commands"><code id="commands">git clone https://github.com/browser-b0X/super-bookmark-manager.git
-cd super-bookmark-manager
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r packaging/requirements-build.txt
-npm.cmd --prefix frontend ci
-npm.cmd --prefix frontend run build
-.\.venv\Scripts\python.exe run.py --serve-only</code></pre>
-              <div class="term-foot">Then open http://127.0.0.1:5001 and keep the server window running.</div>
-            </div>
-            <p class="status" id="copy-status" role="status" aria-live="polite"></p>
-            <p class="note">Needs Git, Python 3.12 and Node/npm. <a class="text-link" href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/BUILDING.md">Full build instructions</a></p>
-          </div>
-        </div>
-      </section>
-
-      <div class="feedback" aria-labelledby="feedback-title">
-        <div>
-          <h2 id="feedback-title">Found a bug? Have an idea?</h2>
-          <p class="sub">The GitHub button in the app's header leads here too. Reports and suggestions shape what comes next;
-            questions are welcome in <a href="https://github.com/browser-b0X/super-bookmark-manager/discussions">Discussions</a>.
-            Want to help build it? Start with the <a href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/CONTRIBUTING.md">contributing guide</a>.</p>
-          <p class="sub support">Enjoying it? You can <a href="https://bio.site/browserb0x">support the project</a> (Ko-fi and
-            Buy Me a Coffee are both on that page) — appreciated, never expected.</p>
-        </div>
-        <div class="actions">
-          <a class="btn primary" href="https://github.com/browser-b0X/super-bookmark-manager/issues/new/choose">
-            <svg class="icon" aria-hidden="true"><use href="#i-bug"/></svg> Report a bug or suggest an idea
-          </a>
-          <a class="btn" href="https://github.com/browser-b0X/super-bookmark-manager">
-            <svg class="icon" aria-hidden="true"><use href="#i-github"/></svg> Star or browse the code
-          </a>
+        <div class="support">
+          <h2>Support the project</h2>
+          <p>Ko-fi and Buy Me a Coffee are both on that page.</p>
+          <a class="pill" href="https://bio.site/browserb0x">Support on Bio Sites</a>
+          <blockquote>Every contribution is appreciated, but never expected. Using the project, reporting bugs, and sharing it with others helps too.</blockquote>
         </div>
       </div>
-    </div>
+    </section>
   </main>
 
-  <footer>
-    <div class="wrap foot">
-      <span>© 2026 browser-b0X · SuperBookmarks · MIT license</span>
-      <nav aria-label="Footer navigation">
-        <a href="https://github.com/browser-b0X/super-bookmark-manager">GitHub</a>
-        <a href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/LICENSE">License</a>
-        <a href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/SECURITY.md">Security</a>
-        <a href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/CONTRIBUTING.md">Contributing</a>
-        <a href="https://github.com/browser-b0X/super-bookmark-manager/issues">Issues</a>
-      </nav>
+  <footer class="foot">
+    <div class="wrap">
+      <div class="foot__top">
+        <a class="brand" href="#main" aria-label="SuperBookmarks, back to the top"><svg aria-hidden="true"><use href="#i-jar"/></svg><span>SuperBookmarks</span></a>
+        <nav aria-label="Footer">
+          <ul>
+            <li><a href="https://github.com/browser-b0X/super-bookmark-manager">GitHub</a></li>
+            <li><a href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/LICENSE">License</a></li>
+            <li><a href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/TRADEMARKS.md">Trademarks</a></li>
+            <li><a href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/SECURITY.md">Security</a></li>
+            <li><a href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/CONTRIBUTING.md">Contributing</a></li>
+            <li><a href="https://github.com/browser-b0X/super-bookmark-manager/issues">Issues</a></li>
+          </ul>
+        </nav>
+      </div>
+      <p>The source code is MIT, copyright 2026 browser-b0X. The SuperBookmarks name and jar logo are the project’s trademarks,
+        not covered by that license and kept for the official project so that people can tell it from modified copies. Forks
+        are welcome under a different name and logo. The only official sources are the GitHub repository and this website.</p>
+      <p>Figtree is used under the SIL Open Font License. Telegram, WhatsApp, X, Instagram, TikTok, Reddit, YouTube, Pocket,
+        Instapaper, Claude, Chrome, Edge, Brave, Firefox and Windows are trademarks of their owners; SuperBookmarks is an
+        independent project and is not affiliated with or endorsed by any of them.</p>
     </div>
   </footer>
 
@@ -677,22 +757,111 @@ npm.cmd --prefix frontend run build
         root.dataset.theme = next;
         try { localStorage.setItem("sbm-site-theme", next); } catch {}
       });
-      const button = document.getElementById("copy");
-      const code = document.getElementById("commands");
-      const status = document.getElementById("copy-status");
-      button.hidden = false;
-      button.addEventListener("click", async () => {
-        try {
-          if (!window.isSecureContext || !navigator.clipboard) throw new Error("no clipboard");
-          await navigator.clipboard.writeText(code.textContent.trim());
-          status.textContent = "Commands copied. Paste them into PowerShell.";
-        } catch {
-          const range = document.createRange();
-          range.selectNodeContents(code);
-          const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
-          status.textContent = "Commands selected. Press Ctrl+C to copy.";
-        }
+
+      // The New to sort card, as on Home: made-up links, sorted with the buttons or the arrow keys while it has focus.
+      const LINKS = [
+        { picture: "cliff-article", site: "coastwalks.example", ago: "saved 1h ago", from: "from Telegram", shelf: "travel",
+          title: "The cliff path from the old harbour", desc: "Nine kilometres from the harbour wall to the lighthouse, with one steep climb." },
+        { picture: "ferry", site: "ferries.example", ago: "saved 3h ago", from: "from WhatsApp", shelf: "travel",
+          title: "Ferry times for the islands", desc: "Summer timetable, every crossing and the last boat back." },
+        { picture: "focaccia", site: "kitchen-notes.example", ago: "saved 1d ago", from: "from your browser", shelf: "food-drink",
+          title: "Overnight focaccia that forgives everything", desc: "A wet dough, a cold fridge and twelve hours of doing nothing." },
+        { picture: "cabin", site: "cabins.example", ago: "saved 2d ago", from: "added by you", shelf: "travel",
+          title: "Cabin rentals to compare", desc: "Six cabins under the pines, side by side." },
+      ];
+      const DONE = { archive: "Archived", later: "Saved for later", keep: "Kept" };
+      const NAMES = { archive: "Archive", later: "Later", keep: "Keep" };
+      const KEYS = { ArrowLeft: "archive", ArrowDown: "later", ArrowRight: "keep" };
+      const $ = id => document.getElementById(id);
+      const demo = $("demo"), card = $("deck-card"), area = $("deck-area"), done = $("deck-done"), status = $("deck-status");
+      const progress = $("deck-progress"), bar = progress.firstElementChild, count = $("deck-count");
+      const moves = [...demo.querySelectorAll("[data-move]")];
+      const still = matchMedia("(prefers-reduced-motion: reduce)");
+      let at = 0, busy = false;
+      const history = [];
+      LINKS.forEach(link => { new Image().src = `assets/pictures/${link.picture}.svg`; });
+
+      function render(entering) {
+        const finished = at >= LINKS.length;
+        area.classList.toggle("is-done", finished); done.hidden = !finished;
+        progress.setAttribute("aria-valuenow", String(at));
+        bar.style.width = `${(Math.min(at + 1, LINKS.length) / LINKS.length) * 100}%`;
+        if (finished) { count.textContent = "All 4 sorted"; return; }
+        const link = LINKS[at];
+        count.textContent = `${at + 1} of ${LINKS.length} · ${link.from}`;
+        $("deck-picture").src = `assets/pictures/${link.picture}.svg`;
+        $("deck-meta").textContent = `${link.site} · ${link.ago}`;
+        $("deck-title").textContent = link.title;
+        $("deck-desc").textContent = link.desc;
+        $("deck-shelf").textContent = link.shelf;
+        moves.forEach(button => button.setAttribute("aria-label", `${NAMES[button.dataset.move]}: ${link.title}`));
+        card.className = "deck__card";
+        if (entering && !still.matches) { void card.offsetWidth; card.classList.add("is-in"); }
+      }
+      function move(kind) {
+        if (busy || at >= LINKS.length) return;
+        history.push(at);
+        status.textContent = `${DONE[kind]}: ${LINKS[at].title}.`;
+        const next = () => { busy = false; at += 1; render(true); if (at >= LINKS.length) $("deck-again").focus(); };
+        if (still.matches) { next(); return; }
+        busy = true;
+        card.classList.add(`is-leaving-${kind}`);
+        setTimeout(next, 240);
+      }
+      function undo() {
+        if (busy || !history.length) return;
+        at = history.pop();
+        status.textContent = `Undone: ${LINKS[at].title} is back.`;
+        render(true);
+      }
+      moves.forEach(button => button.addEventListener("click", () => move(button.dataset.move)));
+      demo.addEventListener("keydown", event => {
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        if (KEYS[event.key]) { event.preventDefault(); move(KEYS[event.key]); }
+        else if (event.key === "z" || event.key === "Z") { event.preventDefault(); undo(); }
       });
+      $("deck-again").addEventListener("click", () => {
+        at = 0; history.length = 0; status.textContent = "Four new links to sort.";
+        render(true); moves[0].focus();
+      });
+      render(false);
+
+      // The film is the one on the README, served by GitHub. Nothing is asked of GitHub until Play is pressed.
+      const play = $("film-play");
+      play.addEventListener("click", event => {
+        event.preventDefault();
+        const film = document.createElement("video");
+        film.controls = true; film.autoplay = true; film.playsInline = true;
+        film.poster = "assets/film-poster.webp";
+        film.setAttribute("aria-label", "SuperBookmarks in 60 seconds");
+        film.addEventListener("error", () => { $("film-note").hidden = false; }, { once: true });
+        film.src = play.href;
+        $("film-frame").replaceChildren(film);
+        play.hidden = true;
+        film.focus();
+      });
+
+      // The demo of Home: plays while it is on screen, pauses with its button, waits for a press when motion is reduced.
+      const figure = $("demo-figure"), toggle = $("demo-toggle"), demos = [...figure.querySelectorAll("video")];
+      let onScreen = false, paused = still.matches;
+      const shown = () => demos.find(video => getComputedStyle(video).display !== "none");
+      function syncDemo() {
+        const current = shown(), run = onScreen && !paused;
+        demos.forEach(video => { if (video !== current || !run) video.pause(); });
+        if (current && run) current.play().catch(() => { paused = true; label(); });
+        label();
+      }
+      function label() {
+        toggle.dataset.playing = String(!paused);
+        toggle.setAttribute("aria-label", paused ? "Play the demo" : "Pause the demo");
+      }
+      if ("IntersectionObserver" in window) {
+        demos.forEach(video => { video.controls = false; });
+        toggle.hidden = false;
+        toggle.addEventListener("click", () => { paused = !paused; syncDemo(); });
+        new IntersectionObserver(entries => { onScreen = entries[entries.length - 1].isIntersecting; syncDemo(); }, { rootMargin: "120px" }).observe(figure);
+        $("theme").addEventListener("click", syncDemo);
+      }
     })();
   </script>
 </body>
