@@ -1,4 +1,4 @@
-import { Clock, Repeat } from "lucide-react";
+import { Clock, Lock, Repeat } from "lucide-react";
 import type { SavedPost } from "../../types";
 import { useLibrary } from "../../store/library";
 import { FOLLOW_UP_DONE, dayOf, followUpLabel, followUpPresets, followUpState, shortDay } from "../../lib/followUp";
@@ -19,6 +19,12 @@ export function FollowUpBadge({ post, className = "" }: { post: SavedPost; class
 export function UseOftenMark({ post, className = "" }: { post: SavedPost; className?: string }) {
   if (!post.useOften) return null;
   return <span className={className} role="img" aria-label="Use often" title="Use often: in the quick row on Home"><Repeat size={13} aria-hidden="true" /></span>;
+}
+
+/** The small "reviewed" lock beside a link's title. */
+export function ReviewedMark({ post, className = "" }: { post: SavedPost; className?: string }) {
+  if (!post.reviewed) return null;
+  return <span className={className} role="img" aria-label="Reviewed" title="Reviewed: automatic sorting, refreshes and Claude Desktop leave it alone"><Lock size={11} aria-hidden="true" /></span>;
 }
 
 const heading = "mb-1.5 text-[.66rem] font-semibold tracking-[.8px] text-[var(--faint)] uppercase";
@@ -69,6 +75,16 @@ export function FollowUpSection({ post }: { post: SavedPost }) {
           <button type="button" role="switch" aria-checked={!!post.useOften} aria-label="Use often" className="switch"
             onClick={() => updatePost(post.id, { useOften: !post.useOften })} />
           <span>Keep it in the quick row on Home{opened ? <span className="text-[var(--faint)]"> · opened {opened} time{opened === 1 ? "" : "s"}</span> : null}</span>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <div className={heading}>Reviewed</div>
+        <div className="flex items-start gap-2.5 text-[.8rem]">
+          <button type="button" role="switch" aria-checked={!!post.reviewed} aria-label="Reviewed" className="switch mt-0.5"
+            onClick={() => updatePost(post.id, { reviewed: !post.reviewed })} />
+          <span>Leave it as it is <Lock size={11} className="inline text-[var(--dim)]" aria-hidden="true" />
+            <span className="block text-[.72rem] text-[var(--faint)]">Tidy up with AI, background sorting, automatic preview refreshes and Claude Desktop don't change it. You can still edit it.</span></span>
         </div>
       </div>
     </>

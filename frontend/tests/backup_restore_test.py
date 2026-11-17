@@ -59,7 +59,7 @@ class RestoreIntoTheLibrary(unittest.TestCase):
         raw = self.backup_of(post("a", "technology"), post("b"), deleted=["https://gone.example.invalid/"])
         fresh = self.use("new-install")
         preview, answer = self.restore(raw)
-        self.assertEqual((preview["recordCount"], preview["currentCount"]), (2, 0))
+        self.assertEqual((preview["recordCount"], preview["currentCount"], preview["savedFirst"]), (2, 0, False))
         self.assertEqual((answer["recordCount"], answer["safetyCopy"]), (2, ""), "nothing to keep from an empty library")
         library = app.app.test_client().get("/api/library", headers=H).json
         self.assertEqual(sorted(p["url"] for p in library["posts"]), ["https://a.example.invalid/", "https://b.example.invalid/"])
@@ -67,6 +67,24 @@ class RestoreIntoTheLibrary(unittest.TestCase):
         self.assertGreater(library["epoch"], 0)
         self.assertEqual(storage.get_backup_library(), json.loads(raw)["library"])
         self.assertFalse((fresh.parent / "restored-libraries").exists(), "no separate database any more")
+
+    def test_saved_views_travel_with_the_backup(self):
+        view = {"id": "v1", "name": "Recipes to try", "filter": {"kind": "category", "categoryId": "food"}, "updatedAt": AT}
+        self.use("old-install")
+        storage.save_library({"posts": [post("a")], "deletedUrls": [], "views": [view]})
+        raw = json.dumps(library_backup.export_backup())
+        self.assertEqual(json.loads(raw)["library"]["views"], [view])
+        self.use("new-install")
+        self.restore(raw)
+        self.assertEqual(app.app.test_client().get("/api/library", headers=H).json["views"], [view])
+        # A backup from before v0.4.0 has no views: restoring it keeps the views there are.
+        old = library_backup.export_backup()
+        del old["library"]["views"]
+        old["sha256"] = library_backup._checksum(old)
+        storage.save_library({"posts": [], "deletedUrls": [], "views": [{**view, "id": "v2", "name": "Mine"}],
+                              "epoch": storage.get_library()["epoch"]})
+        self.restore(json.dumps(old))
+        self.assertEqual([v["id"] for v in storage.get_library()["views"]], ["v1", "v2"])
 
     def test_a_library_with_links_is_saved_first_and_can_be_put_back(self):
         raw = self.backup_of(post("a"), post("b"))
@@ -83,6 +101,24 @@ class RestoreIntoTheLibrary(unittest.TestCase):
         _, back = self.restore(kept)
         self.assertEqual([p["id"] for p in storage.get_library()["posts"]], ["fixture-mine"])
         self.assertNotEqual(back["safetyCopy"], answer["safetyCopy"], "a second restore never overwrites the first safety copy")
+
+    def test_a_library_without_links_is_saved_first_if_it_holds_anything_a_restore_replaces(self):
+        view = {"id": "v1", "name": "Recipes to try", "filter": {"kind": "category", "categoryId": "food"}, "updatedAt": AT}
+        tag = {"id": "recipes", "name": "recipes", "parents": [], "aliases": [], "updatedAt": AT}
+        raw = self.backup_of(post("a"))
+        for name, held in (("views", {"views": [view]}), ("tags", {"docs": {"tags": [tag]}})):
+            with self.subTest(name):
+                self.use(name)
+                storage.save_library({"posts": [], "deletedUrls": [], **held})
+                preview, answer = self.restore(raw)
+                self.assertEqual((preview["currentCount"], preview["savedFirst"]), (0, True), "the preview says so before the restore")
+                library = storage.get_library()
+                self.assertEqual((library["views"], library["docs"]["tags"]), ([], []), "the backup has neither")
+                self.assertTrue(answer["safetyCopy"], "the restore replaced them, so this file is the only way back")
+                self.restore(Path(answer["safetyCopy"]).read_text(encoding="utf-8"))
+                library = storage.get_library()
+                self.assertEqual({"views": library["views"], "tags": library["docs"]["tags"]},
+                                 {"views": held.get("views", []), "tags": held.get("docs", {}).get("tags", [])})
 
     def test_a_tab_still_holding_the_replaced_library_is_told_to_reload(self):
         raw = self.backup_of(post("a"))

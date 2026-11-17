@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SuperBookmarks extension</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <h1><img src="icons/icon-48.png" width="28" height="28" alt=""> SuperBookmarks extension</h1>
+
+    <section class="panel" aria-labelledby="connect-heading">
+      <h2 id="connect-heading">Connect to the app</h2>
+      <p class="dim">Open SuperBookmarks, go to Settings → Sources → Save from your browser, and enter the pairing code shown there.</p>
+      <label>App address
+        <input id="app" type="url" autocomplete="off" spellcheck="false" value="http://127.0.0.1:5001">
+      </label>
+      <label>Pairing code
+        <span class="row">
+          <input id="code" class="mono" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX" maxlength="9">
+          <button id="connect" class="primary" type="button">Connect</button>
+        </span>
+      </label>
+      <p id="status" role="status" class="status"></p>
+    </section>
+
+    <section class="panel" aria-labelledby="check-heading">
+      <h2 id="check-heading">Check mark on saved pages</h2>
+      <div class="switch-row">
+        <button id="checkMark" type="button" role="switch" aria-checked="false" aria-labelledby="check-label" class="switch"></button>
+        <div>
+          <div id="check-label" class="label">Show a check mark on pages you've saved</div>
+          <p class="dim small">Off until you turn it on. Turning it on lets the extension see the address of the page you're on and ask
+            SuperBookmarks on this computer whether it's saved (your browser asks you to allow that). Addresses never leave this computer.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="posts-heading">
+      <h2 id="posts-heading">Posts on X, Instagram and TikTok</h2>
+      <p class="dim">On a profile, feed or search page, click the toolbar button: the Save window lists the posts already loaded in your tab,
+        and you tick the ones to save. That needs only the connection above: posts go to your SuperBookmarks and nowhere else.</p>
+      <div class="label sub">Download button on each post</div>
+      <p class="dim small">Off until you turn it on, one site at a time. The extension then puts a small SuperBookmarks button on each post
+        you see on that site; a post is read only when you click its button. It never scrolls, opens posts or reads anything in the
+        background, and it never uses your cookies or login.</p>
+      <div class="sites" role="group" aria-label="Download button on each post">
+        <div class="switch-row"><button id="marks-x" type="button" role="switch" aria-checked="false" aria-labelledby="marks-x-label" aria-describedby="marks-x-note" class="switch"></button>
+          <div><div id="marks-x-label" class="label">X</div><p id="marks-x-note" class="faint small"></p></div></div>
+        <div class="switch-row"><button id="marks-instagram" type="button" role="switch" aria-checked="false" aria-labelledby="marks-instagram-label" aria-describedby="marks-instagram-note" class="switch"></button>
+          <div><div id="marks-instagram-label" class="label">Instagram</div><p id="marks-instagram-note" class="faint small"></p></div></div>
+        <div class="switch-row"><button id="marks-tiktok" type="button" role="switch" aria-checked="false" aria-labelledby="marks-tiktok-label" aria-describedby="marks-tiktok-note" class="switch"></button>
+          <div><div id="marks-tiktok-label" class="label">TikTok</div><p id="marks-tiktok-note" class="faint small"></p></div></div>
+      </div>
+      <p class="faint small">With "Check mark on saved pages" on as well, the buttons of posts you've already saved turn green: the extension
+        asks SuperBookmarks on this computer about the addresses of the posts loaded in the tab, and nothing else of them.</p>
+    </section>
+
+    <details class="panel support">
+      <summary>For support</summary>
+      <div class="switch-row">
+        <button id="structureMenu" type="button" role="switch" aria-checked="false" aria-labelledby="structure-label" class="switch"></button>
+        <div>
+          <div id="structure-label" class="label">Add "Copy page structure" to the right-click menu</div>
+          <p class="dim small">For when saving posts from a site stops working. On that site's page, right-click, choose it, and send what it
+            shows to whoever is helping you. It has only what the page is built of: tag names, test ids, roles and class names. No text,
+            links, pictures or names.</p>
+        </div>
+      </div>
+    </details>
+
+    <section class="panel" aria-labelledby="why-heading">
+      <h2 id="why-heading">What the extension can do, and why</h2>
+      <ul>
+        <li><b>Read the page you're on, when you click its button</b> (activeTab, scripting): the address and title, and on X, Instagram
+          and TikTok the posts on the page, for the Save window.</li>
+        <li><b>Add "Save link to SuperBookmarks" to the right-click menu</b> (contextMenus), and "Copy page structure" if you turn it on.</li>
+        <li><b>Remember the connection</b> (storage), on this computer.</li>
+        <li><b>Talk to the app at 127.0.0.1 only</b>: never to a website or a server of ours.</li>
+        <li><b>Only if you turn on the check mark:</b> see the address of the page you're on (tabs).</li>
+        <li><b>Only for the sites you switch on:</b> put a Download button on their posts (access to that site).</li>
+      </ul>
+      <p class="faint small">No access to your history, cookies or logins.</p>
+    </section>
+  </main>
+  <script src="verify.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

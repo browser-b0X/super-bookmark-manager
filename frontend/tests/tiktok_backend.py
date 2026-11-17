@@ -7,15 +7,19 @@ that behaves like yt-dlp; nothing is downloaded from GitHub and nothing
 reaches tiktok.com.
 """
 import hashlib
+import html
 import json
 import os
+from pathlib import Path
 import stat
 import sys
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
 from archive_backend import BASE_URL, CDN, JPEG, PNG, ROOT, ArchiveCase, archive, dashboard, storage
+from fake_program import program_bytes
 import tiktok_post
 import video_helper
 
@@ -32,6 +36,10 @@ if log:
 if args == ["--version"]:
     print("2026.08.19")
     sys.exit(0)
+info = os.environ.get("FAKE_HELPER_INFO")
+if info and "--write-info-json" in args:   # as yt-dlp: the post's details first, before any video
+    with open(args[args.index("-o") + 1].replace("%(ext)s", "info.json"), "w", encoding="utf-8") as handle:
+        handle.write(info)
 mode = os.environ.get("FAKE_HELPER_MODE", "ok")
 if mode == "fail":
     sys.exit(1)
@@ -48,6 +56,8 @@ target = args[args.index("-o") + 1].replace("%(ext)s", "mp4")
 with open(target, "wb") as handle:
     handle.write({mp4!r} if mode == "ok" else b"<html>not a video</html>")
 '''.replace("{python}", sys.executable).replace("{mp4!r}", repr(MP4))
+# The stand-in as a program this system runs (on Windows, inside pip's launcher: see fake_program.py).
+HELPER_PROGRAM = program_bytes(FAKE_HELPER)
 
 
 def oembed(**changes):
@@ -60,11 +70,38 @@ def oembed(**changes):
     return data
 
 
+def player_only(identifier="7551234567890123456"):
+    """The fields of TikTok's oEmbed answer for a public post on 2026-11-03 (the values made up): its player alone."""
+    return {"version": "1.0", "type": "video", "width": "100%", "height": "100%",
+            "html": f'<iframe src="https://www.tiktok.com/player/v1/{identifier}" allow="fullscreen"></iframe>',
+            "provider_url": "https://www.tiktok.com", "provider_name": "TikTok", "embed_product_id": identifier,
+            "embed_type": "video"}
+
+
+PAGE_PATH = "/@kitchen.notes/video/7551234567890123456"
+CAPTION = "Overnight focaccia, the lazy way <script>x()</script> #bread"
+
+
+def post_page(cover=f"{CDN}/obj/cover.jpeg", address="https://www.tiktok.com" + PAGE_PATH, caption=CAPTION):
+    return ('<!doctype html><html><head><title>TikTok</title><meta property="og:title" content="TikTok · Kitchen Notes">'
+            + (f'<meta property="og:description" content="{html.escape(caption)}">' if caption else "")
+            + (f'<meta property="og:image" content="{cover}">' if cover else "")
+            + f'<meta property="og:url" content="{address}"></head><body><div id="app"></div></body></html>')
+
+
+# What TikTok may show a visitor it won't show the post to: its home page's tags.
+HOME_PAGE = ('<!doctype html><html><head><title>TikTok - Make Your Day</title>'
+             '<meta property="og:description" content="TikTok - trends start here.">'
+             f'<meta property="og:image" content="{CDN}/obj/logo.png"><meta property="og:url" content="https://www.tiktok.com/">'
+             '</head></html>')
+
+
 class TikTokCase(ArchiveCase):
     def setUp(self):
         super().setUp()
-        self.helpers = ROOT / (self._testMethodName + "-helpers")
-        self.helpers.mkdir()
+        # A short name: Windows can't start a program whose full path is 260 characters or more, and a test's name in it
+        # took the stand-in helper past that when the checkout sat in a long folder.
+        self.helpers = Path(tempfile.mkdtemp(prefix="h-", dir=ROOT))
         for target, name, value in ((tiktok_post, "OEMBED", BASE_URL + "/oembed?url="),
                                     (tiktok_post, "_PICTURE_SUFFIXES", (".fixture.test",)),
                                     (tiktok_post, "_PICTURE_SCHEMES", ("http", "https")),
@@ -87,7 +124,7 @@ class TikTokCase(ArchiveCase):
 
     def plant_helper(self, checked_at=None):
         path = self.helpers / video_helper.ASSET
-        path.write_text(FAKE_HELPER)
+        path.write_bytes(HELPER_PROGRAM)
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         now = checked_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         (self.helpers / "helper.json").write_text(json.dumps({"version": "2026.08.19", "sha256": "x", "checkedAt": now}))
@@ -127,6 +164,18 @@ class LinkTests(unittest.TestCase):
         real, cover = tiktok_post.parse(oembed(thumbnail_url="https://p16-sign-va.tiktokcdn.com/obj/x.jpeg"), VIDEO_URL, "1")
         self.assertEqual(cover, "https://p16-sign-va.tiktokcdn.com/obj/x.jpeg")
         self.assertEqual((real.site, real.link, real.handle), ("TikTok", VIDEO_URL, "kitchen.notes"))
+
+
+    def test_the_page_for_link_previews_names_the_post_in_base_36(self):
+        # What TikTok's page for link previews said about its documented example post on 2026-11-04: og:url names the
+        # post by its number in base 36, after an "e", and the cover is on TikTok's picture host.
+        tags = {"final": "https://www.tiktok.com/@scout2015/video/6718335390845095173", "summary": "A caption",
+                "address": "https://www.tiktok.com/@scout2015/video/e1f1jf4uutrchx",
+                "image": "https://p19-common-sign.tiktokcdn-us.com/obj/cover.jpeg"}
+        self.assertEqual(tiktok_post.page_details(tags, "6718335390845095173"), ("A caption", tags["image"]))
+        for other in ("https://www.tiktok.com/@scout2015/video/e1f1jf4uutrchy", "https://www.tiktok.com/@scout2015/video/e1f1jf4uutrchxx",
+                      "https://www.tiktok.com/"):
+            self.assertEqual(tiktok_post.page_details({**tags, "address": other}, "6718335390845095173"), ("", ""), other)
 
 
 class SaveTests(TikTokCase):
@@ -180,7 +229,7 @@ class SaveTests(TikTokCase):
             self.assertLess(time.monotonic() - started, 10)
             self.assertTrue(record["videoMissing"])
 
-    @unittest.skipIf(sys.platform == "win32", "process groups: the Windows path uses taskkill /T")
+    # Linux stops the helper's process group; Windows runs `taskkill /T` (the stand-in is a real program there too).
     def test_a_helper_that_runs_too_long_is_stopped_with_everything_it_started(self):
         self.serve()
         self.plant_helper()
@@ -242,9 +291,146 @@ class SaveTests(TikTokCase):
         start.assert_not_called()
 
 
+class PlayerOnlyTests(TikTokCase):
+    """Owner, 2026-11-03: every TikTok post's copy said it was deleted, private or for signed-in people only. TikTok's
+    oEmbed answer had become its player alone; the caption and cover now come from the post's page."""
+
+    def setUp(self):
+        super().setUp()
+        # create: these tests also run against the code before the fix, and fail there.
+        patcher = patch.object(tiktok_post, "PAGES", BASE_URL, create=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.image("/obj/logo.png", PNG, "image/png")
+
+    def page(self, under_the_apps_name, under_whatsapps=None):
+        def answer(handler):
+            crawler = handler.headers.get("User-Agent", "").startswith("WhatsApp/")
+            body = (under_whatsapps if crawler and under_whatsapps is not None else under_the_apps_name).encode()
+            handler.send_response(200)
+            handler.send_header("Content-Type", "text/html; charset=utf-8")
+            handler.send_header("Content-Length", str(len(body)))
+            handler.end_headers()
+            handler.wfile.write(body)
+        self.http.routes[PAGE_PATH] = answer
+
+    def page_requests(self):
+        return [headers.get("User-Agent", "") for path, headers in self.http.requests if path == PAGE_PATH]
+
+    def test_caption_and_cover_come_from_the_post_page(self):
+        self.serve(data=player_only())
+        self.page(post_page())
+        record = archive.save_copy(VIDEO_URL)
+        self.assertEqual((record["kind"], record["images"], record["videoMissing"]), ("tiktok-post", 1, True))
+        self.assertEqual(record["title"], f"@kitchen.notes on TikTok: “{CAPTION}”")
+        document = (self.store / f"{self.key}.html").read_text()
+        self.assertIn('<img alt="Video cover" src="data:image/jpeg;base64,', document)
+        self.assertIn("Overnight focaccia, the lazy way &lt;script&gt;x()&lt;/script&gt; #bread", document)
+        self.assertNotIn("<script", document)
+        self.assertNotIn("iframe", document, "TikTok's player is never used")
+        self.assertIn("Saved without the video. To keep the video too, get the video helper in Settings, then choose Update.", document)
+        [asked] = self.page_requests()
+        self.assertTrue(asked.startswith("Mozilla/5.0 (compatible; SuperBookmarkManager"), "under the app's own name first")
+
+    def test_with_the_helper_the_video_is_kept_too(self):
+        self.serve(data=player_only())
+        self.page(post_page())
+        self.plant_helper()
+        record = archive.save_copy(VIDEO_URL)
+        self.assertEqual((record["video"], record["videoMissing"], record["images"]), (True, False, 1))
+        self.assertEqual((self.store / f"{self.key}.mp4").read_bytes(), MP4)
+
+    def test_without_a_picture_it_asks_once_more_as_previews_do(self):
+        # Previews ask under WhatsApp's link-preview crawler's name when a page gives no picture; so does the copy.
+        self.serve(data=player_only())
+        self.page(post_page(cover=""), under_whatsapps=post_page())
+        record = archive.save_copy(VIDEO_URL)
+        self.assertEqual(record["images"], 1)
+        self.assertEqual(record["title"], f"@kitchen.notes on TikTok: “{CAPTION}”")
+        first, second = self.page_requests()
+        self.assertTrue(first.startswith("Mozilla/5.0 (compatible; SuperBookmarkManager"))
+        self.assertTrue(second.startswith("WhatsApp/"))
+
+    def test_the_pages_as_tiktok_answered_them_on_2026_11_04(self):
+        # Under the app's name TikTok's page had no preview tags at all; under WhatsApp's, its og:url named the post in
+        # base 36 (see LinkTests). The first live check of the fix stopped there with post_unread.
+        self.serve(data=player_only())
+        self.page('<!doctype html><html><head><title>TikTok - Make Your Day</title></head><body><div id="app"></div></body></html>',
+                  under_whatsapps=post_page(address="https://www.tiktok.com/@kitchen.notes/video/e1ldch92jiw43k"))
+        record = archive.save_copy(VIDEO_URL)
+        self.assertEqual((record["images"], record["title"]), (1, f"@kitchen.notes on TikTok: “{CAPTION}”"))
+        self.assertEqual([agent.split("/")[0] for agent in self.page_requests()], ["Mozilla", "WhatsApp"])
+
+    def test_with_the_helper_the_caption_and_name_come_from_its_details(self):
+        # Owner, 2026-11-04: TikTok's pages give the cover but no caption; the helper's run writes the post's details
+        # beside the video (yt-dlp's info JSON, no other request), so the caption and the author's name come from there.
+        self.serve(data=player_only())
+        self.page(post_page(caption=""))
+        self.plant_helper()
+        details = json.dumps({"description": "Sourdough, day three <b>#bread</b>", "channel": "Kitchen Notes", "uploader": "kitchen.notes"})
+        with patch.dict(os.environ, {"FAKE_HELPER_INFO": details}):
+            record = archive.save_copy(VIDEO_URL)
+        self.assertEqual(record["title"], "Kitchen Notes on TikTok: “Sourdough, day three <b>#bread</b>”")
+        self.assertEqual((record["video"], record["images"]), (True, 1))
+        document = (self.store / f"{self.key}.html").read_text()
+        self.assertIn("Sourdough, day three &lt;b&gt;#bread&lt;/b&gt;", document)
+        self.assertNotIn("didn't share", document)
+        self.assertIn("--write-info-json", self.calls()[0])
+        # yt-dlp writes the details before the video: a video too large still leaves its caption.
+        with patch.dict(os.environ, {"FAKE_HELPER_INFO": details, "FAKE_HELPER_MODE": "too_big"}):
+            record = archive.save_copy(VIDEO_URL)
+        self.assertEqual((record["title"], record["videoMissing"]), ("Kitchen Notes on TikTok: “Sourdough, day three <b>#bread</b>”", True))
+
+    def test_without_a_caption_the_copy_says_why(self):
+        self.serve(data=player_only())
+        self.page(post_page(caption=""))
+        record = archive.save_copy(VIDEO_URL)
+        self.assertEqual(record["title"], "@kitchen.notes on TikTok")
+        self.assertIn("Saved without the video or its caption. To keep both, get the video helper in Settings, then choose Update.",
+                      (self.store / f"{self.key}.html").read_text())
+        self.plant_helper()
+        for info in (None, json.dumps({"description": ["not text"], "channel": 7}), "not json"):
+            with self.subTest(info=info), patch.dict(os.environ, {"FAKE_HELPER_INFO": info} if info else {}):
+                record = archive.save_copy(VIDEO_URL)
+                self.assertEqual((record["title"], record["video"]), ("@kitchen.notes on TikTok", True))
+                self.assertIn("TikTok didn't share this post's caption.", (self.store / f"{self.key}.html").read_text())
+
+    def test_a_page_that_isnt_the_post_is_not_used(self):
+        self.serve(data=player_only())
+        self.page(HOME_PAGE)
+        with self.assertRaises(archive.ArchiveError) as caught:
+            archive.save_copy(VIDEO_URL)
+        self.assertEqual(caught.exception.code, "post_unread", "TikTok shows the post: not called deleted or private")
+        self.assertEqual(len(self.page_requests()), 2)
+        self.assertIsNone(archive.read_record(self.key))
+        # With the helper, the video alone is kept; TikTok's logo is never taken for the cover.
+        self.plant_helper()
+        record = archive.save_copy(VIDEO_URL)
+        self.assertEqual((record["video"], record["images"], record["title"]), (True, 0, "@kitchen.notes on TikTok"))
+        self.assertNotIn("data:image/png", (self.store / f"{self.key}.html").read_text())
+
+    def test_a_page_naming_another_post_is_not_used(self):
+        self.serve(data=player_only())
+        self.page(post_page(address="https://www.tiktok.com/@someone.else/video/7559999999999999999"))
+        with self.assertRaises(archive.ArchiveError) as caught:
+            archive.save_copy(VIDEO_URL)
+        self.assertEqual(caught.exception.code, "post_unread")
+
+    def test_an_answer_for_another_post_or_an_error_still_means_unavailable(self):
+        self.page(post_page())
+        for data in (player_only("7559999999999999999"), {"status_msg": "Something went wrong", "code": 400},
+                     {"version": "1.0", "type": "video", "html": ""}):
+            with self.subTest(data=data):
+                self.serve(data=data)
+                with self.assertRaises(archive.ArchiveError) as caught:
+                    archive.save_copy(VIDEO_URL)
+                self.assertEqual(caught.exception.code, "post_unavailable")
+        self.assertEqual(self.page_requests(), [], "the page is read only when TikTok names the post")
+
+
 class HelperInstallTests(TikTokCase):
     def release(self, program=None, sums=None):
-        program = FAKE_HELPER.encode() if program is None else program
+        program = HELPER_PROGRAM if program is None else program
         listed = hashlib.sha256(program).hexdigest()
         lines = sums if sums is not None else f"{'0' * 64}  yt-dlp_x86.exe\n{listed}  {video_helper.ASSET}\n{'1' * 64}  yt-dlp.tar.gz\n"
         self.http.routes["/rel/SHA2-256SUMS"] = (200, {"Content-Type": "text/plain"}, lines.encode())
@@ -254,7 +440,7 @@ class HelperInstallTests(TikTokCase):
         self.release()
         status = video_helper.install()
         self.assertEqual((status["installed"], status["version"], status["checksum"]), (True, "2026.08.19", True))
-        self.assertEqual((self.helpers / video_helper.ASSET).read_bytes(), FAKE_HELPER.encode())
+        self.assertEqual((self.helpers / video_helper.ASSET).read_bytes(), HELPER_PROGRAM)
         self.assertEqual(self.calls(), [["--version"]])
         self.assertEqual(sorted(p.name for p in self.helpers.iterdir()), sorted([video_helper.ASSET, "helper.json", "calls.log"]))
         self.assertTrue(video_helper.remove())
@@ -303,7 +489,7 @@ class HelperInstallTests(TikTokCase):
         # Same release: nothing to offer.
         self.assertFalse(video_helper.check()["updateAvailable"])
         # A new release: reported, but the program is neither downloaded nor run.
-        newer = FAKE_HELPER.encode() + b"\n# newer release\n"
+        newer = program_bytes(FAKE_HELPER + "\n# newer release\n")
         self.http.routes["/rel/SHA2-256SUMS"] = (200, {"Content-Type": "text/plain"}, f"{hashlib.sha256(newer).hexdigest()}  {video_helper.ASSET}\n".encode())
         self.http.routes[f"/rel/{video_helper.ASSET}"] = (200, {"Content-Type": "application/octet-stream"}, newer)
         fetched = self.paths().count(f"/rel/{video_helper.ASSET}")

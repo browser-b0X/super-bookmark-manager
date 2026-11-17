@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
+import { firstRead, opened, seal, sealing, sealText } from "./cacheSeal";
 
 /**
  * Browser cache for the library store.
@@ -9,7 +10,8 @@ import type { PersistStorage, StorageValue } from "zustand/middleware";
  * localStorage budget — about 5k imported bookmarks used to throw
  * QuotaExceededError mid-import and lose the links on reload — it moves to
  * IndexedDB, which has room for tens of thousands of posts. A tiny marker
- * stays in localStorage so the next load knows where to look.
+ * stays in localStorage so the next load knows where to look. The installed app
+ * keeps both sealed (lib/cacheSeal).
  *
  * Every failure is surfaced through `useStorageHealth`; nothing fails silently.
  */
@@ -99,8 +101,10 @@ export function libraryStorage<S>(): PersistStorage<S> {
   /** localStorage path: synchronous, exactly like the previous persist behaviour. */
   const writeLocal = (name: string, serialized: string): boolean => {
     if (serialized.length > LOCAL_BUDGET) return false;
+    const stored = sealing ? sealText(name, serialized) : serialized;
+    if (stored.length > LOCAL_BUDGET) return false;
     try {
-      localStorage.setItem(name, serialized);
+      localStorage.setItem(name, stored);
     } catch {
       return false;
     }
@@ -115,7 +119,8 @@ export function libraryStorage<S>(): PersistStorage<S> {
 
   const writeIdb = async (name: string, serialized: string, at: number) => {
     try {
-      await idb("readwrite", s => s.put(serialized, name));
+      const stored = sealing ? seal(name, serialized) : serialized;
+      await idb("readwrite", s => s.put(stored, name));
       // A smaller, newer state may have gone to localStorage meanwhile; never
       // replace it with the marker pointing at this older copy.
       if (lastLocalSeq > at) return;
@@ -137,14 +142,30 @@ export function libraryStorage<S>(): PersistStorage<S> {
     latest = undefined;
     if (!next) return chain;
     const serialized = serialize(next.value);
-    if (serialized === undefined) return chain;
+    return serialized === undefined ? chain : write(next.name, serialized);
+  };
+
+  const write = (name: string, serialized: string) => {
     const at = ++seq;
-    if (useStorageHealth.getState().backend === "local" && writeLocal(next.name, serialized)) {
+    if (useStorageHealth.getState().backend === "local" && writeLocal(name, serialized)) {
       lastLocalSeq = at;
       return chain;
     }
-    chain = chain.then(() => writeIdb(next.name, serialized, at));
+    chain = chain.then(() => writeIdb(name, serialized, at));
     return chain;
+  };
+
+  /** What a stored copy holds. A plain one that counts is sealed as soon as it has been read. */
+  const parsed = (name: string, stored: unknown, once: boolean): StorageValue<S> | null => {
+    const text = opened(name, stored, once);
+    if (text === null) return null;
+    try {
+      const value = JSON.parse(text) as StorageValue<S>;
+      if (sealing && text === stored) void write(name, text);
+      return value;
+    } catch {
+      return null;
+    }
   };
 
   if (typeof window !== "undefined") {
@@ -155,17 +176,16 @@ export function libraryStorage<S>(): PersistStorage<S> {
 
   return {
     getItem(name) {
+      const once = firstRead(name);
       let raw: string | null = null;
       try { raw = localStorage.getItem(name); } catch { raw = null; }
-      if (raw !== null && raw !== MARKER) {
-        try { return JSON.parse(raw) as StorageValue<S>; } catch { return null; }
-      }
+      if (raw !== null && raw !== MARKER) return parsed(name, raw, once);
       if (raw === MARKER) useStorageHealth.setState({ backend: "indexeddb" });
       const first = !read.has(name);
       read.add(name);
       if (first) reading.add(name);
-      return idb<string | undefined>("readonly", s => s.get(name)).then(
-        value => (typeof value === "string" ? JSON.parse(value) as StorageValue<S> : null),
+      return idb<unknown>("readonly", s => s.get(name)).then(
+        value => (value === undefined ? null : parsed(name, value, once)),
         error => { reportError(error); return null; },
       ).finally(() => {
         // The store applies what was read in the promise callbacks that follow: writes

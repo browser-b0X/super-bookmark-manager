@@ -1,17 +1,21 @@
-"""Photos and videos sent with a link to Saved Messages. Synthetic data only.
+"""Photos, videos and audio sent with a link to Saved Messages. Synthetic data only.
 
 Run: python -B frontend/tests/telegram_media_test.py
 The Telegram client is a scripted stand-in (no network), the library is a
 throwaway SQLite file and the files go to a temporary folder under .verify.
 """
+import asyncio
 import io
 import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import socket
 import sys
 import tempfile
+import time
+import types
 import unittest
 import zipfile
 from datetime import datetime, timezone
@@ -61,6 +65,14 @@ def mp4(tag=b""):
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"synthetic" * 50
+MB = 1024 * 1024
+MP3 = b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\x00" * 3000
+OGG = b"OggS\x00\x02" + b"\x00" * 3000
+M4A = b"\x00\x00\x00\x20ftypM4A " + b"\x00" * 3000
+FLAC = b"fLaC\x00\x00\x00\x22" + b"\x00" * 3000
+WAV = b"RIFF\x24\x10\x00\x00WAVEfmt " + b"\x00" * 3000
+AAC = b"\xff\xf1\x50\x80\x02\x1f\xfc" + b"\x00" * 3000          # an ADTS frame, as Telegram sends audio/aac
+BIG = b"\x00\x00\x00\x18ftypisom" + bytes(52 * MB - 12)      # over the 50 MB a refresh keeps by itself
 
 
 # ── Telethon-shaped stand-ins ─────────────────────────────────────────────────
@@ -77,6 +89,16 @@ class DocumentAttributeVideo:
 
 class DocumentAttributeSticker:
     pass
+
+
+class DocumentAttributeAudio:
+    def __init__(self, duration, voice=False, title=None, performer=None):
+        self.duration, self.voice, self.title, self.performer = duration, voice, title, performer
+
+
+class DocumentAttributeFilename:
+    def __init__(self, file_name):
+        self.file_name = file_name
 
 
 class Document:
@@ -134,8 +156,11 @@ class Message:
 
 
 class ScriptedClient:
+    delay = 0.0           # seconds between two pieces of a file written to disk
+
     def __init__(self, messages, fail_on=None):
         self.messages, self.fail_on, self.downloads = messages, fail_on or set(), []
+        self.in_memory, self.streamed = [], []
 
     async def connect(self):
         return None
@@ -146,15 +171,53 @@ class ScriptedClient:
     async def is_user_authorized(self):
         return True
 
-    async def get_messages(self, entity, limit=None):
+    async def get_messages(self, entity, limit=None, ids=None):
+        if ids is not None:
+            found = {message.id: message for message in self.messages}
+            return [found.get(identifier) for identifier in ids]
         return list(self.messages)[:limit]
 
-    async def download_media(self, item, **kwargs):
-        assert kwargs.get("file") is bytes, "files must be downloaded into memory, never into the working folder"
+    async def download_media(self, item, file=None, progress_callback=None, **kwargs):
+        assert file is bytes or hasattr(file, "write"), "into memory or an open file, never a path in the working folder"
         self.downloads.append(getattr(item, "id", None))
         if getattr(item, "id", None) in self.fail_on:
             raise ConnectionError("synthetic drop")
-        return item.media.data
+        data = item.media.data
+        if file is bytes:
+            self.in_memory.append(len(data))
+            return data
+        self.streamed.append(item.id)
+        for start in range(0, len(data), MB):
+            self.piece(item.id, start, len(data), file)
+            file.write(data[start:start + MB])
+            if progress_callback:
+                progress_callback(file.tell(), len(data))
+            await asyncio.sleep(self.delay)
+        return file
+
+    def piece(self, identifier, start, size, file):
+        return None
+
+
+class SlowClient(ScriptedClient):
+    delay = 0.05
+
+
+class CuttingClient(ScriptedClient):
+    cut = None            # the message ids whose download drops half way; None: every one
+
+    def piece(self, identifier, start, size, file):
+        if start >= size // 2 and (self.cut is None or identifier in self.cut):
+            raise ConnectionError("synthetic drop half way")
+
+
+class FullDiskClient(ScriptedClient):
+    """Writes message 82 completely, then the disk is full when it is flushed."""
+    def piece(self, identifier, start, size, file):
+        if identifier == 82:
+            def full():
+                raise OSError(28, "No space left on device")
+            file.flush = full
 
 
 class TelegramMediaCase(unittest.TestCase):
@@ -180,17 +243,49 @@ class TelegramMediaCase(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.clients = []
+        # The scripted client stays in place for the whole test: a large file is
+        # downloaded after the refresh returns, by a client made in the background.
+        self.script = {"messages": [], "fail_on": set(), "client_class": ScriptedClient}
 
-    def refresh(self, messages, keep_media=True, fail_on=None, client_class=None):
         def construct(*args, **kwargs):
-            client = (client_class or ScriptedClient)(messages, fail_on)
+            client = self.script["client_class"](self.script["messages"], self.script["fail_on"])
             self.clients.append(client)
             return client
-        with patch("telethon.TelegramClient", construct):
-            return telegram_refresh.refresh_saved_messages(keep_media=keep_media)
+        p = patch("telethon.TelegramClient", construct)
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(self.finish_large)          # before the client goes
+        telegram_refresh.forget_held()
+
+    def refresh(self, messages, keep_media=True, fail_on=None, client_class=None, wait=True, retry=False):
+        self.script.update(messages=messages, fail_on=fail_on or set(), client_class=client_class or ScriptedClient)
+        result = telegram_refresh.refresh_saved_messages(keep_media=keep_media, retry=retry)
+        if wait:
+            self.finish_large(stop=False)
+        return result
+
+    def finish_large(self, stop=True):
+        if stop:
+            telegram_refresh.stop_large()
+        self.wait_for(lambda: not telegram_refresh.large_state()["running"], "the background download did not end")
+
+    def wait_for(self, done, message="timed out", timeout=60):
+        end = time.monotonic() + timeout
+        while not done():
+            if time.monotonic() > end:
+                raise AssertionError(message)
+            time.sleep(0.02)
 
     def files(self):
         return sorted(p.name for p in self.archive_dir.iterdir()) if self.archive_dir.exists() else []
+
+    def parts(self):
+        return [name for name in self.files() if name.endswith(".part")]
+
+    def large_link(self, url, first=60):
+        """A link sent with a photo and a video over 50 MB, as one album."""
+        return [Message(first, f"The whole talk {url}", MessageMediaPhoto(jpeg(b"cover")), grouped_id=first),
+                Message(first + 1, "", MessageMediaDocument(BIG, attributes=[DocumentAttributeVideo(3600)]), grouped_id=first)]
 
     # ── Storing ──────────────────────────────────────────────────────────────
 
@@ -203,7 +298,7 @@ class TelegramMediaCase(unittest.TestCase):
             {"kind": "video", "data": b"not a video at all" * 20},              # no ftyp box
             {"kind": "photo", "data": b"<svg xmlns='http://www.w3.org/2000/svg'/>"},
         ])
-        self.assertEqual(saved, {"photos": 2, "videos": 1})
+        self.assertEqual(saved, {"photos": 2, "videos": 1, "audio": 0})
         record = archive.telegram_media_for_url(url)
         key = archive.copy_key(url)
         self.assertEqual([i["name"] for i in record["items"]], ["tg0.jpg", "tg1.png", "tg2.mp4"])
@@ -258,7 +353,7 @@ class TelegramMediaCase(unittest.TestCase):
         self.assertEqual(result["media"]["photos"], 2)
         self.assertEqual(result["media"]["videos"], 1)
         entry = next(m for m in result["export"]["messages"] if m["id"] == 10)
-        self.assertEqual(entry["media"], {"url": url, "photos": 2, "videos": 1})
+        self.assertEqual(entry["media"], {"url": url, "photos": 2, "videos": 1, "audio": 0})
         record = archive.telegram_media_for_url(url)
         self.assertEqual([i["kind"] for i in record["items"]], ["photo", "photo", "video"])
         self.assertIn("Try this one", record["message"]["text"])
@@ -290,7 +385,7 @@ class TelegramMediaCase(unittest.TestCase):
         result = self.refresh(messages, fail_on={4})
         self.assertNotIn(1, self.clients[0].downloads)
         self.assertIsNone(archive.telegram_media_for_url(gone))
-        self.assertEqual(archive.telegram_counts(archive.telegram_media_for_url(kept)), {"photos": 1, "videos": 0})
+        self.assertEqual(archive.telegram_counts(archive.telegram_media_for_url(kept)), {"photos": 1, "videos": 0, "audio": 0})
         self.assertEqual(result["media"]["failed"], 1)
         self.assertEqual(result["media"]["skipped"], 1)
         self.assertEqual(len(result["export"]["messages"]), 3, "the links are imported whatever happens to the files")
@@ -314,7 +409,7 @@ class TelegramMediaCase(unittest.TestCase):
         entries = {m["id"]: m for m in result["export"]["messages"]}
         self.assertEqual(entries[1]["media"]["url"], href)
         self.assertEqual(entries[2]["media"]["url"], domain_href)
-        self.assertEqual(archive.telegram_counts(archive.telegram_media_for_url(href)), {"photos": 1, "videos": 0})
+        self.assertEqual(archive.telegram_counts(archive.telegram_media_for_url(href)), {"photos": 1, "videos": 0, "audio": 0})
         self.assertIsNotNone(archive.telegram_media_for_url(domain_href))
         archive.remove_for_url(href)
         self.assertIsNone(archive.telegram_media_for_url(href), "deleting the stored link removes its files")
@@ -345,15 +440,13 @@ class TelegramMediaCase(unittest.TestCase):
         self.assertEqual((first["media"]["photos"], first["media"]["failed"]), (2, 1))
         self.assertEqual(archive.telegram_media_for_url(url)["missing"], 1)
         second = self.refresh(messages)
-        self.assertEqual(sorted(self.clients[1].downloads), [30, 31, 32], "Refresh tries again, as the message says")
+        self.assertEqual(self.clients[1].downloads, [31], "Refresh tries again, as the message says, fetching only what is missing")
         record = archive.telegram_media_for_url(url)
         self.assertEqual((len(record["items"]), record.get("missing")), (3, None))
         third = self.refresh(messages)
         self.assertEqual((self.clients[2].downloads, third["media"]["kept"]), ([], 1), "a complete set is not fetched again")
 
     def test_slow_previews_never_cost_the_links(self):
-        import asyncio
-
         class SlowClient(ScriptedClient):
             async def get_messages(self, entity, limit=None):
                 await asyncio.sleep(0.3)
@@ -395,6 +488,334 @@ class TelegramMediaCase(unittest.TestCase):
             release.set()
             holder.join(5)
 
+    # ── Audio ────────────────────────────────────────────────────────────────
+
+    def test_audio_sent_with_a_link_is_kept_and_checked_by_its_bytes(self):
+        url = "https://example.test/levain-talk"
+        saved = archive.save_telegram_media(url, {"text": "the talk"}, [
+            {"kind": "audio", "data": MP3, "duration": 2891.6, "title": "Bread Club\u200b \u2013\tLevain basics\n"},
+            {"kind": "audio", "data": OGG, "duration": 48, "voice": True, "title": "not shown for a voice message"},
+            {"kind": "audio", "data": M4A}, {"kind": "audio", "data": FLAC}, {"kind": "audio", "data": WAV},
+            {"kind": "audio", "data": b"<html><script>alert(1)</script></html>" * 20},     # not audio
+            {"kind": "audio", "data": jpeg()},                                             # a picture is not audio
+        ])
+        self.assertEqual(saved, {"photos": 0, "videos": 0, "audio": 5})
+        key = archive.copy_key(url)
+        record = archive.telegram_media(key)
+        self.assertEqual([i["name"] for i in record["items"]], ["tg0.mp3", "tg1.ogg", "tg2.m4a", "tg3.flac", "tg4.wav"])
+        self.assertEqual(record["items"][0], {"name": "tg0.mp3", "kind": "audio", "bytes": len(MP3), "duration": 2892,
+                                              "title": "Bread Club \u2013 Levain basics"})
+        self.assertEqual(record["items"][1], {"name": "tg1.ogg", "kind": "audio", "bytes": len(OGG), "duration": 48, "voice": True})
+        if dashboard is not None:
+            client = dashboard.app.test_client()
+            response = client.get(f"/archive/telegram/{key}/tg0.mp3")
+            self.assertEqual((response.status_code, response.mimetype), (200, "audio/mpeg"))
+            self.assertIn("sandbox", response.headers["Content-Security-Policy"])
+            self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+            response.close()                       # Windows: a file still being served can't be removed
+            answer = client.post("/api/archive/telegram", data=json.dumps({"url": url}),
+                                 headers={"Content-Type": "application/json"}).get_json()["media"]
+            self.assertEqual((answer["audio"], answer["items"][0]["title"], answer["items"][1]["voice"]),
+                             (5, "Bread Club \u2013 Levain basics", True))
+        archive.remove_for_url(url)
+        self.assertEqual(self.files(), [])
+
+    def test_refresh_keeps_audio_and_voice_messages_sent_with_a_link(self):
+        url = "https://example.test/podcast"
+        messages = [
+            Message(50, f"Saturday's talk {url}", MessageMediaDocument(MP3, mime="audio/mpeg", attributes=[
+                DocumentAttributeAudio(2891, title="Levain basics", performer="Bread Club"),
+                DocumentAttributeFilename("levain.mp3")]), grouped_id=12),
+            Message(51, "", MessageMediaDocument(M4A, mime="audio/x-m4a", attributes=[DocumentAttributeFilename("q-and-a.m4a")]),
+                    grouped_id=12),
+            Message(52, "note to self https://example.test/voice",
+                    MessageMediaDocument(OGG, mime="audio/ogg", attributes=[DocumentAttributeAudio(48, voice=True)])),
+            Message(53, "a file https://example.test/zip",
+                    MessageMediaDocument(b"PK\x03\x04" + b"\x00" * 100, mime="application/zip", attributes=[])),
+        ]
+        result = self.refresh(messages)
+        self.assertEqual(sorted(self.clients[0].downloads), [50, 51, 52], "other files are never downloaded")
+        self.assertEqual(result["media"]["audio"], 3)
+        podcast = archive.telegram_media_for_url(url)
+        self.assertEqual([(i["kind"], i.get("title"), i.get("duration")) for i in podcast["items"]],
+                         [("audio", "Bread Club \u2013 Levain basics", 2891), ("audio", "q-and-a.m4a", None)])
+        self.assertEqual(archive.telegram_media_for_url("https://example.test/voice")["items"][0]["voice"], True)
+        entry = next(m for m in result["export"]["messages"] if m["id"] == 50)
+        self.assertEqual(entry["media"], {"url": url, "photos": 0, "videos": 0, "audio": 2})
+
+    # ── Large videos and audio ───────────────────────────────────────────────
+
+    def test_large_files_wait_for_the_switch_then_download_after_the_refresh_streamed_to_disk(self):
+        url = "https://example.test/big-talk"
+        messages = self.large_link(url)
+        off = self.refresh(messages)
+        self.assertEqual((off["media"]["photos"], off["media"]["over"], off["media"]["waiting"]), (1, 1, 0))
+        self.assertEqual(self.clients[0].downloads, [60], "with the switch off a file over 50 MB is not downloaded")
+        self.assertEqual(archive.telegram_media_for_url(url)["over"], 1)
+
+        archive.set_large_videos(True)
+        on = self.refresh(messages)
+        self.assertEqual((on["media"]["waiting"], on["media"]["photos"]), (1, 0), "the set waits for the download after the refresh")
+        self.assertEqual(len(on["export"]["messages"]), 2, "the links come back at once")
+        self.assertEqual(self.clients[1].downloads, [], "the refresh itself downloads nothing of that set")
+        background = self.clients[2]
+        self.assertEqual(background.streamed, [61], "the large video is written to disk as it arrives")
+        self.assertEqual(background.in_memory, [], "the photo kept before is not downloaded again")
+        record = archive.telegram_media_for_url(url)
+        self.assertEqual([(i["kind"], i["bytes"]) for i in record["items"]], [("photo", len(jpeg(b"cover"))), ("video", len(BIG))])
+        self.assertEqual((record.get("over"), record.get("missing")), (None, None))
+        self.assertEqual(os.path.getsize(archive.telegram_file_path(archive.copy_key(url), "tg1.mp4")), len(BIG))
+        self.assertEqual(self.parts(), [])
+        state = telegram_refresh.large_state()
+        self.assertEqual({name: state[name] for name in ("running", "total", "done", "kept", "failed", "reason")},
+                         {"running": False, "total": 1, "done": 1, "kept": 1, "failed": 0, "reason": ""})
+        again = self.refresh(messages)
+        self.assertEqual((self.clients[3].downloads, again["media"]["kept"], again["media"]["waiting"]), ([], 1, 0))
+
+    def test_a_video_that_cant_be_kept_is_said_once_not_passed_over(self):
+        # The owner's report: a link with a video over 50 MB attached, the switch on, and the refresh said nothing.
+        # An MP4 starts downloading; a video Telegram holds as another kind of file, or one over 2 GB, said nothing.
+        archive.set_large_videos(True)
+        GB = 1024 * MB
+        messages = [Message(91, "Watch https://example.test/mov", MessageMediaDocument(BIG, mime="video/quicktime",
+                                                                                   attributes=[DocumentAttributeVideo(600)])),
+                    Message(92, "Watch https://example.test/mkv", MessageMediaDocument(BIG, mime="video/x-matroska",
+                                                                                   attributes=[DocumentAttributeFilename("talk.mkv")])),
+                    Message(93, "Watch https://example.test/huge", MessageMediaDocument(BIG, size=3 * GB,
+                                                                                    attributes=[DocumentAttributeVideo(9000)])),
+                    Message(94, "Watch https://example.test/mp4", MessageMediaDocument(BIG, attributes=[DocumentAttributeVideo(600)])),
+                    Message(95, "A sticker https://example.test/sticker", MessageMediaDocument(BIG, mime="video/webm",
+                                                                                         attributes=[DocumentAttributeSticker()])),
+                    Message(96, "A round one https://example.test/round", MessageMediaDocument(BIG,
+                                                                                       attributes=[DocumentAttributeVideo(5, round_message=True)]))]
+        first = self.refresh(messages)
+        self.assertEqual({name: first["media"][name] for name in ("not_mp4", "too_big", "waiting")}, {"not_mp4": 2, "too_big": 1, "waiting": 1})
+        again = self.refresh(messages)
+        self.assertEqual((again["media"]["not_mp4"], again["media"]["too_big"]), (0, 0), "said once in an app run, not at every refresh")
+
+    def test_a_file_sent_again_with_a_kept_link_joins_its_files(self):
+        # Owner, 2026-11-04: his test's link already kept a file from an earlier message, so the new MP4 was passed over.
+        # A new message's files now join that link's files, a large one in the background as usual.
+        archive.set_large_videos(True)
+        url = "https://example.test/again"
+        first = [Message(97, f"A photo first {url}", MessageMediaPhoto(jpeg(b"p")))]
+        self.assertEqual(self.refresh(first)["media"]["photos"], 1)
+        clip = Message(98, f"And a clip {url}", MessageMediaDocument(mp4(b"clip")))
+        self.assertEqual(self.refresh([clip, *first])["media"]["videos"], 1)
+        kept = archive.telegram_media_for_url(url)
+        self.assertEqual(sorted((item["mid"], item["kind"]) for item in kept["items"]), [(97, "photo"), (98, "video")])
+        self.assertEqual(kept["message"]["text"], f"A photo first {url}", "the set keeps the message it began with")
+        talk = Message(99, f"Now the talk {url}", MessageMediaDocument(BIG, attributes=[DocumentAttributeVideo(600)]))
+        again = self.refresh([talk, clip, *first])
+        self.assertEqual((again["media"]["waiting"], again["media"]["not_added"]), (1, 0))
+        self.assertEqual(sorted(item["mid"] for item in archive.telegram_media_for_url(url)["items"]), [97, 98, 99],
+                         "the background download kept the files from before too")
+        self.assertEqual(self.refresh([talk, clip, *first])["media"]["kept"], 3, "nothing more to fetch")
+
+    def test_a_link_keeps_ten_files_at_most_and_says_so_once(self):
+        url = "https://example.test/full"
+        album = [Message(200 + i, f"Ten photos {url}" if i == 0 else "", MessageMediaPhoto(jpeg(bytes([65 + i]))), grouped_id=200)
+                 for i in range(10)]
+        self.assertEqual(self.refresh(album)["media"]["photos"], 10)
+        more = Message(300, f"One more {url}", MessageMediaPhoto(jpeg(b"more")))
+        result = self.refresh([more, *album])
+        self.assertEqual((result["media"]["not_added"], result["media"]["photos"]), (1, 0))
+        self.assertEqual(len(archive.telegram_media_for_url(url)["items"]), 10)
+        self.assertEqual(self.refresh([more, *album])["media"]["not_added"], 0, "said once in an app run")
+
+    def test_no_free_space_keeps_the_rest_and_a_later_refresh_tries_again(self):
+        archive.set_large_videos(True)
+        url = "https://example.test/no-room"
+        messages = self.large_link(url)
+        with patch.object(shutil, "disk_usage", lambda path: types.SimpleNamespace(total=1, used=1, free=200 * MB)):
+            self.refresh(messages)
+        self.assertEqual(self.clients[1].streamed, [], "nothing starts without room for the file and the margin")
+        record = archive.telegram_media_for_url(url)
+        self.assertEqual(([i["kind"] for i in record["items"]], record["missing"]), (["photo"], 1))
+        state = telegram_refresh.large_state()
+        self.assertEqual((state["kept"], state["failed"], state["reason"]), (0, 1, "no_space"))
+        self.assertEqual(self.parts(), [])
+        self.refresh(messages)
+        self.assertEqual([i["kind"] for i in archive.telegram_media_for_url(url)["items"]], ["photo", "video"], "Refresh tries again")
+
+    def test_a_cut_download_leaves_no_partial_file(self):
+        archive.set_large_videos(True)
+        url = "https://example.test/cut"
+        self.refresh(self.large_link(url), client_class=CuttingClient)
+        state = telegram_refresh.large_state()
+        self.assertEqual((state["kept"], state["failed"], state["reason"]), (0, 1, "unavailable"))
+        self.assertEqual(self.parts(), [])
+        self.assertEqual(archive.telegram_media_for_url(url)["missing"], 1)
+
+    def test_progress_and_busy_answers_while_a_large_file_downloads_and_switching_off_stops_it(self):
+        import telegram_auth
+        archive.set_large_videos(True)
+        self.refresh(self.large_link("https://example.test/progress"), client_class=SlowClient, wait=False)
+        self.wait_for(lambda: telegram_refresh.large_state()["received"] > 0)
+        state = telegram_refresh.large_state()
+        self.assertEqual((state["running"], state["size"], state["total"], state["done"]), (True, len(BIG), 1, 0))
+        self.assertEqual(len(self.parts()), 1, "written to a partial file while it downloads")
+        with self.assertRaises(telegram_refresh.RefreshError) as raised:
+            telegram_refresh.refresh_saved_messages(keep_media=True)
+        self.assertEqual((raised.exception.code, raised.exception.status, str(raised.exception)),
+                         ("busy", 409, telegram_refresh.LARGE_BUSY))
+        with patch.object(telegram_auth, "_LOCK_WAIT_SECONDS", 0.1):
+            with self.assertRaises(telegram_auth.AuthError) as auth:
+                telegram_auth.cancel_login()
+        self.assertEqual(auth.exception.code, "busy", "a sign-in step waits for the download too")
+        if dashboard is not None:
+            client = dashboard.app.test_client()
+            answer = client.get("/api/archive/large-videos").get_json()
+            self.assertEqual((answer["telegram"]["running"], answer["telegram"]["size"]), (True, len(BIG)))
+            same = {"Sec-Fetch-Site": "same-origin"}
+            for bad in ({"stop": False}, {"stop": True, "on": True}, {"stop": 1}):
+                self.assertEqual(client.post("/api/archive/large-videos", json=bad, headers=same).status_code, 400, bad)
+            self.assertFalse(client.post("/api/archive/large-videos", json={"on": False}, headers=same).get_json()["on"])
+        else:
+            archive.set_large_videos(False)
+            telegram_refresh.stop_large()
+        self.finish_large(stop=False)
+        self.assertEqual(telegram_refresh.large_state()["reason"], "stopped", "switching the setting off stops the download")
+        self.assertEqual(self.parts(), [])
+
+    def test_stop_removes_the_partial_file_and_waits_until_the_app_starts_again(self):
+        archive.set_large_videos(True)
+        url = "https://example.test/stop-me"
+        messages = self.large_link(url)
+        self.refresh(messages, client_class=SlowClient, wait=False)
+        self.wait_for(lambda: telegram_refresh.large_state()["received"] > 0)
+        if dashboard is not None:
+            stopped = dashboard.app.test_client().post("/api/archive/large-videos", json={"stop": True},
+                                                       headers={"Sec-Fetch-Site": "same-origin"})
+            self.assertEqual(stopped.status_code, 200)
+        else:
+            telegram_refresh.stop_large()
+        self.finish_large(stop=False)
+        state = telegram_refresh.large_state()
+        self.assertEqual((state["kept"], state["failed"], state["reason"]), (0, 1, "stopped"))
+        self.assertEqual(self.parts(), [])
+        self.assertEqual([i["kind"] for i in archive.telegram_media_for_url(url)["items"]], ["photo"])
+        later = self.refresh(messages)
+        self.assertEqual((later["media"]["waiting"], later["media"]["skipped"]), (0, 1), "not started again in this app run")
+        telegram_refresh.forget_held()             # the next app run, or the switch turned on again
+        self.refresh(messages)
+        self.assertEqual([i["kind"] for i in archive.telegram_media_for_url(url)["items"]], ["photo", "video"])
+
+    def test_a_retry_keeps_what_was_kept_and_fetches_only_what_is_missing(self):
+        archive.set_large_videos(True)
+        url = "https://example.test/two-talks"
+        messages = [Message(70, f"Both talks {url}", MessageMediaPhoto(jpeg(b"poster")), grouped_id=70),
+                    Message(71, "", MessageMediaDocument(BIG, attributes=[DocumentAttributeVideo(3600)]), grouped_id=70),
+                    Message(72, "", MessageMediaDocument(BIG, attributes=[DocumentAttributeVideo(3000)]), grouped_id=70)]
+
+        class CutSecond(CuttingClient):
+            cut = {72}
+        self.refresh(messages, client_class=CutSecond)
+        key = archive.copy_key(url)
+        record = archive.telegram_media_for_url(url)
+        self.assertEqual(([i["kind"] for i in record["items"]], record["missing"]), (["photo", "video"], 1))
+        first = Path(archive.telegram_file_path(key, record["items"][1]["name"]))
+        stamp = first.stat().st_mtime_ns
+
+        automatic = self.refresh(messages)
+        self.assertEqual((automatic["media"]["waiting"], automatic["media"]["skipped"]), (0, 1),
+                         "a large download that broke off is not started again by an automatic check")
+        self.assertEqual(self.clients[-1].downloads, [])
+
+        pressed = self.refresh(messages, retry=True)
+        self.assertEqual(pressed["media"]["waiting"], 1, "the Refresh button tries it again")
+        background = self.clients[-1]
+        self.assertEqual((background.streamed, background.in_memory), ([72], []), "only the missing video is downloaded")
+        record = archive.telegram_media_for_url(url)
+        self.assertEqual(([i["kind"] for i in record["items"]], record.get("missing")), (["photo", "video", "video"], None))
+        self.assertEqual(first.stat().st_mtime_ns, stamp, "the video kept before stays as it was")
+        self.assertEqual(self.parts(), [])
+
+    def test_a_file_the_app_cannot_keep_is_not_downloaded_again_in_this_app_run(self):
+        moov = b"\x00\x00\x00\x18moovisom" + b"\x00" * 4000      # labelled video/mp4, but not an MP4 file
+        messages = [Message(90, "https://example.test/odd", MessageMediaDocument(moov)),
+                    Message(91, "https://example.test/aac",
+                            MessageMediaDocument(AAC, mime="audio/aac", attributes=[DocumentAttributeAudio(30, title="Jingle")]))]
+        first = self.refresh(messages)
+        self.assertEqual((sorted(self.clients[0].downloads), first["media"]["failed"], first["media"]["audio"]), ([90, 91], 1, 1))
+        self.assertEqual([i["name"] for i in archive.telegram_media_for_url("https://example.test/aac")["items"]], ["tg0.aac"],
+                         "AAC sent as audio/aac is kept")
+        self.refresh(messages)
+        self.assertEqual(self.clients[1].downloads, [], "the file it couldn't keep is not downloaded again")
+
+    def test_a_link_deleted_while_its_files_download_stays_deleted(self):
+        archive.set_large_videos(True)
+        url = "https://example.test/deleted-meanwhile"
+        self.refresh(self.large_link(url), client_class=SlowClient, wait=False)
+        self.wait_for(lambda: telegram_refresh.large_state()["received"] > 0)
+        conn = storage._connect()
+        with conn:
+            conn.execute("INSERT INTO library_items (url, id, document, deleted, ident) VALUES (?, ?, NULL, 1, ?)",
+                         (url, "gone-1", storage.url_identity(url)))
+        conn.close()
+        archive.remove_for_url(url)
+        self.finish_large(stop=False)
+        self.assertIsNone(archive.telegram_media_for_url(url))
+        self.assertEqual([name for name in self.files() if name.startswith(archive.copy_key(url))], [])
+        self.assertEqual(telegram_refresh.large_state()["reason"], "gone")
+
+    def test_the_same_link_in_two_messages_downloads_once(self):
+        archive.set_large_videos(True)
+        url = "https://example.test/twice"
+        messages = self.large_link(url, first=100) + self.large_link(url, first=110)
+        result = self.refresh(messages)
+        self.assertEqual((result["media"]["waiting"], result["media"]["skipped"]), (1, 1))
+        state = telegram_refresh.large_state()
+        self.assertEqual((state["total"], state["kept"]), (1, 1))
+        self.assertEqual([i["kind"] for i in archive.telegram_media_for_url(url)["items"]], ["photo", "video"])
+
+    def test_a_disk_error_after_the_download_keeps_the_rest_and_no_partial_file(self):
+        archive.set_large_videos(True)
+        url = "https://example.test/full-disk"
+        messages = [Message(80, f"Two parts {url}", MessageMediaPhoto(jpeg(b"p")), grouped_id=80),
+                    Message(81, "", MessageMediaDocument(BIG, attributes=[DocumentAttributeVideo(60)]), grouped_id=80),
+                    Message(82, "", MessageMediaDocument(BIG, attributes=[DocumentAttributeVideo(60)]), grouped_id=80)]
+        self.refresh(messages, client_class=FullDiskClient)
+        record = archive.telegram_media_for_url(url)
+        self.assertEqual(([i["kind"] for i in record["items"]], record["missing"]), (["photo", "video"], 1))
+        state = telegram_refresh.large_state()
+        self.assertEqual((state["done"], state["kept"], state["failed"], state["reason"]), (2, 1, 1, "no_space"))
+        self.assertEqual(self.parts(), [])
+
+    def test_a_path_entry_must_be_a_file_being_streamed(self):
+        archive.save_telegram_media("https://example.test/owner", {}, [{"kind": "video", "data": mp4(b"o")}])
+        kept = Path(archive.telegram_file_path(archive.copy_key("https://example.test/owner"), "tg0.mp4"))
+        moved = archive.save_telegram_media("https://example.test/thief", {}, [{"kind": "video", "path": str(kept)}])
+        self.assertEqual(moved, {"photos": 0, "videos": 0, "audio": 0})
+        self.assertTrue(kept.exists(), "another link's kept file is neither taken nor removed")
+
+    @unittest.skipIf(dashboard is None, "Flask not installed")
+    def test_a_backup_bigger_than_1_gb_can_be_restored_when_there_is_room(self):
+        self.assertGreaterEqual(archive.IMPORT_LIMIT, 16 * 1024 ** 3, "a backup with large videos and audio restores")
+        client = dashboard.app.test_client()
+        with patch.object(archive, "ENABLED", True), \
+                patch.object(shutil, "disk_usage", lambda path: types.SimpleNamespace(total=1, used=1, free=MB)):
+            answer = client.post("/api/archive/import", data=b"PK" + b"\x00" * 2000, content_type="application/zip")
+        self.assertEqual(answer.status_code, 507)
+        self.assertIn("twice its size", answer.get_json()["error"])
+        self.assertEqual(self.parts(), [])
+
+    def test_partial_files_left_when_the_app_quit_are_removed(self):
+        os.makedirs(archive.ARCHIVE_DIR, exist_ok=True)
+        old = Path(archive.ARCHIVE_DIR, "0" * 32 + ".abc123.part")
+        old.write_bytes(b"cut off")
+        os.utime(old, (time.time() - 7200, time.time() - 7200))
+        fresh = Path(archive.ARCHIVE_DIR, "1" * 32 + ".def456.part")
+        fresh.write_bytes(b"still arriving")
+        ahead = time.time() + 1                    # Windows: a new file's time can be a moment ahead of time.time()
+        os.utime(fresh, (ahead, ahead))
+        kept = Path(archive.ARCHIVE_DIR, "2" * 32 + ".tg0.mp4")
+        kept.write_bytes(mp4())
+        self.assertEqual(archive.discard_partials(idle=3600), 1, "before a large download: only what nothing wrote to for an hour")
+        self.assertEqual(self.files(), sorted([fresh.name, kept.name]))
+        self.assertEqual(archive.discard_partials(), 1, "at start: every unfinished download")
+        self.assertEqual(self.files(), [kept.name])
+
     # ── Backup zip ───────────────────────────────────────────────────────────
 
     def test_backup_zip_carries_the_files_and_restore_checks_them(self):
@@ -428,6 +849,32 @@ class TelegramMediaCase(unittest.TestCase):
         self.assertEqual((result["telegram"], result["telegramInvalid"]), (0, 1))
         self.assertIsNone(archive.telegram_media(key))
 
+    def test_a_backup_restores_large_videos_and_audio(self):
+        url = "https://example.test/big-backup"
+        os.makedirs(archive.ARCHIVE_DIR, exist_ok=True)
+        part = Path(archive.ARCHIVE_DIR, "streamed.part")
+        part.write_bytes(BIG)
+        archive.save_telegram_media(url, {"text": "big"}, [{"kind": "video", "path": str(part), "duration": 3600},
+                                                           {"kind": "audio", "data": MP3, "title": "Levain basics"}])
+        self.assertFalse(part.exists(), "the streamed file is moved into place")
+        outside = ROOT / ("outside-" + secrets.token_hex(4) + ".mp4")
+        outside.write_bytes(mp4())
+        refused = archive.save_telegram_media("https://example.test/outside", {}, [{"kind": "video", "path": str(outside)}])
+        self.assertEqual(refused, {"photos": 0, "videos": 0, "audio": 0})
+        self.assertTrue(outside.exists(), "a file outside the archive folder is neither kept nor removed")
+        key = archive.copy_key(url)
+        path = ROOT / ("big-" + secrets.token_hex(4) + ".zip")
+        with open(path, "wb") as handle:
+            for piece in archive.export_zip(b"{}", "2026-10-28T00:00:00Z"):
+                handle.write(piece)
+        archive.delete_telegram_media(key)
+        result = archive.import_zip(str(path), {storage.url_identity(url): url})
+        self.assertEqual((result["telegram"], result["telegramInvalid"]), (1, 0))
+        record = archive.telegram_media(key)
+        self.assertEqual([(i["kind"], i["bytes"]) for i in record["items"]], [("video", len(BIG)), ("audio", len(MP3))])
+        self.assertEqual(record["items"][1]["title"], "Levain basics")
+        self.assertEqual(self.parts(), [])
+
     def test_restore_counts_copies_and_telegram_files_apart(self):
         url = "https://example.test/both"
         key = archive.copy_key(url)
@@ -455,7 +902,7 @@ class TelegramMediaCase(unittest.TestCase):
         outcomes = iter([telegram_refresh.RefreshError("network", "offline"), telegram_refresh.RefreshError("configuration", "no keys")])
         calls = []
 
-        def failing(keep_media=False):
+        def failing(keep_media=False, retry=False):
             calls.append(keep_media)
             raise next(outcomes)
         with patch.dict(telegram_refresh._startup, {"claimed": False}), patch.object(telegram_refresh, "refresh_saved_messages", failing):
@@ -481,6 +928,7 @@ class TelegramMediaCase(unittest.TestCase):
         self.assertEqual(response.mimetype, "video/mp4")
         self.assertIn("sandbox", response.headers["Content-Security-Policy"])
         self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+        response.close()                           # Windows: an open file keeps the test folder from being removed
         key = archive.copy_key(url)
         for bad in (f"/archive/telegram/{key}/tg.json", f"/archive/telegram/{key}/tg5.jpg",
                     f"/archive/telegram/{'0' * 32}/tg0.jpg", f"/archive/telegram/{key}/tg0.html"):
@@ -495,8 +943,13 @@ class TelegramMediaCase(unittest.TestCase):
             self.assertTrue(telegram_refresh.claim_startup_check())
             self.assertFalse(telegram_refresh.claim_startup_check(), "once per app run")
         for body in ({"confirm": True, "media": "yes"}, {"confirm": True, "other": 1}, {"media": True},
-                     {"confirm": True, "startup": 1}):
+                     {"confirm": True, "startup": 1}, {"confirm": True, "retry": "yes"}):
             self.assertEqual(client.post("/api/telegram/refresh", data=json.dumps(body), headers=headers).status_code, 400, body)
+        asked = []
+        with patch.object(telegram_refresh, "refresh_saved_messages", lambda keep_media=False, retry=False: asked.append(retry) or {"ok": True}):
+            client.post("/api/telegram/refresh", data=json.dumps({"confirm": True, "retry": True}), headers=headers)
+            client.post("/api/telegram/refresh", data=json.dumps({"confirm": True}), headers=headers)
+        self.assertEqual(asked, [True, False], "the Refresh button asks for broken-off downloads to be tried again")
 
 
 if __name__ == "__main__":

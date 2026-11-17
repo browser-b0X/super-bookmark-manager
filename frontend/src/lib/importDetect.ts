@@ -1,7 +1,11 @@
 import { isFirefoxJsonBackup } from "./firefoxJson";
 import { chatTextFromZip, looksLikeWhatsAppChat } from "./whatsapp";
+import { looksLikePocketHtml, readLaterCsvSource } from "./readLater";
 
-export type ImportFormat = "html" | "chromium" | "firefox-json" | "firefox-db" | "telegram" | "whatsapp" | "unknown";
+export type ImportFormat = "html" | "chromium" | "firefox-json" | "firefox-db" | "telegram" | "whatsapp" | "pocket" | "pocket-html" | "instapaper" | "unknown";
+
+/** Read-later apps: their own statuses decide Inbox or Kept, not the bookmark's age. */
+export const READ_LATER = new Set<ImportFormat>(["pocket", "pocket-html", "instapaper"]);
 
 export const FORMAT_LABELS: Record<ImportFormat, string> = {
   html: "Bookmarks HTML export",
@@ -10,6 +14,9 @@ export const FORMAT_LABELS: Record<ImportFormat, string> = {
   "firefox-db": "Firefox places.sqlite copy",
   telegram: "Telegram Saved Messages export",
   whatsapp: "WhatsApp chat export",
+  pocket: "Pocket export (CSV)",
+  "pocket-html": "Pocket export (HTML)",
+  instapaper: "Instapaper export (CSV)",
   unknown: "Unrecognised file",
 };
 
@@ -26,6 +33,9 @@ export async function detectImportFormat(file: Blob): Promise<{ format: ImportFo
   const text = await file.text();
   const body = text.replace(/^﻿/, "").trimStart();
   if (/^(?:<!--[\s\S]*?-->\s*)*<!DOCTYPE\s+NETSCAPE-Bookmark-file-1/i.test(body)) return { format: "html", text };
+  if (looksLikePocketHtml(body)) return { format: "pocket-html", text };
+  const readLater = readLaterCsvSource(body);
+  if (readLater) return { format: readLater === "Pocket" ? "pocket" : "instapaper", text };
   if (body.startsWith("{")) {
     try {
       const data = JSON.parse(body) as Record<string, unknown>;

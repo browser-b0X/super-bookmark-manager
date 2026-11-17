@@ -49,12 +49,12 @@ const fire = () => { const [[id, timer]] = [...long]; long.delete(id); timer.fn(
 
 const out = await build({
   stdin: {
-    contents: `export { useLibrary } from './src/store/library';\nexport { saveCopy } from './src/lib/savedCopies';`,
+    contents: `export { useLibrary } from './src/store/library';\nexport { saveCopy, copyProblem, FINAL_COPY_ERRORS } from './src/lib/savedCopies';`,
     resolveDir: fileURLToPath(new URL('../', import.meta.url)), loader: 'ts',
   },
   bundle: true, write: false, format: 'esm', platform: 'node', logLevel: 'silent', define: { 'process.env.NODE_ENV': '"production"' },
 });
-const { useLibrary, saveCopy } = await import('data:text/javascript;base64,' + Buffer.from(out.outputFiles[0].text).toString('base64'));
+const { useLibrary, saveCopy, copyProblem, FINAL_COPY_ERRORS } = await import('data:text/javascript;base64,' + Buffer.from(out.outputFiles[0].text).toString('base64'));
 const at = new Date('2026-10-01T10:00:00Z').toISOString();
 useLibrary.setState({ posts: [{ id: 'r1', url: 'https://www.reddit.com/r/synthetic/comments/abc123/a_post/', source: 'browser', platform: 'reddit',
   domain: 'reddit.com', status: 'reference', createdAt: at, updatedAt: at, categories: ['other'], tags: [], projectIds: [], title: 'A post' }], pending: {} });
@@ -95,6 +95,13 @@ await check('a copy that stays busy is tried after one minute, then five, then l
   await new Promise(r => realSet(r, 300));
   assert.deepEqual(waits(), [], 'left for Update after that');
   assert.ok(submitted.every(body => body.refresh === true), 'an update stays an update');
+});
+
+await check('a copy over 15 MB says so instead of "bigger than 3 MB", and is not tried again', async () => {
+  assert.match(copyProblem('too_large'), /3 MB/);
+  assert.match(copyProblem('copy_too_large'), /15 MB/);
+  assert.doesNotMatch(copyProblem('copy_too_large'), /3 MB/);
+  assert.ok(FINAL_COPY_ERRORS.has('copy_too_large'));
 });
 
 if (failures.length) { console.error(`FAILED ${failures.length}: ${failures.join('; ')}`); process.exit(1); }

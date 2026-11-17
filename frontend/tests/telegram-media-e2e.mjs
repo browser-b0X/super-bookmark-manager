@@ -1,6 +1,7 @@
-// Telegram photos and videos, and the optional check when the app starts, in the
-// real app. Synthetic data only: the Telegram read is replaced in the server by a
-// scripted answer, the files are synthetic and nothing leaves this machine.
+// Telegram photos, videos and audio, large files downloading after a refresh, and
+// the optional check when the app starts, in the real app. Synthetic data only: the
+// Telegram read and the background download are replaced in the server by scripted
+// answers, the files are synthetic and nothing leaves this machine.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp } from 'node:fs/promises';
@@ -29,18 +30,38 @@ metadata_fetcher.fetch_metadata = lambda url: {"title": "", "summary": "", "thum
 storage.init_db()
 png = base64.b64decode("${PNG}")
 mp4 = b"\\x00\\x00\\x00\\x18ftypisom" + b"\\x00" * 4000
+mp3 = b"ID3\\x04\\x00\\x00\\x00\\x00\\x00\\x00" + b"\\x00" * 4000
+ogg = b"OggS\\x00\\x02" + b"\\x00" * 4000
 archive.save_telegram_media("${WITH}", {"text": "Try this one this weekend", "date": "2026-10-07T18:22:00+00:00"},
-    [{"kind": "photo", "data": png}, {"kind": "photo", "data": png}, {"kind": "video", "data": mp4, "duration": 42}])
+    [{"kind": "photo", "data": png}, {"kind": "photo", "data": png}, {"kind": "video", "data": mp4, "duration": 42},
+     {"kind": "audio", "data": mp3, "duration": 2891, "title": "Bread Club \\u2013 Levain basics"},
+     {"kind": "audio", "data": ogg, "duration": 48, "voice": True}])
 calls = []
-def scripted(keep_media=False):
-    calls.append({"media": keep_media})
+unkept = {"on": False}
+download = {"running": False, "total": 0, "done": 0, "kept": 0, "failed": 0, "received": 0, "size": 0, "reason": ""}
+def scripted(keep_media=False, retry=False):
+    calls.append({"media": keep_media, **({"retry": True} if retry else {})})
+    first = len(calls) == 1 and keep_media
+    if first:   # the first refresh leaves one large video downloading in the background
+        download.update(running=True, total=1, received=312 * 1024 * 1024, size=int(1.2 * 1024 ** 3))
     return {"ok": True, "limit": 200, "checked": 1, "malformed": 0, "previews": {},
-            "media": {"links": 1, "photos": 2 if keep_media else 0, "videos": 1 if keep_media else 0, "kept": 0, "skipped": 0, "failed": 0},
+            "media": {"links": 1, "photos": 2 if keep_media else 0, "videos": 1 if keep_media else 0, "audio": 0, "kept": 0, "skipped": 0,
+                      "failed": 0, "waiting": 1 if first else 0, "over": 0, "not_mp4": 1 if unkept["on"] else 0, "too_big": 1 if unkept["on"] else 0,
+                      "not_added": 1 if unkept["on"] else 0},
             "export": {"type": "saved_messages", "messages": [{"id": 900 + len(calls), "type": "message",
                "date": "2026-10-08T09:00:00+00:00", "text": "new one https://example.test/new-" + str(len(calls)),
                "text_entities": [{"type": "plain", "text": "new one https://example.test/new-" + str(len(calls))}]}]}}
 telegram_refresh.refresh_saved_messages = scripted
+telegram_refresh.large_state = lambda: dict(download)
+def stop():
+    download.update(running=False, done=1, failed=1, reason="stopped", received=0, size=0)
+    return True
+telegram_refresh.stop_large = stop
 from flask import jsonify, request
+@app.app.route("/__unkept", methods=["POST"])
+def say_unkept():
+    unkept["on"] = True
+    return jsonify(ok=True)
 @app.app.route("/__calls")
 def report():
     return jsonify(calls=calls, startup=telegram_refresh._startup["claimed"])
@@ -88,9 +109,10 @@ try {
   await page.goto(base + '/library/settings#sources');
   await toast.filter({ hasText: /Library saved to SQLite/ }).waitFor();
 
-  await check('Settings has the two switches: check at start off, keep photos and videos on', async () => {
+  const keepName = { name: 'Keep photos, videos and audio sent with your links' };
+  await check('Settings has the two switches: check at start off, keep photos, videos and audio on', async () => {
     const start = page.getByRole('switch', { name: 'Check when the app starts' });
-    const keep = page.getByRole('switch', { name: 'Keep photos and videos sent with your links' });
+    const keep = page.getByRole('switch', keepName);
     assert.equal(await start.getAttribute('aria-checked'), 'false');
     assert.equal(await keep.getAttribute('aria-checked'), 'true');
     assert.deepEqual(await calls(), [], 'no Telegram read happens by itself');
@@ -101,16 +123,37 @@ try {
     const result = page.getByRole('status', { name: 'Telegram refresh result' });
     await result.filter({ hasText: /Checked 1 message \(/ }).waitFor();
     assert.match(await result.innerText(), /Kept 2 photos and 1 video sent with your links\./);
-    assert.deepEqual(await calls(), [{ media: true }]);
+    assert.match(await result.innerText(), /1 large video or audio file is downloading in the background; it shows below\./);
+    assert.deepEqual(await calls(), [{ media: true, retry: true }], 'the button also tries broken-off downloads again');
+  });
+
+  await check('the large file downloading after the refresh shows how far it got, and Stop stops it', async () => {
+    const line = page.getByRole('status', { name: 'Large files from Telegram' });
+    await line.filter({ hasText: 'Downloading a large file from Telegram · 312 MB of 1.2 GB · 1 of 1' }).waitFor();
+    assert.match(await line.innerText(), /The links are already in your library\. Refreshing and Disconnect wait until this finishes or you stop it\./);
+    await line.screenshot({ path: join(evidence, 'large-download.png') });
+    await line.getByRole('button', { name: 'Stop', exact: true }).click();
+    await line.filter({ hasText: 'Stopped. What was stopped is tried again when SuperBookmarks starts again.' }).waitFor();
+    assert.equal(await line.getByRole('button').count(), 0);
+  });
+
+  await check('a video that can\'t be kept is said, not passed over', async () => {
+    await fetch(base + '/__unkept', { method: 'POST' });
+    await page.getByRole('button', { name: 'Refresh Telegram Saved Messages', exact: true }).click();
+    const result = page.getByRole('status', { name: 'Telegram refresh result' });
+    await result.filter({ hasText: /isn't an MP4 file/ }).waitFor();
+    assert.match(await result.innerText(), /1 video sent with your links isn't an MP4 file, so it wasn't kept: SuperBookmarks keeps MP4 videos\./);
+    assert.match(await result.innerText(), /1 video or audio file over 2 GB was left out\./);
+    assert.match(await result.innerText(), /1 photo, video or audio file sent with a link that already keeps 10 files wasn't added\./);
   });
 
   await check('with the switch off, Refresh downloads no photos or videos', async () => {
-    await page.getByRole('switch', { name: 'Keep photos and videos sent with your links' }).click();
+    await page.getByRole('switch', keepName).click();
     assert.equal((await prefs()).telegramKeepMedia, false);
     await page.getByRole('button', { name: 'Refresh Telegram Saved Messages', exact: true }).click();
     await page.getByRole('status', { name: 'Telegram refresh result' }).filter({ hasNotText: /Kept/ }).waitFor();
-    assert.deepEqual((await calls()).at(-1), { media: false });
-    await page.getByRole('switch', { name: 'Keep photos and videos sent with your links' }).click();
+    assert.deepEqual((await calls()).at(-1), { media: false, retry: true });
+    await page.getByRole('switch', keepName).click();
   });
 
   await check('check at start runs once per app run and the toast says what it found', async () => {
@@ -132,13 +175,23 @@ try {
     assert.equal(await notice.innerText(), '');
   });
 
-  await check('the link panel shows the message, the photos and the video', async () => {
+  await check('the link panel shows the message, the photos, the video and the audio', async () => {
     await page.goto(base + '/library/item/tg-with');
     const group = page.getByRole('region', { name: 'From your Telegram message' });
     await group.waitFor();
     assert.match(await group.innerText(), /From your Telegram message · 7 Oct, \d\d:22/);
     assert.match(await group.innerText(), /“Try this one this weekend”/);
-    assert.match(await group.innerText(), /2 photos and 1 video, kept on this computer\. They open without Telegram\./);
+    assert.match(await group.innerText(), /2 photos, 1 video and 2 audio files, kept on this computer\. They open without Telegram\./);
+    const audio = group.getByRole('list', { name: 'Audio from Telegram' }).getByRole('listitem');
+    assert.equal(await audio.count(), 2);
+    assert.match(await audio.nth(0).innerText(), /Bread Club – Levain basics\s*48:11/);
+    assert.match(await audio.nth(1).innerText(), /Voice message\s*0:48/);
+    const player = audio.nth(0).locator('audio');
+    assert.equal(await player.getAttribute('preload'), 'none', 'a long recording is read only when played');
+    assert.equal(await player.getAttribute('aria-label'), 'Play Bread Club – Levain basics');
+    const sound = await fetch(base + await player.getAttribute('src'));
+    assert.equal(sound.headers.get('content-type'), 'audio/mpeg');
+    assert.match(sound.headers.get('content-security-policy'), /sandbox/);
     const tiles = group.getByRole('link');
     assert.equal(await tiles.count(), 3);
     assert.equal(await tiles.nth(2).getAttribute('aria-label'), 'Open video (0:42)');

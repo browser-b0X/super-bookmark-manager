@@ -69,7 +69,7 @@ function CopyStatus({ post, onRead, enabled, telegram }: { post: SavedPost; onRe
   }
 
   if (post.archiveStatus !== "saved" || !hasCopy) {
-    const code = post.archiveStatus === "too_large" ? "too_large" : post.archiveError;
+    const code = post.archiveStatus === "too_large" && post.archiveError !== "copy_too_large" ? "too_large" : post.archiveError;
     return (
       <section className="panel mt-3 p-3" aria-label="Saved copy">
         <p className="flex items-center gap-2 text-[.8rem] font-semibold">

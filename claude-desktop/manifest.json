@@ -1,0 +1,53 @@
+{
+  "manifest_version": "0.3",
+  "name": "superbookmarks",
+  "display_name": "SuperBookmarks",
+  "version": "0.4.0",
+  "description": "Search and tidy your SuperBookmarks library from Claude Desktop. Talks only to the SuperBookmarks app on this computer.",
+  "long_description": "Ask Claude to search your saved links, list what's unfiled, read a link's saved copy, file links on a shelf or suggest a new shelf. The SuperBookmarks app on this computer makes every change, and you can undo each one there. Needs SuperBookmarks running and a token made in its Settings (AI providers, Claude Desktop). What Claude reads from your library becomes part of your chat with Claude.",
+  "author": { "name": "browser-b0X", "url": "https://github.com/browser-b0X" },
+  "homepage": "https://github.com/browser-b0X/super-bookmark-manager",
+  "icon": "icon.png",
+  "license": "MIT",
+  "keywords": ["bookmarks", "library", "local"],
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "SBM_TOKEN": "${user_config.token}",
+        "SBM_APP": "${user_config.app_address}"
+      }
+    }
+  },
+  "user_config": {
+    "token": {
+      "type": "string",
+      "title": "Token from SuperBookmarks",
+      "description": "Make it in SuperBookmarks: Settings, AI providers, Claude Desktop, Make a token.",
+      "sensitive": true,
+      "required": true
+    },
+    "app_address": {
+      "type": "string",
+      "title": "App address",
+      "description": "Where SuperBookmarks runs on this computer.",
+      "default": "http://127.0.0.1:5001",
+      "required": false
+    }
+  },
+  "tools": [
+    { "name": "search_links", "description": "Search the library; at most 50 links." },
+    { "name": "list_shelves", "description": "Shelves with counts and descriptions." },
+    { "name": "list_unfiled", "description": "Links on no shelf, newest first." },
+    { "name": "get_link", "description": "One link with its saved copy's text." },
+    { "name": "file_links", "description": "Put links on an existing shelf (undo in SuperBookmarks)." },
+    { "name": "suggest_shelf", "description": "Suggest a new shelf; the owner creates it in SuperBookmarks." }
+  ],
+  "compatibility": {
+    "platforms": ["win32", "darwin", "linux"],
+    "runtimes": { "node": ">=18.0.0" }
+  }
+}

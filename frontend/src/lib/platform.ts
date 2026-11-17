@@ -40,6 +40,32 @@ function normalizeUrlNow(raw: string): string {
   }
 }
 
+/** Parameters that only say where a click came from (ads, newsletters, share buttons). */
+const TRACKING = new Set(["fbclid", "gclid", "dclid", "gbraid", "wbraid", "msclkid", "yclid", "twclid", "ttclid", "li_fat_id",
+  "mc_cid", "mc_eid", "_hsenc", "_hsmi", "mkt_tok", "igsh", "igshid"]);
+/** Share-button parameters that mean something elsewhere, so only on these sites. */
+const SITE_TRACKING: [RegExp, string[]][] = [
+  [/(^|\.)(youtube\.com|youtu\.be)$/, ["si", "feature", "pp"]],
+  [/(^|\.)spotify\.com$/, ["si"]],
+  [/(^|\.)(x\.com|twitter\.com)$/, ["s", "t", "ref_src", "ref_url"]],
+];
+
+/** The address to save: the same address without tracking parameters (utm_…, fbclid, a share button's
+ *  si=…). Everything else, the order of the rest and the #fragment included, stays as it was. */
+export function withoutTracking(raw: string): string {
+  let url: URL;
+  try { url = new URL(raw); } catch { return raw; }
+  const host = url.hostname.toLowerCase();
+  const siteKeys = SITE_TRACKING.filter(([pattern]) => pattern.test(host)).flatMap(([, keys]) => keys);
+  const drop = (key: string) => { const k = key.toLowerCase(); return k.startsWith("utm_") || TRACKING.has(k) || siteKeys.includes(k); };
+  const pairs = url.search.slice(1).split("&").filter(Boolean);
+  const name = (pair: string) => { const key = pair.split("=")[0].replace(/\+/g, " "); try { return decodeURIComponent(key); } catch { return key; } };
+  const kept = pairs.filter(pair => !drop(name(pair)));
+  if (kept.length === pairs.length) return raw;
+  url.search = kept.length ? `?${kept.join("&")}` : "";
+  return url.href;
+}
+
 export const domainOf = remembered((url: string): string => {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -79,8 +105,26 @@ export function detectMediaType(url: string, platform: Platform): SavedPost["med
   return "article";
 }
 
+/**
+ * A post on X or TikTok, named after who posted it ("@handle on X"); "" for any other address. A post's address
+ * ends in a number, which names nothing, and X's previews bring no title to replace it.
+ */
+export function postName(url: string): string {
+  let path: string;
+  try { path = new URL(url).pathname; } catch { return ""; }
+  const platform = detectPlatform(url);
+  if (platform === "x" && /\/status(es)?\/\d+/.test(path)) {
+    const handle = /^\/([^/]+)\/status/.exec(path)?.[1] ?? "";
+    return handle && !["i", "home"].includes(handle) ? `@${handle} on X` : "X post";
+  }
+  const tiktok = platform === "tiktok" ? /^\/(@[^/]+)\/(?:video|photo)\/\d+/.exec(path) : null;
+  return tiktok ? `${tiktok[1]} on TikTok` : "";
+}
+
 /** Derive a best-effort display title from the URL itself (no network). */
 export function titleFromUrl(url: string): string {
+  const name = postName(url);
+  if (name) return name;
   try {
     const u = new URL(url);
     const segs = u.pathname.split("/").filter(Boolean);

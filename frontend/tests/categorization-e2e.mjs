@@ -214,7 +214,7 @@ try {
   pass('failed category writes remain visibly pending across reload; SQLite transaction unchanged; retry and fresh browser retain manual correction and all 8 records');
   assert.deepEqual(errors, []);
   assert.deepEqual(denied, []);
-  assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers', '/api/archive'].includes(r.path)));
+  assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers', '/api/archive', '/api/archive/large-videos'].includes(r.path)));
   assert.deepEqual((await control('snapshot')).result.blocked, []);
   pass('no uncaught browser errors, metadata/model calls, personal data or external requests; shelf count stays nine topical plus reserved');
 } catch (error) {

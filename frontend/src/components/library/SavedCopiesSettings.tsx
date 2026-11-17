@@ -4,6 +4,8 @@ import { useLibrary } from "../../store/library";
 import { usePrefs } from "../../store/prefs";
 import { useCopyAvailability } from "../../lib/copyAvailability";
 import { canStillCopy, formatBytes, saveCopies, setCopiesPaused, useCopyQueue } from "../../lib/savedCopies";
+import { checkLostCopies, hasCopy, useLostCopies } from "../../lib/lostCopies";
+import { useLargeVideos, useWatchLargeVideos } from "../../lib/largeVideos";
 import SocialPostsSettings from "./SocialPostsSettings";
 
 interface Summary { count: number; bytes: number }
@@ -23,18 +25,29 @@ export function useCopySummary(refreshKey: unknown = 0): Summary | null {
 
 /** Settings → Library & sync: the auto-save switch and what the copies take up. */
 export default function SavedCopiesSettings() {
+  // "Keep large videos and audio": X videos, and Telegram videos and audio, over the 50 MB cap, up to a 2 GB
+  // ceiling, streamed to disk (archive.py, telegram_refresh.py).
+  useWatchLargeVideos();
+  const largeVideos = useLargeVideos();
   const enabled = useCopyAvailability(s => s.enabled);
   const autoSave = usePrefs(s => s.autoSaveCopies);
   const setAutoSave = usePrefs(s => s.setAutoSaveCopies);
   const queue = useCopyQueue();
   const posts = useLibrary(s => s.posts);
-  const without = posts.filter(p => p.archiveStatus !== "saved").length;
+  // Copies the links say they have but this computer hasn't (after restoring a JSON backup).
+  // Asked again when the number of links with a copy changes: the library may still be loading.
+  const lost = useLostCopies(s => s.keys);
+  const withKey = posts.reduce((n, p) => n + (p.archiveStatus === "saved" && p.archiveKey ? 1 : 0), 0);
+  useEffect(() => { if (enabled) void checkLostCopies(useLibrary.getState().posts); }, [withKey, enabled]);
+  const without = posts.filter(p => !hasCopy(p, lost)).length;
   // Links a try could still help: not saved, not under way, not refused for good.
   const eligible = posts.filter(canStillCopy).map(p => p.id);
   const [confirming, setConfirming] = useState(false);
   // Ask again whenever a copy finishes or the queue empties.
   const summary = useCopySummary(`${queue.done}/${queue.total}`);
   const working = queue.total > 0 && queue.done < queue.total;
+  const cap = largeVideos.state ? Math.round(largeVideos.state.cap / (1024 * 1024)) : 50;
+  const limit = largeVideos.state ? Math.round(largeVideos.state.limit / (1024 * 1024 * 1024)) : 2;
 
   return (
     <section className="panel p-5" aria-labelledby="copies-heading">
@@ -58,6 +71,23 @@ export default function SavedCopiesSettings() {
                 Runs in the background, three pages at a time. Imported links are included. Links you already have are
                 not touched by this switch; use the button below, or select links in the library and choose Save copies.
               </div>
+            </div>
+          </div>
+          <div className="mt-4 flex items-start gap-3">
+            <button type="button" role="switch" aria-checked={largeVideos.state?.on === true} aria-labelledby="copies-large-label"
+              aria-describedby="copies-large-hint" className="switch mt-0.5" disabled={!largeVideos.state}
+              onClick={() => void largeVideos.set(!largeVideos.state?.on)} />
+            <div>
+              <div id="copies-large-label" className="text-[.82rem] font-semibold">Keep large videos and audio</div>
+              <div id="copies-large-hint" className="text-[.74rem] text-[var(--dim)]">
+                X videos, and Telegram videos and audio sent with your links, bigger than {cap} MB are kept too, up to {limit} GB each. Each is
+                downloaded to disk with the free space checked first; if there isn't enough, it is left out (an X copy keeps its cover picture).
+                Large Telegram files download in the background after a refresh. Copies and zip backups get much bigger with this on. TikTok videos keep
+                the {cap} MB limit.
+              </div>
+              {queue.received > 0 && <div className="mt-1 text-[.74rem]" role="status">
+                Downloading a large video: {formatBytes(queue.received)} received so far.
+              </div>}
             </div>
           </div>
           <dl className="import-counts mt-4" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))", maxWidth: 520 }} aria-label="Saved copies in numbers">

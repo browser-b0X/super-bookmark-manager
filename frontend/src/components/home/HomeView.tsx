@@ -13,6 +13,9 @@ import { PostPreview, untitledName } from "../library/PostViews";
 import ShelfTrack from "./ShelfTrack";
 import { useLibraryPersistence } from "../../lib/libraryPersistence";
 import { handleOf, platformOf, SOCIAL_PLATFORMS } from "../library/SocialCard";
+import AddLinkDialog from "../library/AddLinkDialog";
+import GetStarted from "./GetStarted";
+import { sortedALink } from "../../lib/getStarted";
 
 // An untitled social post reads "@someone on X", or "Facebook post" when there is no handle (not "Facebook on Facebook").
 const name = (p: SavedPost) => p.title ? displayText(p.title) : untitledName(p);
@@ -42,8 +45,10 @@ export default function HomeView() {
   const categories = useLibrary(s => s.categories);
   const layout = usePrefs(s => s.homeLayout);
   const queue = useMemo(() => posts.filter(p => p.status === "inbox").sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [posts]);
+  // A shelf's row holds all its links but the archived ones, those still waiting in "New to sort" too: the background
+  // sort puts a link on a shelf and leaves it waiting, and the shelf then had no row here (the owner, 2026-11-09).
   const shelves = useMemo(() => categories.filter(c => !c.archived).sort((a, b) => a.order - b.order).map(shelf => ({
-    shelf, items: posts.filter(p => p.categories.includes(shelf.name) && p.status !== "archived" && p.status !== "inbox")
+    shelf, items: posts.filter(p => p.categories.includes(shelf.name) && p.status !== "archived")
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
   })).filter(row => row.items.length > 0), [posts, categories]);
   const throwback = useMemo(() => {
@@ -54,24 +59,37 @@ export default function HomeView() {
   const often = useMemo(() => useOftenRow(posts), [posts]);
   const persistence = useLibraryPersistence(state => state.status);
   const loading = persistence === "idle" || persistence === "syncing";
+  const [adding, setAdding] = useState(false);
+  // Get started (lib/getStarted.ts). Once its steps are done it goes for good, but stays in place until Home is left,
+  // so the deck doesn't jump under the pointer that just pressed Keep.
+  const getStarted = usePrefs(s => s.getStarted);
+  const [finished, setFinished] = useState(false);
+  const finish = useCallback(() => { setFinished(true); usePrefs.getState().setGetStarted("closed"); }, []);
+  const dismiss = useCallback(() => { setFinished(false); usePrefs.getState().setGetStarted("closed"); }, []);
+  const card = !loading && (getStarted === "open" || finished) && <GetStarted first={posts.length === 0} links={posts.length}
+    waiting={queue.length} onAddLink={() => setAdding(true)} onDone={finish} onDismiss={dismiss} />;
+  const addDialog = adding && <AddLinkDialog onClose={() => setAdding(false)} />;
 
   if (posts.length === 0) {
     return (
       <div className="home home--portrait">
-        <section className="deck deck--empty" aria-labelledby="deck-title">
+        {card || <section className="deck deck--empty" aria-labelledby="deck-title">
           {/* Before SQLite has answered once, an empty list means "not loaded yet", not "empty". */}
           <div className="deck__head"><h2 id="deck-title">{loading ? "Loading your library…" : "Your library is empty"}</h2></div>
           {!loading && <div className="deck__done">
             <p>Import browser bookmarks or a Telegram export in Settings, use the bookmark button, or add a link with Add link above.</p>
             <button className="btn btn-primary" onClick={() => navigate("/library/settings")}>Import links</button>
           </div>}
-        </section>
+        </section>}
+        {addDialog}
       </div>
     );
   }
 
   return (
     <div className={`home home--${layout}`}>
+      {card}
+      {addDialog}
       {often.length > 0 && <QuickRow items={often} />}
       <div className="home__top">
         <SortDeck queue={queue} />
@@ -121,6 +139,7 @@ function SortDeck({ queue }: { queue: SavedPost[] }) {
       history.current.push({ id: current.id, from: current.status });
       updatePost(current.id, { status: to });
       logActivity("organize", MOVES[to].log, current.title);
+      sortedALink();
       setSorted(n => n + 1);
       setCanUndo(true);
       setLeaving(null);
@@ -264,7 +283,7 @@ function UpNext({ items, total }: { items: SavedPost[]; total: number }) {
               <span className="up-next__thumb"><PostPreview post={post} fill caption={false} /></span>
               <span className="min-w-0"><b>{name(post)}</b><small>{site(post)} · {relTime(post.createdAt)}</small></span>
             </Link>
-            <button className="up-next__keep" onClick={() => updatePost(post.id, { status: "reference" })} aria-label={`Keep ${name(post)}`} title="Keep">
+            <button className="up-next__keep" onClick={() => { updatePost(post.id, { status: "reference" }); sortedALink(); }} aria-label={`Keep ${name(post)}`} title="Keep">
               <Check size={14} />
             </button>
           </li>

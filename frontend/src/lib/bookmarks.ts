@@ -107,7 +107,13 @@ export function parseBookmarkHtml(raw: string): BookmarkImportResult {
     const canonical = parsed.href;
     if (seen.has(canonical)) { result.duplicates++; continue; }
     seen.add(canonical);
-    result.posts.push(bookmarkPost(canonical, anchor.textContent ?? "", isoFromUnixSeconds(anchor.getAttribute("add_date")), foldersOf(anchor)));
+    const post = bookmarkPost(canonical, anchor.textContent ?? "", isoFromUnixSeconds(anchor.getAttribute("add_date")), foldersOf(anchor));
+    // Raindrop.io and Firefox write a bookmark's tags in TAGS="a,b"; Raindrop puts its note in the <DD> after it.
+    const tags = [...new Set((anchor.getAttribute("tags") ?? "").split(",").map(tag => tag.trim().toLowerCase()).filter(Boolean))].slice(0, 20);
+    const holder = anchor.parentElement?.tagName === "DT" ? anchor.parentElement : null;
+    const note = holder?.nextElementSibling?.tagName === "DD" ? holder.nextElementSibling.textContent?.trim().slice(0, 4000) : "";
+    result.posts.push({ ...post, ...(tags.length ? { tags } : {}),
+      ...(note ? { description: note, fieldSources: { ...post.fieldSources, description: "file" } } : {}) });
   }
   if (!result.posts.length) {
     return fail(`No HTTP(S) bookmarks found. ${result.unsupported} unsupported-scheme and ${result.malformed} malformed entries skipped.`);

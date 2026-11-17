@@ -37,8 +37,9 @@ globalThis.fetch = async (url, options = {}) => {
 const out = await build({
   stdin: {
     contents: `
-      export { useLibrary } from './src/store/library';
-      export { enrichMany, enrichSavedPost, setEnrichmentPaused, useEnrichmentQueue } from './src/lib/metadataEnrichment';
+      export { useLibrary, flushBackgroundUpdates } from './src/store/library';
+      export { enrichMany, enrichSavedPost, setEnrichmentPaused, startEnrichmentQueue, useEnrichmentQueue } from './src/lib/metadataEnrichment';
+      export { useLibraryPersistence } from './src/lib/libraryPersistence';
       export { needsPreview, couldNotFetch, outcomeOf, failureReason } from './src/lib/previewHealth';
       export { useLostPictures } from './src/lib/lostPictures';`,
     resolveDir: fileURLToPath(new URL('../', import.meta.url)), loader: 'ts',
@@ -227,6 +228,44 @@ await check('if fetching it fails after the owner asked, it is set aside like ot
   assert.equal(needsPreview(get('f1'), lost), false, 'not counted again and again');
   assert.equal(couldNotFetch(get('f1'), lost), true, 'listed with "Try them again"');
   assert.equal(couldNotFetch(get('f1')), false, 'a picture that is here is not listed');
+});
+
+await check('links saved under the number in their address get their name at start; anything the owner chose stays', async () => {
+  const number = n => `18512000000000000${n}`;
+  const x = (n, extra = {}) => post(`x${n}`, { url: `https://x.com/nightbaker/status/${number(n)}`, platform: 'x', domain: 'x.com', title: number(n),
+    metadataStatus: 'none', enrichedAt: at, ...extra });
+  const start = () => { const stop = lib.startEnrichmentQueue(); lib.useLibraryPersistence.setState({ status: 'saved' }); return stop; };
+  load([
+    x(1, { fieldSources: { title: 'derived' } }),
+    x(2),                                                        // saved before titles had a source
+    x(3, { fieldSources: { title: 'derived' } }),
+    x(4, { reviewed: true, fieldSources: { title: 'derived' } }),
+    x(5, { fieldSources: { title: 'user' } }),
+    x(6, { fieldSources: { title: 'ai' } }),
+    x(7, { fieldSources: { title: 'file' } }),
+    x(8, { title: '4242' }),                                     // a number, but not the one in its address
+    x(9, { title: 'Crumb shot', fieldSources: { title: 'fetched' } }),
+    post('tiktok', { url: 'https://www.tiktok.com/@kitchenlab/video/7412345', platform: 'tiktok', domain: 'tiktok.com', title: '7412345', metadataStatus: 'none', enrichedAt: at }),
+    post('page', { url: 'https://news.example.invalid/articles/123456', title: '123456', metadataStatus: 'none', enrichedAt: at, fieldSources: { title: 'derived' } }),
+  ]);
+  const stop = start();
+  // An edit made after the rename was queued and before it is applied wins.
+  useLibrary.getState().updatePost('x3', { title: 'My title', fieldSources: { title: 'user' } });
+  lib.flushBackgroundUpdates();
+  stop();
+  assert.deepEqual([get('x1').title, get('x2').title, get('tiktok').title], ['@nightbaker on X', '@nightbaker on X', '@kitchenlab on TikTok']);
+  assert.deepEqual([get('x1').fieldSources.title, get('x2').fieldSources.title], ['derived', 'derived'], 'a preview with a title can still replace the name');
+  assert.equal(get('x3').title, 'My title');
+  assert.deepEqual([get('x4').title, get('x5').title, get('x6').title, get('x7').title], [number(4), number(5), number(6), number(7)], 'Reviewed, typed, AI and bookmark titles stay');
+  assert.deepEqual([get('x8').title, get('x9').title, get('page').title], ['4242', 'Crumb shot', '123456']);
+  // Done once: the next start finds nothing to do.
+  const changed = get('x1').updatedAt;
+  useLibrary.setState({ posts: useLibrary.getState().posts.map(p => (p.id === 'x1' ? { ...p, updatedAt: at } : p)) });
+  const again = start();
+  lib.flushBackgroundUpdates();
+  again();
+  assert.notEqual(changed, at, 'the rename counts as a change, so it is saved');
+  assert.equal(get('x1').updatedAt, at);
 });
 
 if (failures.length) { console.error(`FAILED ${failures.length}: ${failures.join('; ')}`); process.exit(1); }

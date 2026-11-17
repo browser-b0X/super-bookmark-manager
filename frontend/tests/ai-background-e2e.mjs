@@ -62,7 +62,8 @@ try {
 
   const page = await (await browser.newContext({ viewport: { width: 1365, height: 900 } })).newPage();
   const errors = []; page.on('pageerror', e => errors.push(e.message));
-  await page.route('**/api/ai/providers', route => route.fulfill({ json: providers }));
+  let aiStatus = providers;
+  await page.route('**/api/ai/providers', route => route.fulfill({ json: aiStatus }));
   let mode = 'answer';
   let asked = 0;
   await page.route('**/api/ai/suggest', async route => {
@@ -102,8 +103,8 @@ try {
       const p = lib[`b${i}`];
       assert.ok(p.aiCheckedAt, `b${i} checked`);
       assert.deepEqual([p.categories, p.categoryMode], i % 2 ? [['other'], 'automatic'] : [['technology'], 'automatic'], `b${i}`);
-      assert.equal(p.title, `Thing ${i}`);
-      assert.equal(p.originalTitle, `caption ${i} #stuff on Instagram`);
+      // Nobody reviews a background run: the AI's clean title and summary are not applied (owner, 2026-10-23).
+      assert.deepEqual([p.title, p.originalTitle, p.aiSummary, p.tags], [`caption ${i} #stuff on Instagram`, undefined, undefined, ['sorted']], `b${i}`);
     }
     assert.equal(await panel.getByRole('button', { name: /Suggest for 0 links/ }).count(), 1, 'nothing left to sort');
   });
@@ -203,6 +204,19 @@ try {
     await page.waitForTimeout(300);
     const [scroll, client] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
     assert.ok(scroll <= client, `${scroll} > ${client}`);
+  });
+
+  await check('a provider that is set up but not answering is not called "not set up"', async () => {
+    await page.setViewportSize({ width: 1365, height: 900 });
+    // A real reload each time: going to the same address with a #hash reloads nothing.
+    await page.goto(base + '/library/settings#ai');
+    aiStatus = { ...providers, available: false, ready: [], providers: providers.providers.map(p => ({ ...p, state: 'unavailable', retryIn: 120 })) };
+    await page.reload();
+    await panel.getByText(/FreeLLMAPI isn't answering right now/).waitFor({ timeout: 10000 });
+    assert.equal(await panel.getByText('No AI provider is set up yet').count(), 0);
+    aiStatus = { ...aiStatus, providers: providers.providers.map(p => ({ ...p, configured: false, keyHint: '', state: 'off' })) };
+    await page.reload();
+    await panel.getByText(/No AI provider is set up yet/).waitFor({ timeout: 10000 });
   });
 
   await check('no uncaught page errors', async () => { assert.deepEqual(errors, []); });

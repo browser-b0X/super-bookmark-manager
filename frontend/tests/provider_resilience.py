@@ -249,6 +249,131 @@ class ProviderResilience(unittest.TestCase):
         self.assertEqual(saved['baseUrl'], 'http://192.168.1.20:3001/v1')
         self.assertNotIn('freellmapi-SYNTHETIC', json.dumps(r.json), 'the key is never sent back')
 
+    def test_test_finds_freellmapi_on_its_other_port_and_saves_the_address(self):
+        # Its Windows app listens on 31415; this app's default, 3001, is the Docker and source port.
+        fkey = 'freellmapi-SYNTHETIC00000000000000'
+        self.configure(freellmapi={'key': fkey})
+        seen = []
+        def transport(request, timeout=None):
+            seen.append(request.full_url)
+            if request.full_url.startswith('http://127.0.0.1:3001/'):
+                raise urllib.error.URLError(ConnectionRefusedError())
+            if request.full_url == 'http://127.0.0.1:31415/':
+                self.assertIsNone(request.get_header('Authorization'), 'no key until it is known to be FreeLLMAPI')
+                return io.BytesIO('<!doctype html><title>FreeLLMAPI · Unified LLM Router</title>'.encode())
+            self.assertEqual(request.get_header('Authorization'), 'Bearer ' + fkey)
+            return envelope({'data': [{'id': 'auto'}]} if request.full_url.endswith('/models') else reply({'ok': True}))
+        with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=transport):
+            result = self.client.post('/api/ai/providers/freellmapi/test', json={}).json
+        self.assertTrue(result['ok'], result)
+        self.assertIn('31415', result['note'])
+        row = next(p for p in result['status']['providers'] if p['id'] == 'freellmapi')
+        self.assertEqual((row['baseUrl'], row['state']), ('http://127.0.0.1:31415/v1', 'ready'))
+        self.assertEqual(json.loads(AI_FILE.read_text(encoding='utf-8'))['providers']['freellmapi']['baseUrl'],
+                         'http://127.0.0.1:31415/v1', 'kept, as if typed')
+        self.assertIn('http://127.0.0.1:31415/v1/chat/completions', seen)
+
+    def someone_elses(self, port):
+        """On Windows, another person's program holds this port; elsewhere the check doesn't run."""
+        if sys.platform != 'win32':
+            self.skipTest('Windows names who listens on a port')
+        import local_peer
+        return patch.object(local_peer, 'someone_else_listens', lambda asked: asked == port)
+
+    def test_no_key_or_link_goes_to_another_persons_program_on_this_pc(self):
+        self.configure(freellmapi={'key': 'freellmapi-SYNTHETIC00000000000000'})
+        with self.someone_elses(3001), patch.object(ai_providers.urllib.request, 'urlopen',
+                                                    side_effect=AssertionError('nothing is sent')) as transport:
+            with self.assertRaises(ai_providers.NoProvider) as caught:
+                ai_providers.chat([{'role': 'user', 'content': 'a saved link'}], only='freellmapi')
+            self.assertEqual(caught.exception.code, 'someone_else')
+            with self.assertRaises(ai_providers.NoProvider):
+                ai_providers.list_models('freellmapi')
+            result = self.client.post('/api/ai/providers/freellmapi/test', json={}).json
+        self.assertEqual(transport.call_count, 0, result)
+        self.assertFalse(result['ok'])
+        self.assertIn("Another Windows user's program is listening at 127.0.0.1:3001", result['message'])
+        self.assertEqual(next(p for p in result['status']['providers'] if p['id'] == 'freellmapi')['state'], 'someone_else')
+
+    def test_it_is_checked_again_just_before_sending(self):
+        # The port was free when chat() looked, and someone took it after.
+        self.configure(local={'baseUrl': 'http://127.0.0.1:11434/v1', 'model': 'synthetic'})
+        answers = iter((False, True))
+        with patch.object(ai_providers, '_someone_elses', side_effect=lambda url: next(answers)), \
+                patch.object(ai_providers.urllib.request, 'urlopen', side_effect=AssertionError('nothing is sent')):
+            with self.assertRaises(ai_providers.NoProvider):
+                ai_providers.chat([{'role': 'user', 'content': 'a saved link'}], only='local')
+
+    def test_the_local_server_is_checked_whatever_this_pc_is_called(self):
+        for address in ('http://127.0.0.1:11434/v1', 'http://localhost:11434/v1', 'http://[::1]:11434/v1', 'http://127.0.0.2:11434/v1'):
+            with self.subTest(address=address), self.someone_elses(11434):
+                self.configure(local={'baseUrl': address, 'model': 'synthetic'})
+                with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=AssertionError('nothing is sent')), \
+                        self.assertRaises(ai_providers.NoProvider):
+                    ai_providers.chat([{'role': 'user', 'content': 'a saved link'}], only='local')
+
+    def test_servers_elsewhere_are_not_asked_about(self):
+        with self.someone_elses(11434):
+            for address in ('http://192.168.1.10:11434/v1', 'http://server.local:11434/v1', 'https://api.example.test:11434/v1'):
+                self.assertFalse(ai_providers._someone_elses(address), address)
+
+    def test_freellmapi_is_not_moved_to_another_persons_program(self):
+        self.configure(freellmapi={'key': 'freellmapi-SYNTHETIC00000000000000'})
+        def transport(request, timeout=None):
+            self.assertNotEqual(request.full_url, 'http://127.0.0.1:31415/', 'its page proves nothing')
+            raise urllib.error.URLError(ConnectionRefusedError())
+        with self.someone_elses(31415), patch.object(ai_providers.urllib.request, 'urlopen', side_effect=transport):
+            result = self.client.post('/api/ai/providers/freellmapi/test', json={}).json
+        self.assertFalse(result['ok'])
+        self.assertEqual(next(p for p in result['status']['providers'] if p['id'] == 'freellmapi')['baseUrl'], 'http://127.0.0.1:3001/v1')
+
+    def test_test_finds_freellmapi_on_the_docker_port_too(self):
+        self.configure(freellmapi={'key': 'freellmapi-SYNTHETIC00000000000000', 'baseUrl': 'http://127.0.0.1:31415/v1'})
+        def transport(request, timeout=None):
+            if request.full_url.startswith('http://127.0.0.1:31415/'):
+                raise urllib.error.URLError(ConnectionRefusedError())
+            if request.full_url == 'http://127.0.0.1:3001/':
+                return io.BytesIO(b'<title>FreeLLMAPI</title>')
+            return envelope({'data': []} if request.full_url.endswith('/models') else reply({'ok': True}))
+        with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=transport):
+            self.assertTrue(ai_providers.test('freellmapi')['ok'])
+        self.assertEqual(ai_providers._settings('freellmapi')['base'], 'http://127.0.0.1:3001/v1')
+
+    def test_the_key_never_goes_to_something_else_on_the_other_port(self):
+        self.configure(freellmapi={'key': 'freellmapi-SYNTHETIC00000000000000'})
+        def transport(request, timeout=None):
+            if request.full_url.startswith('http://127.0.0.1:3001/'):
+                raise urllib.error.URLError(ConnectionRefusedError())
+            self.assertEqual(request.full_url, 'http://127.0.0.1:31415/', 'only its page is asked for, without the key')
+            self.assertIsNone(request.get_header('Authorization'))
+            return io.BytesIO(b'<title>Another program</title>')
+        with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=transport):
+            result = ai_providers.test('freellmapi')
+        self.assertFalse(result['ok'])
+        self.assertIn('127.0.0.1:3001', result['message'], 'it says which address it tried')
+        self.assertIn('31415', result['message'], 'and what the Windows app uses')
+        self.assertEqual(ai_providers._settings('freellmapi')['base'], 'http://127.0.0.1:3001/v1')
+
+    def test_an_address_the_owner_chose_stays_and_a_token_is_never_shown(self):
+        for address, shown in (('http://192.168.1.20:8000/v1', '192.168.1.20:8000'),
+                               ('http://127.0.0.1:3001/v1/t/tok123', '127.0.0.1:3001')):
+            with self.subTest(address=address):
+                self.configure(freellmapi={'key': 'freellmapi-SYNTHETIC00000000000000', 'baseUrl': address})
+                def transport(request, timeout=None):
+                    self.assertTrue(request.full_url.startswith(address), 'nowhere else is tried: ' + request.full_url)
+                    raise urllib.error.URLError(ConnectionRefusedError())
+                with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=transport):
+                    result = ai_providers.test('freellmapi')
+                self.assertIn(shown, result['message'])
+                self.assertNotIn('tok123', result['message'])
+                self.assertEqual(ai_providers._settings('freellmapi')['base'], address)
+
+    def test_a_local_server_that_cant_be_reached_says_where_it_looked(self):
+        self.configure(local={'baseUrl': 'http://127.0.0.1:11434/v1', 'model': 'synthetic-model'})
+        with patch.object(ai_providers.urllib.request, 'urlopen', side_effect=urllib.error.URLError(ConnectionRefusedError())):
+            result = ai_providers.test('local')
+        self.assertIn('127.0.0.1:11434', result['message'])
+
     def test_an_older_freellmapi_without_auto_fast_falls_back_to_plain_auto(self):
         self.configure(freellmapi={'key': 'freellmapi-SYNTHETIC00000000000000'})
         models = []

@@ -1,11 +1,16 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus } from "lucide-react";
+import { Pencil, Plus, Zap } from "lucide-react";
 import { useLibrary } from "../store/library";
 import { useLibraryCounts } from "../lib/libraryCounts";
 import { PLATFORM_META, STATUS_META } from "../lib/ui";
 import CategoryManager from "../components/library/CategoryManager";
 import { isDue } from "../lib/followUp";
+import { matchesQuery, parseQuery } from "../lib/librarySearch";
+import SmartShelfEditor from "../components/library/SmartShelfEditor";
+import TagManager from "../components/library/TagManager";
+import { tagLookup } from "../lib/tags";
+import type { SavedView } from "../types";
 
 /**
  * All shelves: every shelf as a card, and beside it what the old sidebar held:
@@ -18,6 +23,21 @@ export default function AllShelvesPage() {
   const allTags = useLibrary(s => s.allTags)();
   const counts = useLibraryCounts();
   const [managing, setManaging] = useState(false);
+  const [tagging, setTagging] = useState(false);
+  const tagInfo = useLibrary(s => s.tagInfo);
+  const creatorCount = useLibrary(s => s.creators.length);
+  // The smart shelf being made (null) or changed (a view); undefined while the editor is closed.
+  const [smart, setSmart] = useState<SavedView | null | undefined>(undefined);
+  const smartShelves = useMemo(() => {
+    const tags = tagLookup(tagInfo);
+    return views.filter(v => v.filter.smart).map(view => {
+      // One odd shelf mustn't stop the page from opening: its count is left out instead.
+      try {
+        const parsed = parseQuery(view.filter.search ?? "");
+        return { view, n: parsed.tree ? posts.filter(p => matchesQuery(p, parsed, tags)).length : 0 };
+      } catch { return { view, n: 0 }; }
+    });
+  }, [views, posts, tagInfo]);
   const shelves = useMemo(() => categories.filter(c => !c.archived).sort((a, b) => a.order - b.order), [categories]);
   const pictures = useMemo(() => {
     const byShelf = new Map<string, string[]>();
@@ -44,6 +64,7 @@ export default function AllShelvesPage() {
     { to: "/library?status=archived", label: "Archived", n: counts.status.archived || 0 },
     { to: "/library?status=uncategorized", label: "Unfiled", n: unfiled },
     { to: "/library", label: "All saved", n: posts.length },
+    { to: "/creators", label: "Creators", n: creatorCount },
   ];
 
   return (
@@ -95,10 +116,20 @@ export default function AllShelvesPage() {
             })}
           </div>
         </>}
-        {views.length > 0 && <>
+        <h2>Smart shelves</h2>
+        <nav className="side-list" aria-label="Smart shelves">
+          {smartShelves.map(({ view, n }) => (
+            <span key={view.id} className="smart-row">
+              <Link to={`/library?view=${view.id}`} aria-label={`${view.name} ${n}`}><span className="flex items-center gap-1.5"><Zap size={12} aria-hidden="true" />{view.name}</span><span>{n}</span></Link>
+              <button type="button" className="icon-btn" aria-label={`Edit the rules of ${view.name}`} onClick={() => setSmart(view)}><Pencil size={12} /></button>
+            </span>
+          ))}
+          <button type="button" className="smart-new" onClick={() => setSmart(null)}><Plus size={12} /> New smart shelf</button>
+        </nav>
+        {views.some(v => !v.filter.smart) && <>
           <h2>Saved views</h2>
           <nav className="side-list">
-            {views.map(v => <Link key={v.id} to={`/library?view=${v.id}`}><span>{v.name}</span><span aria-hidden="true">›</span></Link>)}
+            {views.filter(v => !v.filter.smart).map(v => <Link key={v.id} to={`/library?view=${v.id}`}><span>{v.name}</span><span aria-hidden="true">›</span></Link>)}
           </nav>
         </>}
         {allTags.length > 0 && <>
@@ -106,9 +137,12 @@ export default function AllShelvesPage() {
           <div className="side-chips">
             {allTags.slice(0, 40).map(t => <Link key={t} className="chip" to={`/library/tag/${encodeURIComponent(t)}`}>#{t}</Link>)}
           </div>
+          <button type="button" className="smart-new -mt-3 mb-4" onClick={() => setTagging(true)}><Pencil size={12} /> Manage tags…</button>
         </>}
       </aside>
       {managing && <CategoryManager onClose={() => setManaging(false)} />}
+      {smart !== undefined && <SmartShelfEditor view={smart ?? undefined} onClose={() => setSmart(undefined)} />}
+      {tagging && <TagManager onClose={() => setTagging(false)} />}
     </div>
   );
 }

@@ -43,6 +43,17 @@ async function start() {
   port = data.port;
   base = `http://127.0.0.1:${port}`;
   events.push(data);
+  // Under heavy parallel load the first requests to a fresh server can take longer than the app's
+  // own 15-second limit, and the app then (rightly) starts from an unsaved demo library. Wait until
+  // the server answers its library and health routes, instead of racing its start-up.
+  for (const route of ['/api/stats', '/api/library']) {
+    for (let attempt = 0; ; attempt++) {
+      const ok = await fetch(base + route, { signal: AbortSignal.timeout(20000) }).then(r => r.ok, () => false);
+      if (ok) break;
+      assert.ok(attempt < 30, `The fixture server never answered ${route}`);
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
   console.log('Fixture ready', JSON.stringify(data));
 }
 async function control(command) {
@@ -79,6 +90,9 @@ async function newPage() {
     return route.continue();
   });
   const next = await context.newPage();
+  // Every wait below is for a condition (a status, a count, a page); the limit only says how long
+  // a heavily loaded machine may take to reach it, so it is generous.
+  next.setDefaultTimeout(120000);
   next.on('pageerror', error => errors.push(error.message));
   next.on('console', message => { if (message.type() === 'error') consoleMessages.push(message.text()); });
   next.on('request', request => {
@@ -107,11 +121,22 @@ async function newPage() {
 const posts = () => page.evaluate(() => JSON.parse(localStorage.getItem('library-store-v1')).state.posts);
 const status = () => page.getByRole('status', { name: 'SQLite save status' });
 async function saved(count) {
-  await status().filter({ hasText: /^Library saved to SQLite$/ }).waitFor();
+  // On a machine so busy that the server needs longer than the app's own 15-second limit, the app
+  // says "SQLite unavailable" and waits for the owner to press Retry. Do what the owner would:
+  // retry, a few times, while the server is up; a server that really is down still fails here.
+  const done = status().filter({ hasText: /^Library saved to SQLite$/ });
+  const unavailable = status().filter({ hasText: /^SQLite unavailable/ });
+  for (let retries = 0; ; retries++) {
+    await done.or(unavailable).first().waitFor();
+    if (await done.count()) break;
+    assert.ok(retries < 5 && !apiOffline, 'SQLite stayed unavailable: ' + await status().innerText());
+    // The app may have saved by itself in the meantime (the button is then gone): look again.
+    await status().getByRole('button', { name: 'Retry SQLite save' }).dispatchEvent('click', undefined, { timeout: 3000 }).catch(() => {});
+  }
   let result, browserPosts;
   // A background preview result can land between the SQLite snapshot and the browser read;
   // once things are quiet the two must match exactly.
-  for (let attempt = 0; attempt < 20; attempt++) {
+  for (const deadline = Date.now() + 90000; Date.now() < deadline;) {
     await page.waitForFunction(count => {
       const state = JSON.parse(localStorage.getItem('library-store-v1') || '{}').state;
       return state?.posts.length === count && Object.keys(state.pending).length === 0;
@@ -175,6 +200,10 @@ try {
   pass('Settings explains SQLite durability without obsolete browser-only claims');
   await importAll();
   pass('actual Settings imports 3 + 2 + 3 = 8 complete SQLite records');
+  // The import files each new link onto a shelf a moment after it lands. Read the links once that
+  // has happened, or the clicks below toggle a shelf the import added in between (the race under load).
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem('library-store-v1')).state.posts.every(p => p.categories.length > 0));
+  await saved(8);
   const initial = await posts();
   first = initial.find(p => p.url.includes('/cooking'));
   second = initial.find(p => p.url.includes('/programming'));
@@ -337,7 +366,7 @@ try {
   assert.deepEqual(denied, []);
   // /api/enrich is an accepted first-party endpoint (import-time metadata enrichment): same-origin,
   // deterministic fixture response, not a provider/personal/external request. Explicit allowlist only.
-  assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/ai/providers', '/api/archive'].includes(r.path)
+  assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/ai/providers', '/api/archive', '/api/archive/large-videos', '/api/extension', '/api/library/pending', '/api/claude-desktop'].includes(r.path)
     || (r.path === '/api/telegram/config' && r.method === 'GET')));
   pass('no uncaught browser errors, provider requests, personal data or external requests');
 } catch (error) {

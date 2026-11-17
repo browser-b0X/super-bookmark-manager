@@ -10,9 +10,9 @@
   <meta property="og:description" content="Browser bookmarks, Telegram and WhatsApp links in one library on your own Windows PC, with offline copies. Free and open source, with optional free AI tidying.">
   <meta property="og:type" content="website">
   <meta property="og:image" content="https://browser-b0x.github.io/super-bookmark-manager/assets/social-preview.png">
-  <meta property="og:image:width" content="1280">
-  <meta property="og:image:height" content="640">
-  <meta property="og:image:alt" content="SuperBookmarks: Saved for a reason. Found when it matters.">
+  <meta property="og:image:width" content="2560">
+  <meta property="og:image:height" content="1280">
+  <meta property="og:image:alt" content="SuperBookmarks: one library for every link you've saved, on your own PC.">
   <meta property="og:url" content="https://browser-b0x.github.io/super-bookmark-manager/">
   <meta name="twitter:card" content="summary_large_image">
   <title>SuperBookmarks — Saved for a reason.</title>
@@ -379,7 +379,7 @@
     <div class="wrap">
       <section class="hero" aria-labelledby="hero-title" style="padding-top:84px">
         <a class="news" href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest">
-          <b>v0.3.0</b> Offline copies of every page, a new Home and AI tidying in the background
+          <b>v0.4.0</b> The browser extension, Claude Desktop with no API key, and creators
         </a>
         <div class="hero-grid">
           <div>
@@ -407,9 +407,9 @@
         <figure class="shot">
           <div class="shot-frame">
             <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>127.0.0.1:5001 — SuperBookmarks</span></div>
-            <img class="img-dark" src="screenshots/home-dark.webp" width="1440" height="1030"
+            <img class="img-dark" src="screenshots/home-dark.webp" width="1440" height="1064"
                  alt="Home in dark mode: the newest link to sort with Archive, Later and Keep; Follow up and Up next beside it; a shelf row below where posts without a picture show their site's artwork.">
-            <img class="img-light" src="screenshots/home-light.webp" width="1440" height="1030"
+            <img class="img-light" src="screenshots/home-light.webp" width="1440" height="1064"
                  alt="Home in light mode: the newest link to sort with Archive, Later and Keep; Follow up and Up next beside it; a shelf row below.">
           </div>
           <figcaption>Home, shown with sample links. Your own library never leaves your computer.</figcaption>
@@ -494,6 +494,54 @@
         </div>
       </section>
 
+      <section id="new" aria-labelledby="new-title">
+        <h2 id="new-title">New in v0.4.0</h2>
+        <p class="sub">Save the posts you see, tidy from a Claude chat, know who made what you saved, and undo anything. Shown with sample links.</p>
+        <div class="tour">
+          <figure class="shot">
+            <figcaption><h3>Save the posts you see</h3><p>The browser extension lists the posts already loaded in your tab on X, Instagram or TikTok; tick the ones to keep. It never scrolls, opens posts or keeps a login, and it talks only to the app on your PC.</p></figcaption>
+            <div class="shot-frame">
+              <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>Save to SuperBookmarks</span></div>
+              <img class="img-dark" src="screenshots/save-posts-dark.webp" width="1440" height="730" loading="lazy"
+                   alt="The extension's Save window in dark mode on an X search: posts already loaded in the tab, two ticked, one already saved, with status, tags and Save 2 posts.">
+              <img class="img-light" src="screenshots/save-posts-light.webp" width="1440" height="730" loading="lazy"
+                   alt="The extension's Save window in light mode: posts already loaded in the tab, two ticked, one already saved.">
+            </div>
+          </figure>
+          <figure class="shot">
+            <figcaption><h3>Who made what you saved</h3><p>Creators are worked out from the posts themselves: names and handles across sites, merge two that are the same person, and see what's new since you looked. Nothing is checked online.</p></figcaption>
+            <div class="shot-frame">
+              <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>127.0.0.1:5001 — SuperBookmarks</span></div>
+              <img class="img-dark" src="screenshots/creators-dark.webp" width="1440" height="730" loading="lazy"
+                   alt="Creators in dark mode: a card for each creator with their handles on X, Instagram, TikTok and Reddit, how many posts were saved and when.">
+              <img class="img-light" src="screenshots/creators-light.webp" width="1440" height="730" loading="lazy"
+                   alt="Creators in light mode: a card for each creator with their handles, how many posts were saved and when, one marked +1 new since you looked.">
+            </div>
+          </figure>
+          <figure class="shot">
+            <figcaption><h3>A search that says what it read</h3><p><code>or</code>, <code>-word</code>, "phrases", groups and dates, read back under the box. Save a search as a smart shelf, built from rules.</p></figcaption>
+            <div class="shot-frame">
+              <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>127.0.0.1:5001 — SuperBookmarks</span></div>
+              <img class="img-dark" src="screenshots/search-dark.webp" width="1440" height="730" loading="lazy"
+                   alt="The library in dark mode searched for (#bread or #rye) -sourdough saved:30d, with the chips that read it back under the box.">
+              <img class="img-light" src="screenshots/search-light.webp" width="1440" height="730" loading="lazy"
+                   alt="The library in light mode with a search read back as chips: any of #bread, #rye; not the word sourdough; saved 30d.">
+            </div>
+          </figure>
+          <figure class="shot">
+            <figcaption><h3>Clean up, and undo anything</h3><p>Links of one post saved at two addresses merge into one; links you remove are remembered so they can come back; History undoes any change to many links at once.</p></figcaption>
+            <div class="shot-frame">
+              <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>127.0.0.1:5001 — SuperBookmarks</span></div>
+              <img class="img-dark" src="screenshots/cleanup-dark.webp" width="1440" height="730" loading="lazy"
+                   alt="Settings in dark mode, Clean up and undo: an X post saved at two addresses with Merge, a removed link with Bring back, and History.">
+              <img class="img-light" src="screenshots/cleanup-light.webp" width="1440" height="730" loading="lazy"
+                   alt="Settings in light mode, Clean up and undo: the same post saved twice, removed links and History with Undo.">
+            </div>
+          </figure>
+        </div>
+        <p class="note">Claude Desktop: the SuperBookmarks extension for Claude Desktop lets you find and file links from a Claude chat under your own Claude plan, with no API key; every change it makes can be undone in the app.</p>
+      </section>
+
       <section id="tour" aria-labelledby="tour-title">
         <h2 id="tour-title">A closer look</h2>
         <p class="sub">The library, a page kept on your PC and a big shelf sorted by website, shown with sample links.</p>
@@ -502,9 +550,9 @@
             <figcaption><h3>Every link is a picture</h3><p>Point at a tile and its details rise: the site, status, shelf and quick actions. Social posts without a picture are drawn in their site's colours.</p></figcaption>
             <div class="shot-frame">
               <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>127.0.0.1:5001 — SuperBookmarks</span></div>
-              <img class="img-dark" src="screenshots/library-dark.webp" width="1440" height="832" loading="lazy"
+              <img class="img-dark" src="screenshots/library-dark.webp" width="1440" height="820" loading="lazy"
                    alt="The library in dark mode: picture tiles, social posts drawn in their site's colours, and one tile's panel with its site, status, shelf and Open, Later, Archive and Details.">
-              <img class="img-light" src="screenshots/library-light.webp" width="1440" height="832" loading="lazy"
+              <img class="img-light" src="screenshots/library-light.webp" width="1440" height="820" loading="lazy"
                    alt="The library in light mode: picture tiles, social posts drawn in their site's colours, and one tile's panel with its site, status, shelf and quick actions.">
             </div>
           </figure>
@@ -559,6 +607,7 @@
               <li><strong>Download the latest release</strong> — the Windows installer and its checksum are on GitHub.</li>
               <li><strong>Install and open it</strong> from the Start Menu. No Python or Node needed; it opens in your browser at <code>127.0.0.1:5001</code>.</li>
               <li><strong>Bring your links</strong> in Settings. Telegram uses your own API keys; AI keys are optional.</li>
+              <li><strong>Optional:</strong> the browser extension and the Claude Desktop extension are on the same release page; <a class="text-link" href="https://github.com/browser-b0X/super-bookmark-manager#browser-extension">how to set them up</a>.</li>
             </ol>
             <div class="actions">
               <a class="btn primary" href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest">
@@ -591,8 +640,8 @@ npm.cmd --prefix frontend run build
           <p class="sub">The GitHub button in the app's header leads here too. Reports and suggestions shape what comes next;
             questions are welcome in <a href="https://github.com/browser-b0X/super-bookmark-manager/discussions">Discussions</a>.
             Want to help build it? Start with the <a href="https://github.com/browser-b0X/super-bookmark-manager/blob/main/CONTRIBUTING.md">contributing guide</a>.</p>
-          <p class="sub support">Enjoying it? You can support the project on <a href="https://ko-fi.com/browserb0x">Ko-fi</a>
-            or <a href="https://buymeacoffee.com/browserbox">Buy Me a Coffee</a> — appreciated, never expected.</p>
+          <p class="sub support">Enjoying it? You can <a href="https://bio.site/browserb0x">support the project</a> (Ko-fi and
+            Buy Me a Coffee are both on that page) — appreciated, never expected.</p>
         </div>
         <div class="actions">
           <a class="btn primary" href="https://github.com/browser-b0X/super-bookmark-manager/issues/new/choose">

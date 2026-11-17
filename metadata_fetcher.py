@@ -9,6 +9,7 @@ import hashlib
 import html as _html
 from html.parser import HTMLParser
 import json
+import math
 import os
 import re
 import tempfile
@@ -120,6 +121,36 @@ def _cache_instagram_thumb(image_url, post_url, deadline=None, *, strict=False):
     except Exception:
         if strict:
             raise safe_http.SafeHTTPError("internal_error") from None
+        return ""
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def keep_instagram_thumb(body, post_url):
+    """The link's own preview from picture bytes the owner's tab handed over (nothing is fetched), or ''.
+    An entry already cached stays, as with _cache_instagram_thumb."""
+    cached = _cached_instagram_path(post_url)
+    if cached:
+        return cached
+    if not any(_valid_image(body, mime) for mime in ("image/jpeg", "image/png", "image/gif", "image/webp")):
+        return ""
+    code = _ig_post_code(post_url)
+    temporary = None
+    try:
+        os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
+        if os.path.islink(THUMB_CACHE_DIR):
+            return ""
+        with tempfile.NamedTemporaryFile(dir=THUMB_CACHE_DIR, prefix=code + ".", suffix=".tmp", delete=False) as handle:
+            temporary = handle.name
+            handle.write(body)
+        os.replace(temporary, os.path.join(THUMB_CACHE_DIR, code))
+        temporary = None
+        return f"/thumb/{code}"
+    except OSError:
         return ""
     finally:
         if temporary:
@@ -619,6 +650,23 @@ def _from_oembed(data):
             "author": _clean_text(text("author_name"), 200), "site": _clean_text(text("provider_name"), 200)}
 
 
+def _x_picture(url, deadline):
+    """The first photo (or video cover) of an X post from X's embed data, as saved copies read it.
+
+    X's oEmbed answer is text only; the embed JSON (x_post.py) names the post's pictures."""
+    import x_post
+    identifier = x_post.post_id(url)
+    if not identifier:
+        return ""
+    post = x_post.parse(_json(x_post.data_url(identifier), deadline, x_post.DATA_LIMIT))
+    for candidate in (post, post and post.quoted):
+        if candidate and candidate.photos:
+            return candidate.photos[0]
+        if candidate and candidate.video and candidate.video.poster:
+            return candidate.video.poster
+    return ""
+
+
 def _reddit(url, deadline):
     """Title, text, picture, author and subreddit from the post's public RSS feed (reddit_post.py).
 
@@ -728,10 +776,10 @@ def _crawler_friendly(url):
     return any(_host_matches(url, host) for host in _CRAWLER_FRIENDLY)
 
 
-def _crawler_page(page_url, deadline):
-    """Fetch the page as WhatsApp's link-preview crawler; None when that fails too."""
+def _crawler_page(page_url, deadline, headers=_WHATSAPP_HEADERS):
+    """Fetch the page as WhatsApp's link-preview crawler (or with `headers`); None when that fails too."""
     try:
-        response = safe_http.get(page_url, deadline=deadline, headers=_WHATSAPP_HEADERS, truncate=True)
+        response = safe_http.get(page_url, deadline=deadline, headers=headers, truncate=True)
     except safe_http.SafeHTTPError:
         return None
     content_type = response.headers.get("content-type", "").lower()
@@ -746,6 +794,7 @@ def _crawler_page(page_url, deadline):
         "image": meta.get("og:image:secure_url") or meta.get("og:image") or meta.get("twitter:image") or "",
         "site": meta.get("og:site_name") or "",
         "final": response.url,
+        "address": meta.get("og:url") or parser.links.get("canonical") or "",
     }
 
 
@@ -763,6 +812,11 @@ def _fetch_metadata(url, deadline):
         if endpoint:
             safe_http.validate_url(url, deadline)
             special = _from_oembed(_json(endpoint, deadline))
+            if special.get("title") or special.get("summary"):
+                try:
+                    special["image"] = special.get("image") or _x_picture(url, deadline)
+                except (safe_http.SafeHTTPError, ValueError):
+                    pass                       # the text preview stands without a picture
         elif reddit_post.parse_link(url):
             safe_http.validate_url(url, deadline)
             special = _reddit(url, deadline)
@@ -776,12 +830,16 @@ def _fetch_metadata(url, deadline):
             result = _result("busy" if exc.status == 429 else exc.code)
             if exc.status:
                 result["httpStatus"] = exc.status
+                if exc.retry_after:
+                    result["retryAfter"] = exc.retry_after
+                result["_host"] = exc.host
             return result
         special = {}
     except (ValueError, KeyError, IndexError, TypeError):
         special = {}
-    if special.get("title") and special.get("image") or (endpoint and special.get("title")):
-        # oEmbed answered: no need to download the (often script-only) page.
+    if special.get("title") and special.get("image") or (endpoint and (special.get("title") or special.get("image"))):
+        # oEmbed answered (for X: its text plus the embed data's picture): no need to download the
+        # (often script-only) page.
         return _finish(url, url, special, "", [], None, deadline, instagram=False)
 
     try:
@@ -801,6 +859,9 @@ def _fetch_metadata(url, deadline):
         result = _result(exc.code)
         if exc.status:
             result["httpStatus"] = exc.status
+            if exc.retry_after:
+                result["retryAfter"] = exc.retry_after
+            result["_host"] = exc.host
             if exc.status in (404, 410):
                 result["linkStatus"] = "gone"
         return result
@@ -901,11 +962,15 @@ _CONCURRENCY = 3
 _host_gates = {}
 
 
-def _host_gate(url):
+def _host_key(url):
     try:
-        host = (urlsplit(url).hostname or "").lower()
+        return (urlsplit(url).hostname or "").lower()
     except ValueError:
-        host = ""
+        return ""
+
+
+def _host_gate(url):
+    host = _host_key(url)
     with _flight_lock:
         gate = _host_gates.get(host)
         if gate is None:
@@ -913,6 +978,69 @@ def _host_gate(url):
                 _host_gates.clear()
             gate = _host_gates[host] = threading.BoundedSemaphore(2)
         return gate
+
+
+# Polite fetching: after a 429/503 a site is left alone for its Retry-After, or
+# 60 s doubling each time (up to an hour) without one, so a bulk import of one
+# domain stops at the first "slow down" instead of collecting more of them.
+_REST_FIRST = 60
+_REST_LIMIT = 3600
+_rest_lock = threading.Lock()
+_host_rests = {}   # host -> (monotonic time it may be fetched again, length of its last rest)
+
+
+def _rest_left(url):
+    """Whole seconds (at least 1) the link's host still rests, else 0."""
+    with _rest_lock:
+        rest = _host_rests.get(_host_key(url))
+        left = rest[0] - time.monotonic() if rest else 0
+    return max(1, math.ceil(left)) if left > 0 else 0
+
+
+def _rest_start(url, retry_after):
+    host = _host_key(url)
+    now = time.monotonic()
+    with _rest_lock:
+        last = _host_rests[host][1] if host in _host_rests else 0
+        wait = retry_after if isinstance(retry_after, int) and retry_after > 0 else min(_REST_LIMIT, max(_REST_FIRST, last * 2))
+        if host not in _host_rests and len(_host_rests) > 256:
+            for old in [name for name, (until, _) in _host_rests.items() if until <= now]:
+                del _host_rests[old]
+            # Still full: the rests ending soonest go, so many sites saying "slow down" can't wipe the others.
+            for old in sorted(_host_rests, key=lambda name: _host_rests[name][0])[:max(0, len(_host_rests) - 256)]:
+                del _host_rests[old]
+        _host_rests[host] = (now + wait, wait)
+    return wait
+
+
+def _rest_clear(url):
+    """A good answer ends the doubling; a rest the site still asked for stays."""
+    host = _host_key(url)
+    now = time.monotonic()
+    with _rest_lock:
+        rest = _host_rests.get(host)
+        if rest and rest[0] > now:
+            _host_rests[host] = (rest[0], 0)
+        else:
+            _host_rests.pop(host, None)
+
+
+def _polite(url, result):
+    """Start or clear the link's host rest from a finished fetch."""
+    failed = result.get("status") == "failed"
+    answered = result.pop("_host", None)
+    # 429 is a site saying "slow down"; a 503 only when it says for how long (a bare 503 is often one broken page).
+    status = result.get("httpStatus")
+    if failed and (status == 429 or status == 503 and isinstance(result.get("retryAfter"), int)):
+        if answered and answered != _host_key(url):
+            # A redirect target said "slow down": only this link waits; the link's own site isn't rested for it.
+            wait = result.get("retryAfter") if isinstance(result.get("retryAfter"), int) else _REST_FIRST
+            return _result("busy", httpStatus=result["httpStatus"], retryAfter=wait)
+        wait = _rest_start(url, result.get("retryAfter"))
+        return _result("busy", httpStatus=result["httpStatus"], retryAfter=wait)
+    if not failed:
+        _rest_clear(url)
+    return result
 
 
 def fetch_metadata(url):
@@ -935,6 +1063,9 @@ def fetch_metadata(url):
         if cached:
             _recent.move_to_end(key)
             return dict(cached[1])
+        left = _rest_left(key)
+        if left:
+            return _result("busy", retryAfter=left)   # the site asked for quiet: no request at all
         flight = _inflight.get(key)
         owner = flight is None
         if owner:
@@ -954,7 +1085,11 @@ def fetch_metadata(url):
         if not gate.acquire(timeout=max(0.0, min(3.0, deadline - time.monotonic()))):
             raise safe_http.SafeHTTPError("busy")
         try:
-            result = _fetch_metadata(key, deadline)
+            left = _rest_left(key)     # a fetch ahead in the queue may have started a rest
+            if left:
+                result = _result("busy", retryAfter=left)
+            else:
+                result = _polite(key, _fetch_metadata(key, deadline))
         finally:
             gate.release()
     except safe_http.SafeHTTPError as exc:
@@ -964,7 +1099,8 @@ def fetch_metadata(url):
     finally:
         with _flight_lock:
             flight["result"] = dict(result)
-            _recent[key] = (time.monotonic() + _COOLDOWN, dict(result))
+            if not result.get("retryAfter"):   # a rest is answered fresh, with its seconds left
+                _recent[key] = (time.monotonic() + _COOLDOWN, dict(result))
             while len(_recent) > _CACHE_LIMIT:
                 _recent.popitem(last=False)
             _inflight.pop(key, None)

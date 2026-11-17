@@ -109,6 +109,7 @@ explicit inventory limits, not invented license assertions.
 | @jridgewell/sourcemap-codec | 1.6.0 | MIT | notice included |
 | @jridgewell/trace-mapping | 0.3.31 | MIT | notice included |
 | @napi-rs/lzma-linux-x64-gnu | 1.5.1 | MIT | build-only/platform-specific or review upstream notice before redistributing this dependency |
+| @noble/ciphers | 2.4.0 | MIT | notice included |
 | @remix-run/router | 1.23.4 | MIT | notice included |
 | @rolldown/pluginutils | 1.0.0-beta.27 | MIT | notice included |
 | @rollup/rollup-android-arm-eabi | 4.63.1 | MIT | build-only/platform-specific or review upstream notice before redistributing this dependency |

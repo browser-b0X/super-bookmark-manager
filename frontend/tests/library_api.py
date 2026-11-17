@@ -87,6 +87,10 @@ class LibraryApiTests(unittest.TestCase):
         DB = FIXTURE / (self._testMethodName + ".sqlite")
         os.environ["SAVED_POSTS_DB_PATH"] = str(DB)
         storage.config.DB_PATH = str(DB)
+        # The dates here are fixed and their order matters: none may be forgotten as the calendar moves on.
+        # No more days than this: the cutoff must stay after 1970, which is as far back as Windows' clock goes.
+        # Set for each test, not once: one of them reloads storage.
+        storage.FORGET_VIEW_DELETIONS_DAYS = 20000
         storage.init_db()
         self.client = dashboard.app.test_client()
         self.guard_start = len(BLOCKED)
@@ -405,6 +409,56 @@ class LibraryApiTests(unittest.TestCase):
         self.assertEqual(response.get_json()["posts"], [])
         self.assertEqual(response.get_json()["deletedUrls"], [])
         self.assertEqual(self.save([original])["posts"], [original])
+
+    def test_undo_import_keeps_a_link_edited_after_the_undo_saw_it(self):
+        # Tab B undoes an import from an old view; tab A edited one of its links since.
+        imported, untouched = post(updatedAt="2026-09-17T10:00:00Z"), post(2, updatedAt="2026-09-17T10:00:00Z")
+        rev = self.save([imported, untouched])["rev"]
+        edited = post(userNotes="Tab A note", updatedAt="2026-09-18T12:00:00Z")
+        self.save([edited])
+        response = self.client.post("/api/library", json={
+            "posts": [], "deletedUrls": [], "since": rev,
+            "purgeUrls": [imported["url"], untouched["url"]],
+            "purgeSeen": {imported["url"]: imported["updatedAt"], untouched["url"]: untouched["updatedAt"]}}).get_json()
+        self.assertEqual(response["purgedUrls"], [untouched["url"]])
+        self.assertEqual(response["keptUrls"], [imported["url"]])
+        self.assertIn(edited, response["posts"], "the kept link is sent back so the tab shows it again")
+        self.assertEqual(self.client.get("/api/library").get_json()["posts"], [edited])
+        for seen in ("x", {"a": 1}, {imported["url"]: 5}):
+            refused = self.client.post("/api/library", json={"posts": [], "deletedUrls": [], "purgeSeen": seen})
+            self.assertEqual(refused.status_code, 400, seen)
+
+    def test_saved_views_are_kept_in_sqlite_and_merged_per_view(self):
+        # Owner, 2026-10-23: saved views no longer live only in one browser.
+        view = lambda vid, name, at: {"id": vid, "name": name, "filter": {"kind": "inbox"}, "updatedAt": at}
+        save = lambda **extra: self.client.post("/api/library", json={"posts": [], "deletedUrls": [], **extra}).get_json()
+        first = save(views=[view("v1", "Unread", "2026-10-24T10:00:00Z"), view("v2", "Recipes", "2026-10-24T10:00:00Z")])
+        self.assertEqual([v["name"] for v in first["views"]], ["Unread", "Recipes"])
+        # Another browser's older copy changes nothing; a newer one wins.
+        self.assertEqual(save(views=[view("v1", "Old name", "2026-10-24T09:00:00Z")])["views"][0]["name"], "Unread")
+        self.assertEqual(save(views=[view("v1", "Unread videos", "2026-10-24T11:00:00Z")])["views"][0]["name"], "Unread videos")
+        # A deletion removes the view everywhere, unless it changed after; every read carries both.
+        gone = save(deletedViews={"v2": "2026-10-24T12:00:00Z"})
+        self.assertEqual([v["id"] for v in gone["views"]], ["v1"])
+        self.assertEqual(gone["deletedViews"], {"v2": "2026-10-24T12:00:00Z"})
+        self.assertEqual(save(views=[view("v2", "Recipes", "2026-10-24T10:00:00Z")])["deletedViews"], {"v2": "2026-10-24T12:00:00Z"},
+                         "a browser that missed the deletion can't bring the view back")
+        self.assertIn("v2", [v["id"] for v in save(views=[view("v2", "Recipes again", "2026-10-24T13:00:00Z")])["views"]])
+        self.assertEqual([v["name"] for v in self.client.get("/api/library").get_json()["views"]], ["Unread videos", "Recipes again"])
+        self.assertEqual(self.client.get("/api/library?since=1").get_json()["views"][0]["id"], "v1", "also in change-only answers")
+        for bad in ({"views": "x"}, {"views": [{"id": "v", "name": "", "filter": {}}]}, {"views": [{"id": "v", "name": "n"}]},
+                    {"views": [{"id": "v", "name": "n", "filter": {}, "extra": 1}]}, {"deletedViews": ["v"]}, {"deletedViews": {"v": 5}}):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.client.post("/api/library", json={"posts": [], "deletedUrls": [], **bad}).status_code, 400)
+
+    def test_layout_refuses_numbers_json_cannot_hold(self):
+        ok = self.client.post("/api/layout", json={"key": "main", "layout": {"width": 320}})
+        self.assertEqual(ok.status_code, 200)
+        for bad in ('{"key": "main", "layout": {"width": NaN}}', '{"layout": [Infinity]}', '{"layout": -Infinity}'):
+            with self.subTest(bad=bad):
+                response = self.client.post("/api/layout", data=bad, content_type="application/json")
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.client.get("/api/layout?key=main").get_json(), {"layout": {"width": 320}})
 
     def test_delta_sync_returns_only_changes_after_a_revision(self):
         first, second = post(), post(2)

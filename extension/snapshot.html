@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Page structure · SuperBookmarks</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <h1><img src="icons/icon-48.png" width="28" height="28" alt=""> Page structure</h1>
+    <section class="panel">
+      <p class="dim">What this page is built of, for fixing SuperBookmarks when a site changes its pages: tag names, test ids, roles
+        and class names. No text, links, pictures or names: parts that could be someone's name or a post's number show as *.</p>
+      <textarea id="text" class="snapshot" readonly rows="20" aria-label="Page structure"></textarea>
+      <div class="row"><button id="copy" class="primary" type="button">Copy</button><button id="close" type="button">Close</button></div>
+      <p id="status" role="status" class="status"></p>
+    </section>
+  </main>
+  <script src="snapshot-page.js"></script>
+</body>
+</html>

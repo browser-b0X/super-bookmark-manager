@@ -69,9 +69,10 @@ try {
 
   await check('FreeLLMAPI and the local model come first; the single services are folded away under "Other providers"', async () => {
     const labels = await rows.evaluateAll(items => items.map(li => li.getAttribute('aria-label')));
-    assert.deepEqual(labels, ['FreeLLMAPI provider', 'Local server provider', 'Other providers']);
+    // Claude Desktop (v0.4.0) closes the list: it needs no key, and is folded like the others.
+    assert.deepEqual(labels, ['FreeLLMAPI provider', 'Local server provider', 'Other providers', 'Claude Desktop']);
     assert.equal(await section.locator('input').count(), 0, 'no fields until a provider is opened');
-    for (const name of ['FreeLLMAPI', 'Local server', 'Other providers']) {
+    for (const name of ['FreeLLMAPI', 'Local server', 'Other providers', 'Claude Desktop']) {
       assert.equal(await toggle(name).getAttribute('aria-expanded'), 'false', name);
     }
     await section.getByText('None set up yet: FreeLLMAPI gives the most free use with one key.').waitFor();
@@ -79,7 +80,7 @@ try {
     await toggle('Other providers').click();
     const all = await rows.evaluateAll(items => items.map(li => li.getAttribute('aria-label')));
     assert.deepEqual(all, ['FreeLLMAPI provider', 'Local server provider', 'Other providers',
-      'Google Gemini provider', 'Groq provider', 'OpenRouter provider', 'NVIDIA NIM provider']);
+      'Google Gemini provider', 'Groq provider', 'OpenRouter provider', 'NVIDIA NIM provider', 'Claude Desktop']);
     for (const name of ['Google Gemini', 'Groq', 'OpenRouter', 'NVIDIA NIM']) {
       assert.equal(await toggle(name).getAttribute('aria-expanded'), 'false', name);
     }

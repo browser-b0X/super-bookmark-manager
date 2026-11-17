@@ -466,8 +466,8 @@ try {
     assert.equal(await d2.getByRole('button', { name: 'Save a copy' }).count(), 0);
     await p2.goto(off.base + '/library/settings#library');
     await p2.getByRole('region', { name: 'Saved copies' }).getByText('Saved copies are switched off for this run of the app.').waitFor();
-    // The one switch left is Telegram's check at start, which has nothing to do with copies.
-    assert.deepEqual(await p2.getByRole('switch').evaluateAll(all => all.map(s => s.getAttribute('aria-label'))), ['Check when the app starts']);
+    // The switches left are Telegram's checks (at start, and while the app is open): nothing to do with copies.
+    assert.deepEqual(await p2.getByRole('switch').evaluateAll(all => all.map(s => s.getAttribute('aria-label'))), ['Check when the app starts', 'Check again while the app is open']);
     assert.equal(await p2.getByRole('button', { name: /Export backup with saved copies/ }).count(), 0);
     await other.close();
   });

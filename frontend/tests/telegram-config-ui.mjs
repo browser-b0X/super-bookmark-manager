@@ -82,6 +82,7 @@ try {
       if (url.pathname === '/api/library' && request.method() === 'GET') return await json({ posts: [], deletedUrls: [], legacyRows: [] });
       if (url.pathname === '/api/stats' && request.method() === 'GET') return await json({ total: 0, categories: {} });
       if (url.pathname === '/api/ai/providers' && request.method() === 'GET') return await json({ ok: true, providers: [], ready: [], available: false });
+      if (url.pathname === '/api/archive/large-videos' && request.method() === 'GET') return await json({ ok: true, on: false, limit: 2147483648, cap: 52428800 });
       if (url.pathname === '/api/archive' && request.method() === 'GET' && !url.search) return await json({ ok: true, enabled: false, count: 0, bytes: 0 });
       if (url.pathname.startsWith('/api/')) { observations.unexpectedApi++; return await route.abort(); }
       return await route.continue();

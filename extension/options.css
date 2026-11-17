@@ -1,0 +1,49 @@
+/* The app's look (Classic dark / light tokens), so the options read as part of SuperBookmarks. */
+:root {
+  color-scheme: light dark;
+  --bg: #f1effa; --surface: #fbfbfe; --surface2: #f3f1fb; --border: #e3dff3; --border-hi: #cfc8ec;
+  --text: #1d1b2c; --dim: #4f4b66; --faint: #6f6a8a; --accent: #6e5ce0; --green: #1f7a3d; --amber: #9a5b00;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1020; --surface: #171830; --surface2: #1d1f3a; --border: #2a2c4c; --border-hi: #3a3d63;
+    --text: #e8e9f0; --dim: #b6b8cc; --faint: #8c8fa8; --accent: #8f80ff; --green: #4ade80; --amber: #f5b14c;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 640px; margin: 32px auto; padding: 0 16px; }
+h1 { display: flex; align-items: center; gap: 10px; font-size: 1.15rem; margin: 0 0 16px; }
+h2 { font-size: .95rem; margin: 0; }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px; margin-top: 16px; }
+.dim { color: var(--dim); font-size: .82rem; margin: 6px 0 0; }
+.faint { color: var(--faint); }
+.small { font-size: .78rem; }
+label { display: block; margin-top: 14px; font-size: .82rem; }
+input { display: block; width: 100%; margin-top: 4px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border-hi);
+  background: var(--surface2); color: var(--text); font: inherit; }
+input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: ui-monospace, Consolas, monospace; letter-spacing: .1em; text-transform: uppercase; max-width: 180px; }
+.row { display: flex; gap: 8px; align-items: flex-end; }
+.row input { margin-top: 4px; }
+button { font: inherit; border-radius: 10px; border: 1px solid var(--border-hi); background: var(--surface2); color: var(--text); padding: 8px 14px; cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button:disabled { opacity: .6; cursor: default; }
+.status { margin: 12px 0 0; font-size: .82rem; min-height: 1.4em; }
+.status.ok { color: var(--green); }
+.status.warn { color: var(--amber); }
+ul { margin: 8px 0 0; padding-left: 18px; font-size: .82rem; line-height: 1.7; }
+.switch-row { display: flex; gap: 12px; align-items: flex-start; margin-top: 10px; }
+.label { font-weight: 600; font-size: .85rem; }
+.switch { flex: none; width: 38px; height: 22px; padding: 0; border-radius: 11px; position: relative; background: var(--border-hi); border: none; margin-top: 2px; }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+.switch[aria-checked="true"] { background: var(--accent); }
+details.panel > summary { cursor: pointer; font-weight: 600; font-size: .95rem; }
+.snapshot { display: block; width: 100%; margin-top: 12px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border-hi);
+  background: var(--surface2); color: var(--text); font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre; resize: vertical; }
+.snapshot + .row { margin-top: 12px; }
+.switch[aria-checked="true"]::after { left: 19px; }
+.label.sub { margin-top: 14px; }
+.sites { margin-top: 4px; }
+.sites .switch-row p { margin: 0; }
+.sites + p { margin-top: 14px; }

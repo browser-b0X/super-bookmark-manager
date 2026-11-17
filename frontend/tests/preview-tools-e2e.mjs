@@ -34,7 +34,9 @@ def picture():
 assert metadata_fetcher.install_thumb("kept", picture(), "image/png")
 def stand_in(url):
     if "/img/" in url:
-        return {"title": "Fetched title", "summary": "Fetched words.", "thumbnail": metadata_fetcher.install_thumb("fetched", picture(), "image/png"), "status": "ok", "error": ""}
+        # A picture of its own per link, as real fetches have: Windows can't replace a file the browser is reading.
+        code = "fetched" + "".join(c for c in url if c.isdigit())[-12:]
+        return {"title": "Fetched title", "summary": "Fetched words.", "thumbnail": metadata_fetcher.install_thumb(code, picture(), "image/png"), "status": "ok", "error": ""}
     if "/noimg/" in url:
         return {"title": "Fetched title", "summary": "A page without a picture.", "thumbnail": "", "status": "ok", "error": ""}
     for marker, code, extra in (("/refuse/", 403, {}), ("/down/", 503, {}), ("/gone/", 404, {"linkStatus": "gone"})):

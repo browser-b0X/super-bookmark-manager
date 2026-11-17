@@ -34,11 +34,15 @@ const observations = { external: 0, unexpectedApi: 0, pageErrors: 0, leakedConso
 let creds = false;            // developer credentials configured
 let session = { exists: false, authorized: false };
 let login = null;             // { step, phone, created }
+let delivery = null;          // where the code went: { via, resend_via, ready_at } (types and waits only)
 let fault = '';               // '', 'logout-network'
 const statusBody = (extra = {}) => ({
   ok: true, credentials_configured: creds, session_exists: session.exists,
   authorized: session.exists ? session.authorized : false,
-  login_step: login ? login.step : null, expires_in: login ? 300 : null, ...extra,
+  login_step: login ? login.step : null, expires_in: login ? 300 : null,
+  delivery: login && delivery ? { via: delivery.via, email: null, resend_via: delivery.resend_via,
+    resend_in: Math.max(0, Math.ceil(((delivery.ready_at || 0) - Date.now()) / 1000)) } : null,
+  ...extra,
 });
 const err = (code, status) => ({ __status: status, ok: false, code, error: 'HOSTILE ' + goodPassword + ' ' + apiHash });
 
@@ -89,9 +93,15 @@ try {
           const digits = String(body.phone).replace(/[\s\-.()]/g, '');
           if (!/^\+?[0-9]{7,15}$/.test(digits)) return await send(err('invalid_phone', 400));
           if (String(body.phone).endsWith('9')) return await send(err('network', 503));
+          if (String(body.phone).endsWith('6')) return await send(err('login_email_setup', 409));
+          if (String(body.phone).endsWith('5')) return await send({ __status: 503, ok: false, code: 'flood', error: 'HOSTILE', retry_after: 900 });
           const created = !session.exists;
           session = { exists: true, authorized: false };
           login = { step: 'awaiting_code', phone: String(body.phone), created };
+          // A code in Telegram, with a resend by SMS after 2 s; other numbers say nothing about delivery.
+          delivery = String(body.phone).endsWith('7')
+            ? { via: 'app', resend_via: 'sms', ready_at: Date.now() + 2000 }
+            : { via: 'unknown', resend_via: null, ready_at: 0 };
           return await send(statusBody());
         }
         // code
@@ -102,6 +112,15 @@ try {
           if (login.phone.endsWith('2')) { login.step = 'awaiting_password'; return await send(statusBody({ result: 'password_required' })); }
           if (body.code !== goodCode) return await send(err('code_invalid', 400));
           session.authorized = true; login = null; return await send(statusBody({ result: 'connected' }));
+        }
+        // resend: only the way Telegram offered, and only after its wait
+        if (body.action === 'resend' && keys === 'action') {
+          if (!login || login.step !== 'awaiting_code') return await send(err('login_step', 409));
+          if (!delivery || !delivery.resend_via) return await send(err('resend_unavailable', 409));
+          const left = Math.ceil(((delivery.ready_at || 0) - Date.now()) / 1000);
+          if (left > 0) return await send({ __status: 429, ok: false, code: 'resend_wait', error: 'x', retry_after: left });
+          delivery = { via: 'sms', resend_via: null, ready_at: 0 };
+          return await send(statusBody());
         }
         // password
         if (body.action === 'password' && keys === 'action,password') {
@@ -133,7 +152,12 @@ try {
       if (url.pathname === '/api/stats' && request.method() === 'GET') return await send({ total: 0, categories: {} });
       if (url.pathname === '/api/ai/providers' && request.method() === 'GET') return await send({ ok: true, providers: [], ready: [], available: false });
       if (url.pathname === '/api/archive' && request.method() === 'GET' && !url.search) return await send({ ok: true, enabled: false, count: 0, bytes: 0 });
-      if (url.pathname.startsWith('/api/')) { observations.unexpectedApi++; return await route.abort(); }
+      // Other panels on the Settings page (Claude Desktop, the extension, unsaved links): benign, empty answers.
+      if (url.pathname === '/api/claude-desktop' && request.method() === 'GET') return await send({ ok: true, connected: false, createdAt: '', lastUsedAt: '', changes: [], suggestions: [] });
+      if (url.pathname === '/api/extension' && request.method() === 'GET') return await send({ ok: true, connections: [], code: null });
+      if (url.pathname === '/api/archive/large-videos' && request.method() === 'GET') return await send({ ok: true, on: false, limit: 2147483648, cap: 52428800 });
+      if (url.pathname === '/api/library/pending' && request.method() === 'POST') return await send({ ok: true, connected: false, change: null, suggestions: 0, version: '0' });
+      if (url.pathname.startsWith('/api/')) { observations.unexpectedApi++; if (process.env.TELEGRAM_UI_DEBUG) console.log('DEBUG api ' + request.method() + ' ' + url.pathname); return await route.abort(); }
       return await route.continue();
     } catch { await route.abort().catch(() => {}); }
   });
@@ -311,6 +335,48 @@ try {
   fault = '';
   pass(stage);
 
+  stage = 'where the code went, and a resend after its wait by the way Telegram offers';
+  session = { exists: false, authorized: false }; login = null; delivery = null;
+  await page.reload();
+  await page.getByRole('heading', { name: 'Telegram Account', exact: true }).waitFor();
+  await button('Connect Telegram').click();
+  await panel.getByLabel('Telegram phone number', { exact: true }).fill(phone.slice(0, -1) + '7');
+  await button('Continue').click();
+  await panel.getByLabel('Verification code', { exact: true }).waitFor();
+  check(/sent the code as a message in Telegram/i.test(await panel.innerText()), 'the code is said to be in Telegram');
+  await panel.getByRole('button', { name: /^Send it again by SMS in \d+ s$/ }).waitFor();
+  check(await panel.getByRole('button', { name: /^Send it again by SMS in \d+ s$/ }).isDisabled(), 'resend waits its time');
+  await panel.getByRole('button', { name: 'Send it again by SMS', exact: true }).waitFor({ timeout: 8000 });
+  await panel.screenshot({ path: join(evidence, 'telegram-code-resend-ready.png'), animations: 'disabled' });
+  await panel.getByRole('button', { name: 'Send it again by SMS', exact: true }).click();
+  await panel.getByText('Telegram sent the code by SMS to the phone number you entered.', { exact: true }).waitFor();
+  check(await panel.getByRole('button', { name: /Send it again/ }).count() === 0, 'no resend once Telegram offers none');
+  check(!/Telegram sent the code as a message/.test(await panel.innerText()), 'the notice now says where the new code went');
+  await noSecret('resend-prompt');
+  await button('Cancel').click();
+  await button('Connect Telegram').waitFor();
+  delivery = null;
+  pass(stage);
+
+  stage = 'login email setup is said plainly and no code is awaited';
+  await button('Connect Telegram').click();
+  await panel.getByLabel('Telegram phone number', { exact: true }).fill(phone.slice(0, -1) + '6');
+  await button('Continue').click();
+  await alert.filter({ hasText: /login email/i }).waitFor();
+  await panel.screenshot({ path: join(evidence, 'telegram-login-email-setup.png'), animations: 'disabled' });
+  check(session.exists === false && login === null, 'email setup left no session and no waiting code');
+  check(/Two-Step Verification|Login Email/.test(await alert.innerText()), 'says where to set it up in the Telegram app');
+  pass(stage);
+
+  stage = 'a flood wait shows its duration and the warning';
+  await panel.getByLabel('Telegram phone number', { exact: true }).fill(phone.slice(0, -1) + '5');
+  await button('Continue').click();
+  await alert.filter({ hasText: /15 minutes/ }).waitFor();
+  await panel.screenshot({ path: join(evidence, 'telegram-flood-wait.png'), animations: 'disabled' });
+  check(/block codes for hours/.test(await alert.innerText()), 'repeated requests warning shown with the wait');
+  await noSecret('flood-wait');
+  pass(stage);
+
   stage = 'containment at 320px and desktop with cleared fields';
   const before = await storage();
   for (const width of [320, 1365]) {
@@ -327,6 +393,7 @@ try {
   }
   check(await storage() === before, 'browser storage unchanged across the flow');
   await noSecret('final');
+  if (process.env.TELEGRAM_UI_DEBUG) console.log('DEBUG observations ' + JSON.stringify(observations));
   check(observations.external === 0 && observations.unexpectedApi === 0 && observations.protocolErrors === 0 && observations.pageErrors === 0,
     'no external, unexpected API, protocol or page errors');
   pass(stage);

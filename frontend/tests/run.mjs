@@ -28,21 +28,25 @@ const python = process.env.PYTHON || process.env.C4_PYTHON || (windows ? 'python
 const OFF = { SBM_SAVED_COPIES: 'off' }; // older suites: never fetch their example links
 
 const GROUPS = {
-  unit: ['copy-retry-test', 'follow-up-test', 'library-cache-test', 'library-restore-test', 'library-store-test', 'platform-art-test', 'preview-queue-test', 'related-items',
-    'share-page-test', 'text-links-test', 'whatsapp-import'],
+  unit: ['copy-retry-test', 'follow-up-test', 'library-cache-test', 'sealed-cache-test', 'library-restore-test', 'library-store-test', 'lost-copies-test', 'platform-art-test', 'preview-queue-test', 'related-items',
+    'share-page-test', 'telegram-timed-test', 'text-links-test', 'tracking-test', 'two-tabs-test', 'whatsapp-import', 'page-posts-test', 'search-syntax-test', 'reviewed-lock-test', 'bulk-edit-test', 'nested-tags-test', 'creators-test', 'cleanup-test', 'tab-upload-test'],
   python: ['provider_resilience', 'ai_library_test', 'static_types_test', 'library_api', 'backup_restore_test',
     'archive_backend', 'instagram_backend', 'reddit_backend', 'share_backend', 'tiktok_backend', 'x_post_backend',
     'metadata_backend', 'metadata_gzip', 'telegram_config_test', 'telegram_media_test',
     'telegram_preview_thumbnails_test', 'telegram_refresh_retry_test', 'tls_trust_test', 'firefox_backend',
-    'categorization_api',
+    'categorization_api', 'extension_backend', 'instagram_media_backend', 'claude_desktop_backend', 'claude_desktop_stdio', 'library_docs_backend', 'creator_profile_backend', 'polite_fetch_backend', 'packaged_boundary_test',
     // Checks Windows file permissions on the Telegram session, so it only means something on Windows.
     { name: 'telegram_auth_test', only: 'win32' }],
   browser: ['saved-copies-e2e', 'social-posts-e2e', 'bookmark-button-e2e', 'share-e2e', 'archive-viewer-e2e',
-    'topnav-e2e', 'follow-up-e2e', 'home-rows-e2e', 'telegram-media-e2e', 'review-fixes-e2e', 'preview-tools-e2e',
-    'ai-providers-e2e', 'ai-background-e2e', 'dialogs-e2e', 'platform-art-e2e', 'site-groups-e2e', 'import-lag-e2e', 'backup-e2e',
+    'topnav-e2e', 'get-started-e2e', 'follow-up-e2e', 'home-rows-e2e', 'telegram-media-e2e', 'review-fixes-e2e', 'preview-tools-e2e',
+    'ai-providers-e2e', 'ai-background-e2e', 'dialogs-e2e', 'platform-art-e2e', 'site-groups-e2e', 'import-lag-e2e', 'backup-e2e', 'read-later-import-e2e', 'extension-e2e',
+    'post-readers-e2e', 'save-posts-e2e', 'tab-media-e2e', 'extension-media-e2e', 'claude-desktop-e2e', 'smart-shelves-e2e', 'library-tools-e2e', 'tags-e2e', 'creators-e2e', 'cleanup-e2e', 'large-videos-e2e',
+    // Runs the packaged entry, which needs Windows.
+    { name: 'free-port-e2e', only: 'win32' },
     { name: 'core-acceptance', env: OFF }, { name: 'library-e2e', env: OFF }, { name: 'save-toast-e2e', env: OFF },
     { name: 'feed-e2e', env: OFF }, { name: 'audit-sync-e2e', env: OFF }, { name: 'import-workflow-e2e', env: OFF },
-    { name: 'polish-e2e', env: OFF }, { name: 'quit-e2e', env: OFF }, { name: 'ai-tidy-e2e', env: OFF }],
+    { name: 'polish-e2e', env: OFF }, { name: 'quit-e2e', env: OFF }, { name: 'ai-tidy-e2e', env: OFF },
+    { name: 'metadata-e2e', env: OFF }, { name: 'telegram', env: OFF }, { name: 'telegram-setup-handoff', env: OFF }],
 };
 
 // Arguments: group names, --shard i/n, --retries n.

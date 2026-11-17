@@ -30,7 +30,7 @@ body:
     attributes:
       label: Version
       description: Shown in Settings → Application ("Running build"), or the release you installed.
-      placeholder: e.g. v0.3.0, build 10/12/2026 3:53 PM
+      placeholder: e.g. v0.4.0, build 10/25/2026 3:53 PM
   - type: dropdown
     id: os
     attributes:

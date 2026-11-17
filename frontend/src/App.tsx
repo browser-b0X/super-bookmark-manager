@@ -5,12 +5,17 @@ import LibrarySettingsPage from "./pages/LibrarySettingsPage";
 import NotFound from "./pages/NotFound";
 import AddWindowPage from "./pages/AddWindowPage";
 import AllShelvesPage from "./pages/AllShelvesPage";
+import CreatorsPage from "./pages/CreatorsPage";
+import CreatorPage from "./pages/CreatorPage";
+import { useApp } from "./lib/publicRuntime";
 
 /**
  * Real route components for every address — direct navigation, refresh,
  * back/forward and deep links all work; nothing depends on tab state.
  */
 export default function App() {
+  // Nothing stays on the page, so a tab left open asks that program for nothing more.
+  if (useApp(app => app.state) === "impostor") return null;
   return (
     <Routes>
       {/* The bookmark button's small Save window: no sidebar, only the form. */}
@@ -29,6 +34,8 @@ export default function App() {
         <Route path="/library/item/:postId" element={<LibraryPage />} />
         <Route path="/library/settings" element={<LibrarySettingsPage />} />
         <Route path="/shelves" element={<AllShelvesPage />} />
+        <Route path="/creators" element={<CreatorsPage />} />
+        <Route path="/creators/:creatorId" element={<CreatorPage />} />
         {/* Safe not-found: renders a page, never redirects valid routes away. */}
         <Route path="*" element={<NotFound />} />
       </Route>

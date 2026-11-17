@@ -4,6 +4,7 @@ import { updatePostInBackground, useLibrary } from "../store/library";
 import { useLibraryPersistence } from "./libraryPersistence";
 import { useCopyAvailability } from "./copyAvailability";
 import { isInstagramPost, type InstagramData } from "./instagram";
+import { copyFound, hasCopy } from "./lostCopies";
 
 /**
  * Saved copies: the browser's side of archive.py.
@@ -26,8 +27,8 @@ const OFFLINE_WAIT_MS = 30000;
  *  after a minute, then after five; after that, Update is the owner's. */
 const SITE_BUSY_RETRY_MS = [60_000, 5 * 60_000];
 
-interface QueueState { total: number; done: number; paused: boolean }
-export const useCopyQueue = create<QueueState>(() => ({ total: 0, done: 0, paused: false }));
+interface QueueState { total: number; done: number; paused: boolean; /** Bytes of a large video received so far (0 when none is downloading). */ received: number }
+export const useCopyQueue = create<QueueState>(() => ({ total: 0, done: 0, paused: false, received: 0 }));
 
 /** What the server says about one copy (archive.state / read_record). */
 interface CopyState {
@@ -40,6 +41,8 @@ interface CopyState {
   videoMissing?: boolean;
   thumbnail?: string;
   previous?: { savedAt?: string; bytes?: number };
+  /** While a large video downloads: the bytes received so far. */
+  progress?: number;
 }
 
 interface Job { id: string; refresh: boolean; post?: InstagramData; lost?: number }
@@ -64,6 +67,7 @@ const NO_COPY: Partial<SavedPost> = {
 };
 
 function record(id: string, state: CopyState) {
+  if (state.status === "saved") copyFound(state.key);
   // Applied with other background results (a few times a second), against the link as it is then.
   void updatePostInBackground(id, post => copyResult(post, state));
   tryAgainLater(id, state);
@@ -184,7 +188,9 @@ async function poll() {
   for (const key of keys) {
     const job = outstanding.get(key);
     const state = copies?.[key];
+    if (state?.progress !== undefined) useCopyQueue.setState({ received: state.progress });
     if (!job || !state || state.status === "queued" || state.status === "saving") continue;
+    useCopyQueue.setState({ received: 0 });
     outstanding.delete(key);
     if (state.status === "none") {
       // The server restarted and forgot the job. Ask once more, then give up.
@@ -233,23 +239,25 @@ export function saveInstagramCopy(id: string, data: InstagramData) {
   pump();
 }
 
-/** Failure codes that will repeat on every try (a file, a page over 3 MB, an address that can't be fetched,
- * an Instagram post with nothing from the bookmark button). */
-export const FINAL_COPY_ERRORS = new Set(["too_large", "not_html", "invalid_url", "blocked_url", "needs_browser", "invalid_post"]);
+/** Failure codes that will repeat on every try (a file, a page over 3 MB or a copy over 15 MB, an address that
+ * can't be fetched, an Instagram post with nothing from the bookmark button). */
+export const FINAL_COPY_ERRORS = new Set(["too_large", "copy_too_large", "not_html", "invalid_url", "blocked_url", "needs_browser", "invalid_post"]);
 
-/** No copy yet, and trying could work: what "Save copies of every link without one" takes. */
+/** No copy yet (or one that isn't on this computer, see lostCopies), and trying could work:
+ *  what "Save copies of every link without one" takes. */
 export function canStillCopy(post: SavedPost): boolean {
-  if (post.archiveStatus === "saved" || post.archiveStatus === "pending" || queued.has(post.id)) return false;
+  if (post.archiveStatus === "saved") return !hasCopy(post) && !queued.has(post.id) && !isInstagramPost(post.url);
+  if (post.archiveStatus === "pending" || queued.has(post.id)) return false;
   if (isInstagramPost(post.url)) return false;     // only the bookmark button can save these
   if (post.archiveStatus === "too_large") return false;
   return !(post.archiveStatus === "failed" && FINAL_COPY_ERRORS.has(post.archiveError ?? ""));
 }
 
-/** Save copies for many links; ones that already have a copy are left alone. */
+/** Save copies for many links; ones that already have a copy on this computer are left alone. */
 export function saveCopies(ids: string[], options: { skipFinal?: boolean } = {}): number {
   const wanted = ids.filter(id => {
     const post = postById(id);
-    if (!post || post.archiveStatus === "saved" || queued.has(id)) return false;
+    if (!post || hasCopy(post) || queued.has(id)) return false;
     return !options.skipFinal || canStillCopy(post);
   });
   for (const id of wanted) enqueue(id, false, false);
@@ -343,6 +351,7 @@ export async function restoreCopies(file: Blob): Promise<RestoreResult> {
 export function copyProblem(code?: string): string {
   switch (code) {
     case "too_large": return "This page is bigger than 3 MB, which is too big to copy.";
+    case "copy_too_large": return "The copy of this page would be bigger than 15 MB, which is too big to keep.";
     case "not_html": return "This link is a file, not a web page, so there is no page to copy.";
     case "invalid_url":
     case "blocked_url": return "This address can't be fetched from this computer.";
@@ -354,6 +363,7 @@ export function copyProblem(code?: string): string {
     case "needs_browser": return "Instagram shows this post only to signed-in visitors. Open it in your browser and click your Save to SuperBookmarks button.";
     case "invalid_post": return "What the bookmark button read from this Instagram post couldn't be used.";
     case "post_unavailable": return "The site won't share this post: it was deleted, its account is private, or it is shown only to signed-in people.";
+    case "post_unread": return "TikTok shows this post but sent the app nothing to keep this time. Update tries again.";
     case "video_unavailable": return "The post's video couldn't be fetched this time.";
     default: return "The copy couldn't be made.";
   }

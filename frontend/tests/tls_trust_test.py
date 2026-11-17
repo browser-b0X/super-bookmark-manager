@@ -77,6 +77,9 @@ class SystemTrustTests(unittest.TestCase):
         self.assertIs(ssl.SSLContext, ssl.SSLContext.__mro__[0])
         self.assertNotIsInstance(ssl.create_default_context(), truststore.SSLContext)
 
+    # Linux's truststore reads SSL_CERT_FILE, so the test's own CA is trusted there. On Windows it asks the
+    # Windows certificate store, and trusting a test CA there would change this computer's settings.
+    @unittest.skipIf(sys.platform == "win32", "needs the test CA in the Windows certificate store")
     def test_a_trusted_certificate_is_accepted(self):
         http = self.serve("server")
         response = safe_http.get(f"https://{HOST}/tls")

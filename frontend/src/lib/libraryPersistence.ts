@@ -1,10 +1,12 @@
 import { create } from "zustand";
-import type { Category, SavedPost } from "../types";
+import type { Category, Creator, RemovedLink, SavedPost, SavedView, TagInfo } from "../types";
 import { CAT_COLORS, libraryUrl, useLibrary, type CategoryOp, type RejectedChange } from "../store/library";
 import { CANONICAL_SHELVES } from "../store/migrations";
 import { appendBoundedShelves, RESERVED_SHELVES } from "./shelves";
 import { idForUrl } from "./platform";
 import { onOtherTabWrite } from "./libraryStorage";
+import { useApp } from "./publicRuntime";
+import { mergeById, mergeDeletions, mergeViews } from "./cacheMerge";
 
 interface Rejection { url: string; id: string; reason: string; error?: string }
 
@@ -21,6 +23,12 @@ interface LibrarySnapshot {
   purgedUrls?: string[];
   /** Which library SQLite holds: a restore replaces it and moves this on (0 before any restore). */
   epoch?: number;
+  /** Saved views SQLite keeps (since v0.4.0), and views deleted recently. */
+  views?: SavedView[];
+  deletedViews?: Record<string, string>;
+  /** Tags' records (nested tags, other names) and tags deleted recently (v0.4.0 phase 6). */
+  docs?: { tags?: TagInfo[]; creators?: Creator[]; removed?: RemovedLink[] };
+  deletedDocs?: { tags?: Record<string, string>; creators?: Record<string, string>; removed?: Record<string, string> };
 }
 
 interface LibraryDelta {
@@ -30,7 +38,74 @@ interface LibraryDelta {
   undeleteUrls?: string[];
   adoptedUrls?: string[];
   purgeUrls?: string[];
+  purgeSeen?: Record<string, string>;
+  views?: SavedView[];
+  deletedViews?: Record<string, string>;
+  docs?: { tags?: TagInfo[]; creators?: Creator[]; removed?: RemovedLink[] };
+  deletedDocs?: { tags?: Record<string, string>; creators?: Record<string, string>; removed?: Record<string, string> };
   since?: number;
+}
+
+/** The views and deletions as sent to SQLite; compared with `viewsSent` to know whether they changed. */
+const viewsKey = (state: { views: SavedView[]; deletedViews?: Record<string, string> }) => JSON.stringify([state.views, state.deletedViews ?? {}]);
+/** No views and no deletions: nothing to send, also before SQLite has acknowledged anything. */
+const NO_VIEWS = viewsKey({ views: [] });
+const viewsUnsent = (state: { views: SavedView[]; deletedViews?: Record<string, string>; viewsSent?: string }) =>
+  (state.viewsSent ?? NO_VIEWS) !== viewsKey(state);
+/** Tags' records the same way: sent when they differ from what SQLite last acknowledged. */
+type TagState = { tagInfo: TagInfo[]; deletedTags?: Record<string, string>; tagsSent?: string };
+const tagsKey = (state: { tagInfo: TagInfo[]; deletedTags?: Record<string, string> }) => JSON.stringify([state.tagInfo ?? [], state.deletedTags ?? {}]);
+const NO_TAGS = tagsKey({ tagInfo: [] });
+const tagsUnsent = (state: TagState) => (state.tagsSent ?? NO_TAGS) !== tagsKey(state);
+/** Creators the same way. */
+type CreatorState = { creators: Creator[]; deletedCreators?: Record<string, string>; creatorsSent?: string };
+const creatorsKey = (state: { creators: Creator[]; deletedCreators?: Record<string, string> }) => JSON.stringify([state.creators ?? [], state.deletedCreators ?? {}]);
+const NO_CREATORS = creatorsKey({ creators: [] });
+const creatorsUnsent = (state: CreatorState) => (state.creatorsSent ?? NO_CREATORS) !== creatorsKey(state);
+function withServerCreators(state: CreatorState, data: LibrarySnapshot) {
+  if (!data.docs || !Array.isArray(data.docs.creators)) return {};
+  const deletedCreators = mergeDeletions(state.deletedCreators, data.deletedDocs?.creators);
+  const merged = { creators: mergeById(state.creators, data.docs.creators, deletedCreators), deletedCreators };
+  const key = creatorsKey(merged);
+  const sent = key === creatorsKey({ creators: data.docs.creators, deletedCreators: data.deletedDocs?.creators }) ? { creatorsSent: key } : {};
+  if (key === creatorsKey(state)) return state.creatorsSent === sent.creatorsSent || !sent.creatorsSent ? {} : sent;
+  return { ...merged, ...sent };
+}
+/** Removed links' records the same way (lib/removedLinks). */
+type RemovedState = { removed: RemovedLink[]; deletedRemoved?: Record<string, string>; removedSent?: string };
+const removedKey = (state: { removed: RemovedLink[]; deletedRemoved?: Record<string, string> }) => JSON.stringify([state.removed ?? [], state.deletedRemoved ?? {}]);
+const NO_REMOVED = removedKey({ removed: [] });
+const removedUnsent = (state: RemovedState) => (state.removedSent ?? NO_REMOVED) !== removedKey(state);
+function withServerRemoved(state: RemovedState, data: LibrarySnapshot) {
+  if (!data.docs || !Array.isArray(data.docs.removed)) return {};
+  const deletedRemoved = mergeDeletions(state.deletedRemoved, data.deletedDocs?.removed);
+  const merged = { removed: mergeById(state.removed, data.docs.removed, deletedRemoved), deletedRemoved };
+  const key = removedKey(merged);
+  const sent = key === removedKey({ removed: data.docs.removed, deletedRemoved: data.deletedDocs?.removed }) ? { removedSent: key } : {};
+  if (key === removedKey(state)) return state.removedSent === sent.removedSent || !sent.removedSent ? {} : sent;
+  return { ...merged, ...sent };
+}
+/** Tags' records from SQLite merged into this tab's, tag by tag (only what changes is set, as for views). */
+function withServerTags(state: TagState, data: LibrarySnapshot) {
+  if (!data.docs || !Array.isArray(data.docs.tags)) return {};
+  const deletedTags = mergeDeletions(state.deletedTags, data.deletedDocs?.tags);
+  const merged = { tagInfo: mergeById(state.tagInfo, data.docs.tags, deletedTags), deletedTags };
+  const key = tagsKey(merged);
+  const sent = key === tagsKey({ tagInfo: data.docs.tags, deletedTags: data.deletedDocs?.tags }) ? { tagsSent: key } : {};
+  if (key === tagsKey(state)) return state.tagsSent === sent.tagsSent || !sent.tagsSent ? {} : sent;
+  return { ...merged, ...sent };
+}
+/** Views from SQLite (another browser's, or this one's from before) merged into this tab's. Only what
+ *  changes is set: every sync reads the library, and a fresh but equal list would count as an edit to send. */
+function withServerViews(state: { views: SavedView[]; deletedViews?: Record<string, string>; viewsSent?: string }, data: LibrarySnapshot) {
+  if (!Array.isArray(data.views)) return {};
+  const deletedViews = mergeDeletions(state.deletedViews, data.deletedViews);
+  const merged = { views: mergeViews(state.views, data.views, deletedViews), deletedViews };
+  const key = viewsKey(merged);
+  // SQLite already holds exactly this: nothing to send back.
+  const sent = key === viewsKey({ views: data.views, deletedViews: data.deletedViews }) ? { viewsSent: key } : {};
+  if (key === viewsKey(state)) return state.viewsSent === sent.viewsSent || !sent.viewsSent ? {} : sent;
+  return { ...merged, ...sent };
 }
 
 const without = (list: string[], sent: string[]) => {
@@ -115,6 +190,10 @@ function mergeSnapshot(data: LibrarySnapshot, sent: Record<string, SavedPost | n
     categories = appendBoundedShelves(categories, [{ id, name, order: categories.length, color: CAT_COLORS[categories.length % CAT_COLORS.length] }]);
   }
   useLibrary.setState({
+    ...withServerViews(state, data),
+    ...withServerTags(state, data),
+    ...withServerCreators(state, data),
+    ...withServerRemoved(state, data),
     posts: [...posts.values()], pending, deletedUrls, categories, demo: false, migrated: true,
     // A server without revisions (older build or a test double) keeps full snapshots.
     syncRev: Number.isSafeInteger(data.rev) && data.rev! >= 0 ? data.rev! : 0,
@@ -162,9 +241,18 @@ async function adoptReplacedLibrary(): Promise<LibrarySnapshot> {
   const deleted = new Set(deletedUrls);
   useLibrary.setState({
     posts: data.posts.filter(p => !deleted.has(libraryUrl(p.url))), deletedUrls, categories,
-    pending: {}, rejected: {}, categoryOps: [], undeleteUrls: [], adoptedUrls: [], purgeUrls: [],
-    // Undoing an import of the replaced library would remove links of the restored one.
-    imports: [],
+    pending: {}, rejected: {}, categoryOps: [], undeleteUrls: [], adoptedUrls: [], purgeUrls: [], purgeSeen: {},
+    // Undoing an import of the replaced library would remove links of the restored one; the same for its History.
+    imports: [], history: [],
+    // The restored library's views, as SQLite now holds them.
+    ...(Array.isArray(data.views) ? { views: data.views, deletedViews: data.deletedViews ?? {}, viewsSent: viewsKey({ views: data.views, deletedViews: data.deletedViews }) } : {}),
+    // And its tags' records.
+    ...(data.docs && Array.isArray(data.docs.tags) ? { tagInfo: data.docs.tags, deletedTags: data.deletedDocs?.tags ?? {},
+      tagsSent: tagsKey({ tagInfo: data.docs.tags, deletedTags: data.deletedDocs?.tags ?? {} }) } : {}),
+    ...(data.docs && Array.isArray(data.docs.creators) ? { creators: data.docs.creators, deletedCreators: data.deletedDocs?.creators ?? {},
+      creatorsSent: creatorsKey({ creators: data.docs.creators, deletedCreators: data.deletedDocs?.creators ?? {} }) } : {}),
+    ...(data.docs && Array.isArray(data.docs.removed) ? { removed: data.docs.removed, deletedRemoved: data.deletedDocs?.removed ?? {},
+      removedSent: removedKey({ removed: data.docs.removed, deletedRemoved: data.deletedDocs?.removed ?? {} }) } : {}),
     demo: false, migrated: true,
     syncRev: Number.isSafeInteger(data.rev) && data.rev! >= 0 ? data.rev! : 0,
     syncEpoch: snapshotEpoch(data),
@@ -216,7 +304,7 @@ function waitForHydration(): Promise<void> {
 function hasOutgoing() {
   const s = useLibrary.getState();
   return Object.keys(s.pending).length > 0 || s.categoryOps.length > 0 || s.undeleteUrls.length > 0
-    || s.adoptedUrls.length > 0 || s.purgeUrls.length > 0;
+    || s.adoptedUrls.length > 0 || s.purgeUrls.length > 0 || viewsUnsent(s) || tagsUnsent(s) || creatorsUnsent(s) || removedUnsent(s);
 }
 
 export function syncLibrary(): Promise<boolean> {
@@ -239,19 +327,38 @@ export function syncLibrary(): Promise<boolean> {
         }
         const sent = Object.fromEntries(Object.entries(state.pending).slice(0, CHUNK));
         const categoryOps = [...state.categoryOps];
+        const sentOps = new Set(categoryOps.map(op => op.id ?? JSON.stringify(op)));
         const undeleteUrls = [...state.undeleteUrls];
         const adoptedUrls = [...state.adoptedUrls];
         const purgeUrls = [...state.purgeUrls];
+        const sentViews = viewsKey(state);
+        const viewsChanged = viewsUnsent(state);
+        const sentTags = tagsKey(state);
+        const tagsChanged = tagsUnsent(state);
+        const sentCreators = creatorsKey(state);
+        const creatorsChanged = creatorsUnsent(state);
+        const sentRemoved = removedKey(state);
+        const removedChanged = removedUnsent(state);
+        const purgeSeen = Object.fromEntries(purgeUrls.flatMap(url => state.purgeSeen?.[url] ? [[url, state.purgeSeen[url]]] : []));
         const posts = Object.values(sent).filter((post): post is SavedPost => post !== null);
         const deletedUrls = Object.keys(sent).filter(url => sent[url] === null);
         let saved: LibrarySnapshot;
         try {
           saved = await requestLibrary({
             posts, deletedUrls,
-            ...(categoryOps.length ? { categoryOps } : {}),
+            // The ids are this browser's own bookkeeping: SQLite gets the bare changes.
+            ...(categoryOps.length ? { categoryOps: categoryOps.map(({ id: _id, ...op }) => op) } : {}),
             ...(undeleteUrls.length ? { undeleteUrls } : {}),
             ...(adoptedUrls.length ? { adoptedUrls } : {}),
             ...(purgeUrls.length ? { purgeUrls } : {}),
+            ...(Object.keys(purgeSeen).length ? { purgeSeen } : {}),
+            ...(viewsChanged ? { views: state.views, deletedViews: state.deletedViews ?? {} } : {}),
+            ...(tagsChanged || creatorsChanged || removedChanged ? {
+              docs: { ...(tagsChanged ? { tags: state.tagInfo } : {}), ...(creatorsChanged ? { creators: state.creators } : {}),
+                ...(removedChanged ? { removed: state.removed } : {}) },
+              deletedDocs: { ...(tagsChanged ? { tags: state.deletedTags ?? {} } : {}), ...(creatorsChanged ? { creators: state.deletedCreators ?? {} } : {}),
+                ...(removedChanged ? { removed: state.deletedRemoved ?? {} } : {}) },
+            } : {}),
           });
         } catch (error) {
           // A restore replaced the library after this tab read it: nothing was saved, and
@@ -264,10 +371,17 @@ export function syncLibrary(): Promise<boolean> {
         // Drop exactly what was acknowledged; anything queued meanwhile stays.
         const after = useLibrary.getState();
         useLibrary.setState({
-          categoryOps: after.categoryOps.slice(categoryOps.length),
+          // Drop exactly the acknowledged changes (by id: another tab's merge may have reordered the queue).
+          categoryOps: after.categoryOps.filter(op => !sentOps.has(op.id ?? JSON.stringify(op))),
+          doneOps: [...(after.doneOps ?? []), ...categoryOps.flatMap(op => (op.id ? [op.id] : []))].slice(-300),
+          ...(viewsChanged ? { viewsSent: sentViews } : {}),
+          ...(tagsChanged ? { tagsSent: sentTags } : {}),
+          ...(creatorsChanged ? { creatorsSent: sentCreators } : {}),
+          ...(removedChanged ? { removedSent: sentRemoved } : {}),
           undeleteUrls: without(after.undeleteUrls, undeleteUrls),
           adoptedUrls: without(after.adoptedUrls, adoptedUrls),
           purgeUrls: without(after.purgeUrls, purgeUrls),
+          purgeSeen: Object.fromEntries(Object.entries(after.purgeSeen ?? {}).filter(([url]) => !purgeUrls.includes(url))),
         });
         mergeSnapshot(saved, sent);
         applyRejections(saved.rejected ?? [], sent, retried);
@@ -316,7 +430,11 @@ export function startLibraryPersistence() {
   };
   const unsubscribe = useLibrary.subscribe((state, previous) => {
     const queued = state.categoryOps !== previous.categoryOps || state.undeleteUrls !== previous.undeleteUrls
-      || state.adoptedUrls !== previous.adoptedUrls || state.purgeUrls !== previous.purgeUrls;
+      || state.adoptedUrls !== previous.adoptedUrls || state.purgeUrls !== previous.purgeUrls
+      || state.views !== previous.views || state.deletedViews !== previous.deletedViews
+      || state.tagInfo !== previous.tagInfo || state.deletedTags !== previous.deletedTags
+      || state.creators !== previous.creators || state.deletedCreators !== previous.deletedCreators
+      || state.removed !== previous.removed || state.deletedRemoved !== previous.deletedRemoved;
     if (queued && hasOutgoing()) { schedule(); return; }
     if (state.pending === previous.pending || !Object.keys(state.pending).length
       || JSON.stringify(state.pending) === JSON.stringify(previous.pending)) return;
@@ -324,6 +442,7 @@ export function startLibraryPersistence() {
   });
   const retry = () => { void syncLibrary(); };
   window.addEventListener("online", retry);
+  const stopApp = useApp.subscribe((now, before) => { if (now.state === "proved" && before.state === "gone") retry(); });
   // Another tab wrote the shared cache: re-read it (merge keeps our own
   // unsaved edits), so two tabs never silently overwrite each other.
   const stopTabs = onOtherTabWrite(useLibrary.persist?.getOptions().name ?? "", () => {
@@ -333,6 +452,7 @@ export function startLibraryPersistence() {
   return () => {
     unsubscribe();
     stopTabs();
+    stopApp();
     if (timer) clearTimeout(timer);
     window.removeEventListener("online", retry);
   };

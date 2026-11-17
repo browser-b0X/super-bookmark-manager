@@ -6,8 +6,10 @@ fixture; nothing reaches reddit.com.
 """
 import html
 import os
+from pathlib import Path
 import stat
 import sys
+import tempfile
 import time
 import json
 import unittest
@@ -16,7 +18,7 @@ from unittest.mock import patch
 from archive_backend import BASE_URL, CDN, JPEG, ROOT, ArchiveCase, archive
 import reddit_post
 import video_helper
-from tiktok_backend import FAKE_HELPER, MP4
+from tiktok_backend import HELPER_PROGRAM, MP4
 
 TEXT_URL = "https://www.reddit.com/r/python/comments/abc123/my_thread/"
 IMAGE_URL = "https://old.reddit.com/r/EarthPics/comments/def456/golden_hour/"
@@ -39,8 +41,9 @@ def feed(identifier, *, title="Thread title", author="op_user", subreddit="pytho
 class RedditCase(ArchiveCase):
     def setUp(self):
         super().setUp()
-        self.helpers = ROOT / (self._testMethodName + "-helpers")
-        self.helpers.mkdir()
+        # A short name: Windows can't start a program whose full path is 260 characters or more, and a test's name in it
+        # took the stand-in helper past that when the checkout sat in a long folder.
+        self.helpers = Path(tempfile.mkdtemp(prefix="h-", dir=ROOT))
         for target, name, value in ((reddit_post, "FEED_BASE", BASE_URL), (reddit_post, "SPACING", 0.0),
                                     (reddit_post, "_PICTURE_HOSTS", frozenset({"cdn.fixture.test"})),
                                     (reddit_post, "_PICTURE_SCHEMES", ("http", "https")),
@@ -153,7 +156,7 @@ class SaveTests(RedditCase):
         self.assertEqual((record.get("video"), record["videoMissing"], record["images"]), (None, True, 1))
         self.assertIn("Saved without the video. To keep the video too, get the video helper in Settings", self.document(VIDEO_URL))
         path = self.helpers / video_helper.ASSET
-        path.write_text(FAKE_HELPER)
+        path.write_bytes(HELPER_PROGRAM)
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         (self.helpers / "helper.json").write_text(json.dumps({"version": "2026.08.19", "sha256": "x",
                                                               "checkedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}))

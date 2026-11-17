@@ -47,7 +47,8 @@ _PROBE_TIMEOUT_SECONDS = 20
 
 _LOCK = threading.RLock()
 # A refresh holds the session for up to a few minutes while it downloads photos
-# and videos; a sign-in step waits this long for it, then answers "busy".
+# and videos, and a large video or audio download after it for longer; a sign-in
+# step waits this long for it, then answers "busy".
 _LOCK_WAIT_SECONDS = 3
 
 
@@ -81,7 +82,48 @@ _ERROR_CODES = {
     "UserDeactivatedBanError": "revoked",
 }
 
+# Telegram's sent-code types, in words the owner can act on (types only: never the code or the hash).
+_DELIVERY = {
+    "SentCodeTypeApp": "app", "SentCodeTypeSms": "sms", "SentCodeTypeSmsWord": "sms", "SentCodeTypeSmsPhrase": "sms",
+    "SentCodeTypeFirebaseSms": "sms", "SentCodeTypeCall": "call", "SentCodeTypeMissedCall": "call",
+    "SentCodeTypeFlashCall": "call", "SentCodeTypeFragmentSms": "fragment", "SentCodeTypeEmailCode": "email",
+    "SentCodeTypeSetUpEmailRequired": "setup_email",
+}
+_RESEND = {"CodeTypeSms": "sms", "CodeTypeCall": "call", "CodeTypeMissedCall": "call",
+           "CodeTypeFlashCall": "call", "CodeTypeFragmentSms": "fragment"}
+
+
+def _delivery(sent):
+    """Where Telegram sent the code, how a resend would arrive (its next type, if any) and how long to wait for it."""
+    sent_type = getattr(sent, "type", None)
+    nxt = getattr(sent, "next_type", None)
+    timeout = getattr(sent, "timeout", None)
+    email = getattr(sent_type, "email_pattern", None)
+    return {
+        "via": _DELIVERY.get(type(sent_type).__name__, "unknown"),
+        "resend_via": _RESEND.get(type(nxt).__name__) if nxt is not None else None,
+        "wait": timeout if isinstance(timeout, int) and 0 < timeout <= 86400 else 0,
+        "email": email[:100] if isinstance(email, str) else None,
+    }
+
+
+def _delivery_status(transaction):
+    if transaction is None:
+        return None
+    delivery = transaction.get("delivery") or {}
+    left = int(transaction.get("resend_at", 0) - time.monotonic())
+    return {
+        "via": delivery.get("via", "unknown"),
+        "email": delivery.get("email"),
+        "resend_via": delivery.get("resend_via"),
+        "resend_in": max(0, left),
+    }
+
+
 _MESSAGES = {
+    "login_email_setup": "Telegram will not send a code to this account until it has a login email. In the Telegram app, open Settings → Privacy and Security → Two-Step Verification (or Login Email), add an email address, then start again.",
+    "resend_unavailable": "Telegram offers no other way to send this code. Wait for it, or start again.",
+    "resend_wait": "Telegram asks for a short wait before sending the code again.",
     "invalid_phone": "Telegram rejected this phone number format. Enter the full number in international form, like +15551234567.",
     "invalid_credentials": "Telegram rejected the developer API credentials. Check the API ID and API hash, then start again.",
     "code_invalid": "That verification code is incorrect. Check the code Telegram sent and try again.",
@@ -98,7 +140,8 @@ _MESSAGES = {
     "login_active": "A Telegram login is already in progress. Cancel or restart it before trying again.",
     "login_step": "That step does not match the current login state. Check the login status and try again.",
     "configuration": "Configure the Telegram API ID and API hash first, then connect the account.",
-    "busy": "Telegram is busy with a refresh or another step. Wait for it to finish, then try again.",
+    "busy": "Telegram is busy with a refresh, a large download or another step. Wait for it to finish (a large download "
+            "can be stopped under Telegram Saved Messages), then try again.",
     "unknown": "Telegram login failed. No session was authorized by this attempt. Try again.",
 }
 
@@ -106,9 +149,11 @@ _MESSAGES = {
 class AuthError(RuntimeError):
     """Fixed safe message per code; never constructed with user-supplied values."""
 
-    def __init__(self, code, status=400, diagnostic=None):
+    def __init__(self, code, status=400, diagnostic=None, retry_after=None):
         super().__init__(_MESSAGES.get(code, _MESSAGES["unknown"]))
         self.code, self.status = code, status
+        # Seconds Telegram asked us to wait (flood) or the wait left before a resend; never a secret.
+        self.retry_after = retry_after if isinstance(retry_after, int) and 0 < retry_after <= 86400 else None
         self.diagnostic = diagnostic if isinstance(diagnostic, str) and re.fullmatch(
             r"TG1-(?:(?:CLIENT|CONNECT|REQUEST)-(?:[0-9A-F]{12}|OTHER)|RESULT-EMPTY)", diagnostic) else None
 
@@ -261,6 +306,7 @@ def status():
             "authorized": cache["authorized"] if cache else None,
             "login_step": transaction["step"] if transaction else None,
             "expires_in": (max(0, int(transaction["expires_at"] - time.monotonic())) if transaction else None),
+            "delivery": _delivery_status(transaction),
             "busy": True,
         }
     try:
@@ -289,6 +335,7 @@ def _status_locked():
         "login_step": _transaction["step"] if _transaction else None,
         "expires_in": (max(0, int(_transaction["expires_at"] - time.monotonic()))
                        if _transaction else None),
+        "delivery": _delivery_status(_transaction),
     }
 
 
@@ -338,6 +385,10 @@ def start_login(phone_raw, restart=False):
             phone_code_hash = getattr(sent, "phone_code_hash", None)
             if not isinstance(phone_code_hash, str) or not phone_code_hash:
                 raise AuthError("unknown", 503, "TG1-RESULT-EMPTY")
+            delivery = _delivery(sent)
+            if delivery["via"] == "setup_email":
+                # Telegram sends no code until a login email is set up: say so, do not wait for one.
+                raise AuthError("login_email_setup", 409)
         except AuthError:
             if created:
                 _unlink_session_quietly()
@@ -347,14 +398,58 @@ def start_login(phone_raw, restart=False):
                 _unlink_session_quietly()
             code = _map_exception(exc)
             raise AuthError(code, 503 if code in ("network", "flood", "session_locked",
-                                                  "dependency") else 400) from None
+                                                  "dependency") else 400,
+                            retry_after=_flood_seconds(exc, code)) from None
         _transaction = {
             "step": "awaiting_code",
             "phone": phone,
             "phone_code_hash": phone_code_hash,
             "expires_at": time.monotonic() + LOGIN_TTL_SECONDS,
             "created_session": created,
+            "delivery": delivery,
+            "resend_at": time.monotonic() + delivery["wait"],
         }
+        return status()
+
+
+def _flood_seconds(exc, code):
+    seconds = getattr(exc, "seconds", None)
+    return seconds if code == "flood" and isinstance(seconds, int) else None
+
+
+def resend_code():
+    """Ask Telegram to send the code again the way it offers next (its own next type: SMS, call or Fragment)."""
+    global _transaction
+    with _session_lock():
+        _expire_locked()
+        if _transaction is None or _transaction["step"] != "awaiting_code":
+            raise AuthError("login_step", 409)
+        transaction = _transaction
+        if not transaction["delivery"].get("resend_via"):
+            raise AuthError("resend_unavailable", 409)
+        left = int(transaction["resend_at"] - time.monotonic())
+        if left > 0:
+            raise AuthError("resend_wait", 429, retry_after=left)
+        api_id, api_hash = _require_credentials()
+        from telethon.tl.functions.auth import ResendCodeRequest
+
+        async def resend(client):
+            return await client(ResendCodeRequest(phone_number=transaction["phone"],
+                                                  phone_code_hash=transaction["phone_code_hash"]))
+
+        try:
+            sent = asyncio.run(_run_connect_step(resend, api_id, api_hash, diagnose=True))
+        except AuthError:
+            raise
+        except Exception as exc:
+            code = _map_exception(exc)
+            raise AuthError(code, 503 if code in ("network", "flood", "dependency") else 400,
+                            retry_after=_flood_seconds(exc, code)) from None
+        new_hash = getattr(sent, "phone_code_hash", None)
+        if isinstance(new_hash, str) and new_hash:
+            transaction["phone_code_hash"] = new_hash
+        transaction["delivery"] = _delivery(sent)
+        transaction["resend_at"] = time.monotonic() + transaction["delivery"]["wait"]
         return status()
 
 
@@ -500,6 +595,9 @@ class _FakeClient:
     Enabled solely by SAVED_POSTS_TELEGRAM_AUTH_FAKE=1 (packaged-runtime and
     browser verification; never contacts Telegram). Documented rules:
       phone ending '9' -> send_code_request fails (simulated network error);
+      phone ending '7' -> the code is sent in Telegram, and a resend is offered by SMS after 1 s;
+      phone ending '6' -> Telegram asks for a login email first (no code is sent);
+      phone ending '8' -> a resend is refused with a flood wait of 600 s;
       code '111111' -> success, '000000' -> expired, anything else -> invalid;
       phone ending '2' -> success requires 2FA (SessionPasswordNeededError),
       password 'fake-2fa-password' succeeds, anything else is rejected.
@@ -544,7 +642,27 @@ class _FakeClient:
     async def send_code_request(self, phone):
         if str(phone).endswith("9"):
             raise ConnectionError("synthetic network failure")
+        if str(phone).endswith("6"):
+            from telethon import types as tl_types
+            return tl_types.auth.SentCode(type=tl_types.auth.SentCodeTypeSetUpEmailRequired(),
+                                          phone_code_hash="fake-" + os.urandom(8).hex())
+        if str(phone).endswith("7"):
+            from telethon import types as tl_types
+            return tl_types.auth.SentCode(type=tl_types.auth.SentCodeTypeApp(length=5),
+                                          next_type=tl_types.auth.CodeTypeSms(), timeout=1,
+                                          phone_code_hash="fake-" + os.urandom(8).hex())
         return _FakeSentCode("fake-" + os.urandom(8).hex())
+
+    async def __call__(self, request):
+        # The resend request: Telegram's own answer shape, with the next type a resend would use.
+        from telethon.tl.functions.auth import ResendCodeRequest
+        from telethon.tl import types as tl_types
+        if not isinstance(request, ResendCodeRequest):
+            raise AttributeError("synthetic client only answers resend requests")
+        if str(request.phone_number).endswith("8"):
+            raise FloodWaitError("synthetic flood", seconds=600)
+        return tl_types.auth.SentCode(type=tl_types.auth.SentCodeTypeSms(length=5),
+                                      phone_code_hash="fake-" + os.urandom(8).hex())
 
     async def sign_in(self, phone=None, code=None, phone_code_hash=None, password=None):
         if password is not None:
@@ -592,6 +710,12 @@ class PhoneCodeExpiredError(Exception):
 
 class PasswordHashInvalidError(Exception):
     pass
+
+
+class FloodWaitError(Exception):
+    def __init__(self, message, seconds):
+        super().__init__(message)
+        self.seconds = seconds
 
 
 class SessionPasswordNeededError(Exception):

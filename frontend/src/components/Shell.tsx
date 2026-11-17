@@ -7,8 +7,10 @@ import SyncIndicator from "./SyncIndicator";
 import { QuitHost } from "./QuitApp";
 import Backdrop from "./Backdrop";
 import NoticeToast from "./NoticeToast";
-import { checkTelegramAtStart } from "../lib/telegramRefresh";
+import ClaudeDesktopNote from "./ClaudeDesktopNote";
+import { checkTelegramAtStart, startTimedTelegramRefresh } from "../lib/telegramRefresh";
 import { startWhenUnsortedLinksWait } from "../lib/aiTidy";
+import { decideGetStarted } from "../lib/getStarted";
 import { usePrefs } from "../store/prefs";
 
 /**
@@ -26,6 +28,10 @@ export default function Shell() {
   useEffect(() => { if (!isPanel) lastKey.current = sectionKey; }, [isPanel, sectionKey]);
 
   useEffect(() => { if (migration !== "demo") checkTelegramAtStart(); }, [migration]);
+  // Get started on Home: whether this library is new, decided once per browser when SQLite first answers.
+  useEffect(() => { if (migration !== "demo") return decideGetStarted(); }, [migration]);
+  // "Check again while the app is open" (Settings > Telegram); it follows the switch itself.
+  useEffect(() => { if (migration !== "demo") return startTimedTelegramRefresh(); }, [migration]);
   // "Keep sorting new links" (Settings > Tidy up with AI): background runs start by themselves.
   const keepSorting = usePrefs(s => s.aiKeepSorting);
   useEffect(() => {
@@ -62,6 +68,7 @@ export default function Shell() {
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
       <QuitHost />
       <SyncIndicator />
+      <ClaudeDesktopNote />
       <NoticeToast />
     </div>
   );

@@ -144,7 +144,9 @@ class SessionRevokedError(Exception):
 
 
 class FloodWaitError(Exception):
-    pass
+    def __init__(self, message="flood", seconds=0):
+        super().__init__(message)
+        self.seconds = seconds
 
 
 class ApiIdInvalidError(Exception):
@@ -161,7 +163,7 @@ class ScriptedClient:
 
     def __init__(self, path, authorized=False, on_connect=None, on_send_code=None,
                  on_code=None, on_password=None, log_out=None, on_probe=None,
-                 log_out_result=True):
+                 log_out_result=True, sent_code=None, resent_code=None, resend_error=None):
         self.path = Path(path)
         self.authorized = authorized
         self.calls = {"connect": 0, "send": 0, "code": 0, "password": 0, "logout": 0}
@@ -174,6 +176,11 @@ class ScriptedClient:
         self._log_out = log_out
         self._on_probe = on_probe
         self._log_out_result = log_out_result
+        # What Telegram answers: the sent code (with its type), the resend's answer, or a resend error.
+        self._sent_code = sent_code
+        self._resent_code = resent_code
+        self._resend_error = resend_error
+        self.resends = 0
 
     async def connect(self):
         self.calls["connect"] += 1
@@ -188,7 +195,18 @@ class ScriptedClient:
         self.sent_phone = phone
         if self._on_send_code is not None:
             self._on_send_code()
+        if self._sent_code is not None:
+            return self._sent_code
         return _FakeSentCode("hash-" + secrets.token_hex(4))
+
+    async def __call__(self, request):
+        from telethon.tl.functions.auth import ResendCodeRequest
+        if not isinstance(request, ResendCodeRequest):
+            raise AssertionError("only the resend request is scripted")
+        self.calls["resend"] = self.calls.get("resend", 0) + 1
+        if self._resend_error is not None:
+            raise self._resend_error
+        return self._resent_code
 
     async def sign_in(self, phone=None, code=None, phone_code_hash=None, password=None):
         if password is not None:
@@ -235,8 +253,8 @@ def forbid_network(sock, address):
 
 class AuthTests(unittest.TestCase):
     STATUS_KEYS = {"ok", "credentials_configured", "session_exists", "authorized",
-                   "login_step", "expires_in"}
-    ALLOWED_KEYS = STATUS_KEYS | {"result", "code", "error", "diagnostic"}
+                   "login_step", "expires_in", "delivery"}
+    ALLOWED_KEYS = STATUS_KEYS | {"result", "code", "error", "diagnostic", "retry_after"}
 
     def setUp(self):
         self.stack = contextlib.ExitStack()
@@ -372,7 +390,7 @@ class AuthTests(unittest.TestCase):
         self.expect_error(lambda: self.auth.start_login(self.phone), "configuration", 409)
         self.assertTrue(self.auth.status() == {
             "credentials_configured": False, "session_exists": False, "authorized": False,
-            "login_step": None, "expires_in": None})
+            "login_step": None, "expires_in": None, "delivery": None})
         self.assertTrue(not self.session.exists())
         # No session file: reported as not_connected without touching credentials.
         data = self.auth.check_authorization()
@@ -576,6 +594,126 @@ class AuthTests(unittest.TestCase):
         self.assertTrue(flooded.attempts == 1, flooded.attempts)
         self.assertTrue(self.auth._map_exception(
             telethon_errors.FloodWaitError(None, 5)) == "flood")
+
+    # --- where the code went, what a resend offers, and the failures Telegram names ----
+
+    def sent(self, kind, next_type=None, timeout=None, **extra):
+        from telethon import types as telethon_types
+        types = telethon_types.auth
+        return types.SentCode(type=getattr(types, "SentCodeType" + kind)(**extra),
+                              phone_code_hash="hash-" + secrets.token_hex(4),
+                              next_type=next_type, timeout=timeout)
+
+    def test_where_the_code_went_is_reported_by_type(self):
+        from telethon import types as telethon_types
+        cases = [
+            (self.sent("App", length=5), "app"),
+            (self.sent("Sms", length=5), "sms"),
+            (self.sent("Call", length=5), "call"),
+            (self.sent("FragmentSms", length=5, url="https://fragment.example.test/code"), "fragment"),
+            (self.sent("EmailCode", email_pattern="a***@example.test", length=5), "email"),
+        ]
+        for sent, via in cases:
+            with self.subTest(via=via):
+                self.reset_auth()
+                self.configure()
+                self.install(sent_code=sent)
+                data = self.auth.start_login(self.phone)
+                self.assertTrue(data["delivery"]["via"] == via, data["delivery"])
+                self.assertTrue(data["login_step"] == "awaiting_code")
+                self.assertTrue(data["delivery"]["resend_via"] is None)
+                if via == "email":
+                    self.assertTrue(data["delivery"]["email"] == "a***@example.test")
+                else:
+                    self.assertTrue(data["delivery"]["email"] is None)
+                self.assertTrue(self.auth.status()["delivery"]["via"] == via)
+                self.auth.cancel_login()
+
+    def test_a_resend_is_offered_by_telegrams_next_type_after_its_wait(self):
+        from telethon import types as telethon_types
+        self.configure()
+        sent = self.sent("App", length=5)
+        sent.next_type = telethon_types.auth.CodeTypeSms()
+        sent.timeout = 60
+        client = self.install(sent_code=sent, resent_code=self.sent("Sms", length=5))
+        data = self.auth.start_login(self.phone)
+        self.assertTrue(data["delivery"]["resend_via"] == "sms", data["delivery"])
+        self.assertTrue(0 < data["delivery"]["resend_in"] <= 60)
+        # Too soon: refused with the wait left, and Telegram is not asked.
+        self.expect_error(lambda: self.auth.resend_code(), "resend_wait", 429)
+        self.assertTrue(getattr(client, "resends", 0) == 0 and "resend" not in client.calls)
+        self.assertTrue(self.auth._transaction is not None and self.auth._transaction["step"] == "awaiting_code")
+        # After the wait: Telegram sends it by SMS, the answer's type is shown, and the code still works.
+        self.auth._transaction["resend_at"] = self.auth.time.monotonic() - 1
+        before = self.auth._transaction["phone_code_hash"]
+        data = self.auth.resend_code()
+        self.assertTrue(client.calls["resend"] == 1)
+        self.assertTrue(data["delivery"]["via"] == "sms" and data["delivery"]["resend_via"] is None, data["delivery"])
+        self.assertTrue(self.auth._transaction["phone_code_hash"] != before)
+        self.assertTrue(self.auth.submit_code(self.code)["result"] == "connected")
+
+    def test_no_resend_when_telegram_offers_none(self):
+        self.configure()
+        client = self.install(sent_code=self.sent("App", length=5))
+        self.auth.start_login(self.phone)
+        self.auth._transaction["resend_at"] = self.auth.time.monotonic() - 1
+        self.expect_error(lambda: self.auth.resend_code(), "resend_unavailable", 409)
+        self.assertTrue("resend" not in client.calls)
+
+    def test_a_resend_needs_a_login_step_first(self):
+        self.configure()
+        self.install()
+        self.expect_error(lambda: self.auth.resend_code(), "login_step", 409)
+
+    def test_login_email_setup_is_said_plainly_and_nothing_waits_for_a_code(self):
+        from telethon import types as telethon_types
+        self.configure()
+        sent = telethon_types.auth.SentCode(type=telethon_types.auth.SentCodeTypeSetUpEmailRequired(),
+                                            phone_code_hash="hash-setup")
+        self.install(sent_code=sent)
+        self.expect_error(lambda: self.auth.start_login(self.phone), "login_email_setup", 409)
+        self.assertTrue(self.auth._transaction is None)
+        self.assertTrue(not self.session.exists(), "a session this attempt created is removed")
+        self.assertTrue("login email" in self.auth._MESSAGES["login_email_setup"].lower())
+
+    def test_flood_wait_reports_its_duration(self):
+        self.configure()
+        def flood():
+            raise FloodWaitError("flood", seconds=900)
+        self.install(on_send_code=flood)
+        with self.assertRaises(self.auth.AuthError) as caught:
+            self.auth.start_login(self.phone)
+        self.assertTrue(caught.exception.code == "flood" and caught.exception.retry_after == 900)
+        self.assertTrue(self.auth._transaction is None)
+
+    def test_resend_flood_wait_reports_its_duration(self):
+        self.configure()
+        from telethon import types as telethon_types
+        sent = self.sent("App", length=5)
+        sent.next_type = telethon_types.auth.CodeTypeSms()
+        self.install(sent_code=sent, resend_error=FloodWaitError("flood", seconds=300))
+        self.auth.start_login(self.phone)
+        self.auth._transaction["resend_at"] = self.auth.time.monotonic() - 1
+        with self.assertRaises(self.auth.AuthError) as caught:
+            self.auth.resend_code()
+        self.assertTrue(caught.exception.code == "flood" and caught.exception.retry_after == 300)
+        self.assertTrue(self.auth._transaction["step"] == "awaiting_code", "the login can still use the code")
+
+    def test_the_api_gives_the_new_actions_and_the_wait(self):
+        self.configure()
+        client = self.install(sent_code=self.sent("App", length=5))
+        from telethon import types as telethon_types
+        sent = self.sent("App", length=5)
+        sent.next_type = telethon_types.auth.CodeTypeSms()
+        self.install(sent_code=sent, resent_code=self.sent("Sms", length=5))
+        http = self.client()
+        self.send(http, {"action": "resend"}, 409)
+        self.send(http, {"action": "start", "phone": self.phone}, 200)
+        data = self.send(http, {"action": "status"}, 200)
+        self.assertTrue(data["delivery"]["via"] == "app")
+        self.auth._transaction["resend_at"] = self.auth.time.monotonic() + 45
+        data = self.send(http, {"action": "resend"}, 429)
+        self.assertTrue(data["code"] == "resend_wait" and 0 < data["retry_after"] <= 45, data)
 
     def test_logout_requires_confirmed_remote_revocation(self):
         """F2: never report success or delete the session without confirmed log-out."""

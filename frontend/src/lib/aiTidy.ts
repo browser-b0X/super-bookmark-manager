@@ -16,7 +16,19 @@ import type { SavedPost } from "../types";
 export type Scope = "unsorted" | "messy" | "all" | "selected";
 export type Job = "shelf" | "tags" | "title";
 export type Kind = "review" | "background";
-export interface Row { post: SavedPost; s: AiSuggestion; accept: boolean }
+/** One suggestion in the review list. `accept` covers the shelf and tags (ticked); a new title and a summary
+ *  are ticked one by one, unticked at first: one page's text could rewrite the others in its batch. */
+export interface Row { post: SavedPost; s: AiSuggestion; accept: boolean; title: boolean; summary: boolean }
+
+/** What applying a row changes: only the ticked parts; null when nothing is ticked. */
+export function chosen(row: Row): AiSuggestion | null {
+  const out: AiSuggestion = { id: row.s.id };
+  if (row.accept && row.s.shelf) out.shelf = row.s.shelf;
+  if (row.accept && row.s.tags?.length) out.tags = row.s.tags;
+  if (row.title && row.s.title) out.title = row.s.title;
+  if (row.summary && row.s.summary) out.summary = row.s.summary;
+  return Object.keys(out).length > 1 ? out : null;
+}
 
 const BATCH = 8;
 /** Batches in flight at once; the app server has a dozen worker threads to share. */
@@ -51,8 +63,9 @@ export const SCOPES: Record<Exclude<Scope, "selected">, { label: string; test: (
 
 /** The links a run would look at now. */
 export function linksInScope(posts: SavedPost[], scope: Scope, selectedIds?: string[]): SavedPost[] {
-  if (scope === "selected") { const ids = new Set(selectedIds); return posts.filter(p => ids.has(p.id)); }
-  return posts.filter(p => p.status !== "archived" && SCOPES[scope].test(p));
+  // Links the owner marked Reviewed are left alone, also when picked by hand.
+  if (scope === "selected") { const ids = new Set(selectedIds); return posts.filter(p => ids.has(p.id) && !p.reviewed); }
+  return posts.filter(p => p.status !== "archived" && !p.reviewed && SCOPES[scope].test(p));
 }
 
 function payload(p: SavedPost) {
@@ -66,6 +79,7 @@ function payload(p: SavedPost) {
 
 /** Only what would actually change, minus anything the owner set by hand. */
 export function meaningful(p: SavedPost, s: AiSuggestion, jobs: Job[]): AiSuggestion | null {
+  if (p.reviewed) return null;                 // marked Reviewed while the run went on
   const out: AiSuggestion = { id: s.id };
   if (jobs.includes("shelf") && s.shelf && p.categoryMode !== "manual" && !(p.categories.length === 1 && p.categories[0] === s.shelf)) out.shelf = s.shelf;
   const tags = (s.tags ?? []).filter(t => !p.tags.includes(t));
@@ -139,12 +153,15 @@ export const useAiTidy = create<TidyState>()((set, get) => ({
   setRows(update) { set({ rows: update(get().rows) }); },
   applyReviewed() {
     const { rows } = get();
-    const accepted = rows.filter(r => r.accept);
-    // Links the AI answered count as checked, except suggestions the owner unticked: those may come back.
-    const declined = new Set(rows.filter(r => !r.accept).map(r => r.post.id));
+    const accepted = rows.map(chosen).filter((s): s is AiSuggestion => !!s);
+    // Links the AI answered count as checked, except suggestions the owner left wholly unticked: those may come back.
+    const declined = new Set(rows.filter(r => !chosen(r)).map(r => r.post.id));
     const library = useLibrary.getState();
-    const n = library.applyAiSuggestions(accepted.map(r => r.s), [...answered].filter(id => !declined.has(id))).length;
+    const changes = library.applyAiSuggestions(accepted, [...answered].filter(id => !declined.has(id)));
+    const n = changes.length;
     library.logActivity("organize", `Applied ${plural(n, "AI suggestion")}`);
+    const real = changes.filter(c => Object.keys(c.after).some(f => f !== "aiCheckedAt"));
+    if (real.length) library.recordHistory("Tidy up with AI: suggestions you ticked", real.length, { kind: "ai", changes: real });
     answered = new Set();
     set({ rows: [], message: `Saved changes to ${plural(n, "link")}. Original titles are kept — open a link to restore one.`, done: 0, total: 0, kind: null });
     return n;
@@ -199,6 +216,8 @@ async function run({ kind, scope, jobs, selectedIds, aiReady }: { kind: Kind; sc
   const abort = new AbortController();
   runAbort = abort;
   if (kind === "review") answered = new Set();
+  /** This run's changes, for its History entry. */
+  const runChanges: AiChange[] = [];
   set({ kind, running: true, scope, jobs, done: 0, total: 0, engine: "", waiting: 0, slow: 0, rows: [], message: null,
     filed: 0, changed: 0, leftInOther: 0, unanswered: 0 });
 
@@ -281,14 +300,17 @@ async function run({ kind, scope, jobs, selectedIds, aiReady }: { kind: Kind; sc
       for (const s of replies) {
         const post = current.get(s.id);
         const m = post && meaningful(post, s, jobs);
-        if (post && m) found.push({ post, s: m, accept: true });
+        if (post && m) found.push({ post, s: m, accept: !!(m.shelf || m.tags), title: false, summary: false });
       }
       set({ rows: found.slice() });
     } else {
-      // Apply now: only what the AI answered (never keyword guesses), and mark those links checked.
-      const items = replies.filter(s => aiAnswered.has(s.id)).map(s => { const post = current.get(s.id); return post && meaningful(post, s, jobs); })
+      // Apply now: only what the AI answered (never keyword guesses), and mark those links checked. Shelves and
+      // tags only: nobody reviews a background run, so new titles and summaries wait for a review (owner, 2026-10-23).
+      const items = replies.filter(s => aiAnswered.has(s.id))
+        .map(s => { const post = current.get(s.id); return post && meaningful(post, { ...s, title: undefined, summary: undefined }, jobs); })
         .filter((m): m is AiSuggestion => !!m);
       const changes = useLibrary.getState().applyAiSuggestions(items, [...aiAnswered], { automatic: true });
+      runChanges.push(...changes.filter(c => Object.keys(c.after).some(f => f !== "aiCheckedAt")));
       const now = Date.now();
       for (const id of noAnswer) triedAt.set(id, now);
       const state = useAiTidy.getState();
@@ -338,6 +360,7 @@ async function run({ kind, scope, jobs, selectedIds, aiReady }: { kind: Kind; sc
     failure ? `${failure}` : "",
   ];
   set({ running: false, waiting: 0, slow: 0, total: kind === "review" ? done : state.total, message: notes.filter(Boolean).join(" ") || null });
+  if (runChanges.length) useLibrary.getState().recordHistory("Tidy up with AI in the background: shelves and tags", runChanges.length, { kind: "ai", changes: runChanges });
   if (kind === "background" && state.done) {
     useLibrary.getState().logActivity("organize", `Sorted ${plural(state.done, "link")} with AI in the background`, `${state.filed} filed onto shelves`);
   }

@@ -31,7 +31,8 @@ const chromiumTime = iso => String(BigInt(Date.parse(iso)) * 1000n + 11644473600
 const chromiumFile = JSON.stringify({ roots: {
   bookmark_bar: { type: 'folder', name: 'Bookmarks bar', children: [
     { type: 'folder', name: 'Recipes', children: [
-      { type: 'url', name: 'Soup', url: 'https://food.example.invalid/soup', date_added: chromiumTime('2026-09-30T10:00:00Z') },
+      // Inside the "last 30 days" window whenever this runs: a fixed date here stopped working on 30 October 2026.
+      { type: 'url', name: 'Soup', url: 'https://food.example.invalid/soup', date_added: chromiumTime(new Date(Date.now() - 10 * 86400000).toISOString()) },
       { type: 'url', name: 'Bread', url: 'https://food.example.invalid/bread', date_added: chromiumTime('2020-01-01T10:00:00Z') },
     ] },
     { type: 'folder', name: 'Work junk', children: [{ type: 'url', name: 'Old wiki', url: 'https://work.example.invalid/wiki' }] },

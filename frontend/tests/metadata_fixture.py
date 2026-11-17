@@ -62,8 +62,19 @@ def install_guard(root):
         elif event == "subprocess.Popen":
             # Only a stand-in program the test itself wrote into its fixture folder
             # (the fake video helper); never a real tool.
-            program = args[0] if args[0] else (list(args[1])[:1] or [""])[0]
-            if not any(_normal(str(program)).startswith(root) for root in _GUARD_ROOTS):
+            # On Windows Python passes the command line here already joined into one string.
+            raw = args[1]
+            if isinstance(raw, str):
+                first = raw[1:raw.find('"', 1)] if raw.startswith('"') else raw.split(" ", 1)[0]
+                argv = raw.split()
+            else:
+                argv = [os.fsdecode(a) for a in raw] if raw else []
+                first = argv[0] if argv else ""
+            program = args[0] if args[0] else first
+            # On Windows the app stops a helper with `taskkill /PID <pid> /T /F`: it can only stop that one
+            # process (the stand-in the test started) and its children.
+            stopping = sys.platform == "win32" and argv[:2] == ["taskkill", "/PID"] and argv[3:] == ["/T", "/F"]
+            if not stopping and not any(_normal(str(program)).startswith(root) for root in _GUARD_ROOTS):
                 reason = "external DNS/network/process"
         elif event in ("socket.getaddrinfo", "socket.gethostbyaddr", "socket.gethostbyname", "socket.sendto"):
             reason = "external DNS/network/process"

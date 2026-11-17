@@ -64,6 +64,10 @@ export interface SavedPost {
   followUpAt?: string;
   /** Kept in the quick row on Home. */
   useOften?: boolean;
+  /** Reviewed by the owner: Tidy up with AI, background sorting, preview refreshes and Claude Desktop leave it alone. */
+  reviewed?: boolean;
+  /** Who made the post (a Creator's id, v0.4.0): names can change, this doesn't. */
+  creatorId?: string;
   metadataStatus: MetadataStatus;
   metadataError?: string;
 
@@ -108,6 +112,58 @@ export interface SavedPost {
   archiveNoVideo?: boolean;
 }
 
+/** A tag's own record (v0.4.0): the tags it sits under (several allowed) and its other names. Links carry tags as
+ *  text; the id is the tag's name. */
+export interface TagInfo {
+  id: string;
+  name: string;
+  parents: string[];
+  aliases: string[];
+  /** When it last changed: the newer change wins between tabs and browsers. */
+  updatedAt?: string;
+}
+
+/** A creator's account on one site (v0.4.0). Handles are kept in lower case. */
+export interface CreatorHandle { platform: "x" | "instagram" | "tiktok" | "reddit" | "youtube"; handle: string }
+
+/** Who made posts you saved (v0.4.0), built from the posts themselves; kept in SQLite beside the links. */
+export interface Creator {
+  id: string;
+  name: string;
+  /** Other names, older main names among them (promoting one keeps the old main name here). */
+  aliases: string[];
+  handles: CreatorHandle[];
+  /** Profile pages. */
+  urls: string[];
+  notes?: string;
+  picture?: string;
+  about?: string;
+  /** Reviewed: a refresh from the profile page leaves it alone. */
+  reviewed?: boolean;
+  /** When the owner last looked at its page ("new since you looked"). */
+  seenAt?: string;
+  /** Values from the profile page the owner chose not to take: a later refresh doesn't offer them again. */
+  kept?: Record<string, string>;
+  updatedAt?: string;
+}
+
+/** A link the owner removed, remembered (v0.4.0): what it held, so it can come back as it was and an import
+ *  doesn't bring the same post back at another address. Kept in SQLite beside the links. */
+export interface RemovedLink {
+  /** "r-" and a hash of its address (lib/removedLinks). */
+  id: string;
+  url: string;
+  /** The post it is, at whatever address (lib/duplicates postKey), for posts on X, Instagram, TikTok, Reddit, YouTube. */
+  key?: string;
+  /** Removed by the owner, or merged into another link of the same post (`into`, that link's address). */
+  how: "removed" | "merged";
+  into?: string;
+  /** The link as it was, without what a preview fetch brings back. */
+  post: SavedPost;
+  removedAt: string;
+  updatedAt?: string;
+}
+
 export interface Category {
   id: string;
   name: string;
@@ -117,6 +173,8 @@ export interface Category {
   icon?: string;
   archived?: boolean;
   order: number;
+  /** When this tab last changed the shelf (name, colour, order, archive): the newer change wins between tabs. */
+  updatedAt?: string;
 }
 
 export interface Project {
@@ -128,6 +186,8 @@ export interface SavedView {
   id: string;
   name: string;
   filter: LibraryFilter;
+  /** When the view was last saved, renamed or changed: the newer change wins between tabs. */
+  updatedAt?: string;
 }
 
 export interface LibraryFilter {
@@ -137,6 +197,8 @@ export interface LibraryFilter {
   platform?: Platform;
   projectId?: string;
   search?: string;
+  /** A smart shelf (v0.4.0): made with the rules editor and listed with the shelves; its rules are the search. */
+  smart?: boolean;
 }
 
 export interface ActivityEvent {

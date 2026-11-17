@@ -89,10 +89,14 @@ try{
  await page.waitForFunction(()=>Object.keys(localStorage).some(k=>k.startsWith('sbm-')&&k.endsWith('library-store-v1')));
  const isolation=await page.evaluate(()=>{
    const key=Object.keys(localStorage).find(k=>k.startsWith('sbm-')&&k.endsWith('library-store-v1'));
-   const state=JSON.parse(localStorage.getItem(key)).state;
-   return {posts:state.posts.length,views:state.views.length,theme:document.documentElement.dataset.theme,legacyView:JSON.parse(localStorage.getItem('library-store-v1')).state.views[0].name};
+   return {sealed:localStorage.getItem(key).startsWith('sbm-sealed-1:'),theme:document.documentElement.dataset.theme,legacyView:JSON.parse(localStorage.getItem('library-store-v1')).state.views[0].name};
  });
- assert.deepEqual(isolation,{posts:0,views:0,theme:'dark',legacyView:'Developer view'});record('populated legacy link cache, Saved Views and preferences ignored/preserved before hydration');
+ assert.deepEqual(isolation,{sealed:true,theme:'dark',legacyView:'Developer view'});
+ // What the store holds is sealed, so the page says what is in it.
+ await page.goto(base+'/library');await page.getByRole('button',{name:'Add link',exact:true}).first().waitFor();await page.waitForTimeout(1000);
+ assert.equal(await page.getByText(/example\.invalid/).count(),0);assert.equal(await page.getByText('Developer view').count(),0);
+ await page.goto(base+'/library/settings');await page.getByRole('button',{name:'Quit SuperBookmarks',exact:true}).waitFor();
+ record('populated legacy link cache, Saved Views and preferences ignored/preserved before hydration');
  await page.setViewportSize({width:320,height:750});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);await page.setViewportSize({width:1365,height:900});record('Settings Quit control fits at 320px');
  let failWrites=true;await page.route('**/api/library',r=>failWrites&&r.request().method()==='POST'?r.fulfill({status:503,contentType:'application/json',body:'{"error":"synthetic write failure"}'}):r.continue());
  await page.getByRole('button',{name:'Add link',exact:true}).first().click(); // the top bar's; Settings has its own
@@ -119,10 +123,10 @@ try{
  info=JSON.parse(await readFile(path.join(data,'runtime.json'),'utf8'));assert.equal('http://127.0.0.1:'+info.port,base);
  const restored=await(await api('/api/library')).json();assert.deepEqual(restored,own);
  await page.goto(base+'/library');
- await page.waitForFunction(()=>{const k=Object.keys(localStorage).find(k=>k.startsWith('sbm-')&&k.endsWith('library-store-v1'));return JSON.parse(localStorage.getItem(k)).state.posts.length===1;});
+ await page.getByText(/example\.invalid/).first().waitFor({state:'attached'});
  record('restart retains exactly synthetic user state and browser identity');
  const fresh=await browser.newContext({serviceWorkers:'block'});await fresh.route('**/*',r=>new URL(r.request().url()).origin===base?r.continue():r.abort());const freshPage=await fresh.newPage();await freshPage.goto(base+'/library');
- await freshPage.waitForFunction(()=>{const k=Object.keys(localStorage).find(k=>k.startsWith('sbm-')&&k.endsWith('library-store-v1'));return k&&JSON.parse(localStorage.getItem(k)).state.posts.length===1;});await fresh.close();record('fresh browser recovers only own SQLite link');
+ await freshPage.getByText(/example\.invalid/).first().waitFor({state:'attached'});await fresh.close();record('fresh browser recovers only own SQLite link');
  await page.goto(base+'/library/settings');await page.screenshot({path:path.join(out,'settings.png'),fullPage:true});
  await page.getByRole('button',{name:'Quit SuperBookmarks',exact:true}).click();await quitDialog().getByRole('button',{name:'Quit now'}).click();await wait(()=>child.exitCode!==null);assert.equal(child.exitCode,0);
  for(const [name,value]of Object.entries(sentinels))assert.equal(await readFile(path.join(legacy,name),'utf8'),value);record('legacy synthetic DB/config/session/cache/backups byte-identical');

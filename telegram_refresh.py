@@ -4,11 +4,17 @@ Return the same message shape as Telegram Desktop so the supported importer owns
 URL identity, curation reconciliation, categorization and SQLite pending writes.
 """
 import asyncio
+import contextlib
 from datetime import datetime, timezone
+import errno
 import hashlib
+import os
 from pathlib import Path
 import re
+import shutil
+import tempfile
 import threading
+import time
 
 import config
 import metadata_fetcher
@@ -20,10 +26,18 @@ MAX_PREVIEW_DOWNLOADS = 10
 PREVIEW_SIZE_LIMIT = 512 * 1024
 READ_BUDGET = 60.0                   # seconds to connect and read the messages
 PREVIEW_BUDGET = 20.0
-MEDIA_BUDGET = 180.0                 # seconds for every photo and video of one refresh
+MEDIA_BUDGET = 180.0                 # seconds for every photo, video and audio file of one refresh
 MEDIA_PER_LINK = 10
 MEDIA_TOTAL_LIMIT = 400 * 1024 * 1024
-VIDEO_LIMIT = 50 * 1024 * 1024
+VIDEO_LIMIT = 50 * 1024 * 1024       # one video or audio file the refresh itself downloads (into memory)
+# With "Keep large videos and audio" on, bigger ones (up to archive.LARGE_VIDEO_LIMIT) are downloaded after the
+# refresh, streamed to disk (download_later).
+LARGE_STALL = 120.0                  # seconds without a byte before such a download stops
+LARGE_RATE = 512 * 1024              # bytes a second: a file gets size / rate seconds, and at least archive.LARGE_VIDEO_SECONDS
+PHOTO_SECONDS = 60.0                 # one photo downloaded with them
+_AUDIO_TYPES = frozenset(("audio/mpeg", "audio/mp3", "audio/mp4", "audio/x-m4a", "audio/m4a", "audio/aac", "audio/ogg",
+                          "audio/opus", "audio/flac", "audio/x-flac", "audio/wav", "audio/x-wav", "audio/wave",
+                          "audio/vnd.wave"))
 # A link written in plain text, as lib/textLinks.ts finds it (keep the two identical):
 # it stops at white space, ASCII quotes and angle brackets, and at the quote marks,
 # CJK brackets and invisible direction marks that messages put around links.
@@ -110,36 +124,75 @@ def declared_photo_size(photo):
     return max((s for s in getattr(size, 'sizes', None) or [] if isinstance(s, int) and s <= PREVIEW_SIZE_LIMIT), default=0)
 
 
-def own_media(message):
-    """("photo"|"video", declared bytes, seconds) for a photo or video the owner sent, else None.
+def _seconds(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
-    Link previews (MessageMediaWebPage), stickers, voice notes and other files
-    are not the owner's photos or videos and are never kept.
+
+def own_media(message, limit=VIDEO_LIMIT):
+    """{"kind": "photo"|"video"|"audio", "size": declared bytes, "duration", "title", "voice"} for a photo, video or
+    audio file the owner sent, else None. `limit`: the most a video or audio file may be.
+
+    Audio is music or a recording sent as a file, or a voice message. Link
+    previews (MessageMediaWebPage), stickers, round video messages and other
+    files are not the owner's photos, videos or audio and are never kept.
     """
     media = getattr(message, 'media', None)
     name = type(media).__name__
     if name == 'MessageMediaPhoto' and getattr(media, 'photo', None) is not None:
-        return 'photo', 0, None
+        return {'kind': 'photo', 'size': 0, 'duration': None, 'title': '', 'voice': False}
     if name != 'MessageMediaDocument':
         return None
     document = getattr(media, 'document', None)
     mime = getattr(document, 'mime_type', None)
     size = getattr(document, 'size', None)
-    if not isinstance(mime, str) or mime.lower() != 'video/mp4' or not isinstance(size, int) or isinstance(size, bool):
+    if not isinstance(mime, str) or not isinstance(size, int) or isinstance(size, bool):
         return None
-    if size <= 0 or size > VIDEO_LIMIT:
+    kind = 'video' if mime.lower() == 'video/mp4' else 'audio' if mime.lower() in _AUDIO_TYPES else None
+    if kind is None or size <= 0 or size > limit:
         return None
-    duration = None
+    found, names = {'kind': kind, 'size': size, 'duration': None, 'title': '', 'voice': False}, {}
     for attribute in getattr(document, 'attributes', None) or []:
-        kind = type(attribute).__name__
-        if kind in ('DocumentAttributeSticker', 'DocumentAttributeAnimated'):
+        attribute_kind = type(attribute).__name__
+        if attribute_kind in ('DocumentAttributeSticker', 'DocumentAttributeAnimated'):
             return None
-        if kind == 'DocumentAttributeVideo':
+        if attribute_kind == 'DocumentAttributeVideo' and kind == 'video':
             if getattr(attribute, 'round_message', False):
                 return None
-            value = getattr(attribute, 'duration', None)
-            duration = value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-    return 'video', size, duration
+            found['duration'] = _seconds(getattr(attribute, 'duration', None))
+        elif attribute_kind == 'DocumentAttributeAudio' and kind == 'audio':
+            found['duration'] = _seconds(getattr(attribute, 'duration', None))
+            found['voice'] = getattr(attribute, 'voice', False) is True
+            names.update(performer=getattr(attribute, 'performer', None), title=getattr(attribute, 'title', None))
+        elif attribute_kind == 'DocumentAttributeFilename':
+            names['file'] = getattr(attribute, 'file_name', None)
+    if kind == 'audio' and not found['voice']:
+        # "Performer – Title" as Telegram shows it, else the file's name; archive.py cleans and shortens it.
+        parts = [part.strip() for part in (names.get('performer'), names.get('title')) if isinstance(part, str) and part.strip()]
+        found['title'] = ' – '.join(parts) or (names['file'] if isinstance(names.get('file'), str) else '')
+    return found
+
+
+def unkept_media(message, ceiling):
+    """Why a video or audio file the owner sent with a link can't be kept, or None: 'not_mp4' for a video Telegram
+    holds as another kind of file (a phone's .mov sent as a file, say), 'too_big' for one over `ceiling`. Stickers, GIFs,
+    round video messages and other files are not the owner's videos or audio and are passed over, as in own_media."""
+    media = getattr(message, 'media', None)
+    if type(media).__name__ != 'MessageMediaDocument':
+        return None
+    document = getattr(media, 'document', None)
+    mime, size = getattr(document, 'mime_type', None), getattr(document, 'size', None)
+    if not isinstance(mime, str) or not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        return None
+    attributes = getattr(document, 'attributes', None) or []
+    for attribute in attributes:
+        name = type(attribute).__name__
+        if name in ('DocumentAttributeSticker', 'DocumentAttributeAnimated') or (
+                name == 'DocumentAttributeVideo' and getattr(attribute, 'round_message', False)):
+            return None
+    mime = mime.lower()
+    if mime == 'video/mp4' or mime in _AUDIO_TYPES:
+        return 'too_big' if size > ceiling else None
+    return 'not_mp4' if mime.startswith('video/') else None
 
 
 def entity_target(part):
@@ -239,7 +292,7 @@ def export_message(message):
             'text_entities': parts}
 
 
-async def read_saved_messages(keep_media=False):
+async def read_saved_messages(keep_media=False, later=None):
     try:
         from telethon import TelegramClient
     except ImportError:
@@ -335,16 +388,17 @@ async def read_saved_messages(keep_media=False):
             pass
         except Exception:  # noqa: BLE001 - the links still come back
             previews['failed'] += 1
-        media = {'links': 0, 'photos': 0, 'videos': 0, 'kept': 0, 'skipped': 0, 'failed': 0}
+        media = {'links': 0, 'photos': 0, 'videos': 0, 'audio': 0, 'kept': 0, 'skipped': 0, 'failed': 0, 'waiting': 0,
+                 'over': 0, 'not_mp4': 0, 'too_big': 0, 'not_added': 0}
         result = {'ok': True, 'limit': limit, 'checked': checked, 'malformed': malformed,
                   'previews': previews, 'media': media,
                   'export': {'type': 'saved_messages', 'messages': converted}}
-        # Photos and videos have their own budget, after the read: like previews,
-        # they must never cost the owner the links themselves.
+        # Photos, videos and audio have their own budget, after the read: like
+        # previews, they must never cost the owner the links themselves.
         if keep_media:
             try:
                 async with asyncio.timeout(MEDIA_BUDGET):
-                    await collect_media(client, messages[:limit], by_id, media)
+                    await collect_media(client, messages[:limit], by_id, media, later)
             except asyncio.TimeoutError:
                 media['skipped'] += 1
             except Exception:  # noqa: BLE001 - a dropped connection mid-download still returns the links
@@ -363,13 +417,33 @@ async def read_saved_messages(keep_media=False):
                 pass
 
 
-async def collect_media(client, messages, by_id, counts):
-    """Download the photos and videos sent with a link and keep them with that link.
+def _mid(message):
+    identifier = getattr(message, 'id', None)
+    return identifier if isinstance(identifier, int) and not isinstance(identifier, bool) else None
+
+
+def _kept_by_message(kept):
+    """A kept set's files by the message each came from. Sets kept before message ids were recorded have none:
+    those are fetched again in full, and a smaller result never replaces them."""
+    return {item['mid']: item for item in (kept or {}).get('items', []) if isinstance(item.get('mid'), int)}
+
+
+async def collect_media(client, messages, by_id, counts, later=None):
+    """Download the photos, videos and audio files sent with a link and keep them with that link.
 
     An album is several messages sharing a grouped_id; the link is usually in
-    only one of them, so the whole album belongs to that link. Links already
-    holding kept files, and links the owner deleted, are left alone. Each
-    entry that has files gets entry['media'] = {'url', 'photos', 'videos'}.
+    only one of them, so the whole album belongs to that link. Links the owner
+    deleted are left alone. Files another message sent with the same link stay
+    kept, and a new message's files join them (owner, 2026-11-04), up to
+    MEDIA_PER_LINK in all; those past it are counted in 'not_added', once an app
+    run. Each
+    entry that has files gets entry['media'] = {'url', 'photos', 'videos', 'audio'}.
+    A set that left files out (a dropped connection, the refresh's size budget,
+    files over 50 MB with the switch off) fetches only those; what was kept
+    stays as it is. A link with a video or audio file over VIDEO_LIMIT to
+    fetch (only with "Keep large videos and audio" on) goes to `later`: its
+    files are downloaded after the refresh, in the background (download_later).
+    Files held in this app run (_held) are not tried again by themselves.
     """
     import archive
     import storage
@@ -377,12 +451,13 @@ async def collect_media(client, messages, by_id, counts):
         deleted = storage.deleted_identities()
     except Exception:  # noqa: BLE001 - without the list nothing is downloaded, rather than a deleted link's photos
         return
+    limit = archive.video_limit()
     albums = {}
     for message in messages:
         group = getattr(message, 'grouped_id', None)
         if isinstance(group, int) and not isinstance(group, bool):
             albums.setdefault(group, []).append(message)
-    total = 0
+    total, queued = 0, set()
     for message in messages:
         entry = by_id.get(getattr(message, 'id', None))
         url = first_link(entry) if entry else None
@@ -391,26 +466,70 @@ async def collect_media(client, messages, by_id, counts):
         group = getattr(message, 'grouped_id', None)
         siblings = albums.get(group, [message]) if isinstance(group, int) and not isinstance(group, bool) else [message]
         siblings = sorted(siblings, key=lambda item: getattr(item, 'id', 0))
-        wanted = [(item, found) for item in siblings for found in [own_media(item)] if found][:MEDIA_PER_LINK]
+        wanted = [(item, found) for item in siblings
+                  for found in [own_media(item, archive.LARGE_VIDEO_LIMIT)] if found][:MEDIA_PER_LINK]
+        # A video or audio file that can't be kept is said once an app run, not passed over without a word.
+        if storage.url_identity(url) not in deleted:
+            for item in siblings:
+                reason = unkept_media(item, archive.LARGE_VIDEO_LIMIT)
+                if reason and _mid(item) not in _unkept_said:
+                    _unkept_said.add(_mid(item))
+                    counts[reason] += 1
         if not wanted:
             continue
         counts['links'] += 1
         if storage.url_identity(url) in deleted:
             counts['skipped'] += 1
             continue
+        if archive.copy_key(url) in queued:
+            counts['skipped'] += 1              # the same link in another message, already waiting for its download
+            continue
         kept = archive.telegram_media_for_url(url)
-        if kept and not kept.get('missing'):
+        carried = _kept_by_message(kept)
+        # Files of other messages with this link stay kept, and this message's new ones join them. A set kept before
+        # message ids were recorded can't tell them apart and stays as it was.
+        here = {_mid(item) for item, _ in wanted}
+        others = [item for mid, item in carried.items() if mid not in here]
+        fresh = [pair for pair in wanted if _mid(pair[0]) not in carried] if carried else []
+        room = max(0, MEDIA_PER_LINK - len(others) - (len(wanted) - len(fresh)))
+        for item, _ in fresh[room:]:
+            if _mid(item) not in _unkept_said:
+                _unkept_said.add(_mid(item))
+                counts['not_added'] += 1
+        wanted = [pair for pair in wanted if pair not in fresh[room:]]
+        if kept and not kept.get('missing') and not (kept.get('over') and limit > VIDEO_LIMIT) and not fresh[:room]:
             entry['media'] = {'url': url, **archive.telegram_counts(kept)}
             counts['kept'] += 1
             continue
-        # A link whose last download left files out (a dropped connection, the
-        # refresh's size budget) is fetched again in full: "Refresh tries again".
-        items, missing = [], 0
-        for position, (item, (kind, declared, duration)) in enumerate(wanted):
-            if total + declared > MEDIA_TOTAL_LIMIT:
-                counts['skipped'] += 1
-                missing += len(wanted) - position
-                break
+        # A set that began with another message keeps that message's text.
+        message = kept['message'] if others else {'text': entry.get('text', ''), 'date': entry.get('date', '')}
+        over = sum(found['size'] > limit for _, found in wanted)
+        counts['over'] += over
+        wanted = [(item, found) for item, found in wanted if found['size'] <= limit]
+        held = [_mid(item) for item, _ in wanted if _mid(item) in _held and _mid(item) not in carried]
+        if held:
+            counts['skipped'] += 1              # stopped, or failed earlier in this app run
+        todo = [(item, found) for item, found in wanted if _mid(item) not in carried and _mid(item) not in _held]
+        large = [_mid(item) for item, found in todo if found['size'] > VIDEO_LIMIT]
+        if large:
+            if later is not None:
+                later.append({'url': url, 'text': message['text'], 'date': message['date'],
+                              'ids': [_mid(item) for item, _ in wanted], 'large': large})
+                queued.add(archive.copy_key(url))
+                counts['waiting'] += len(large)
+            continue
+        items, missing, fetched, full = [{'kept': item['name']} for item in others], len(held), 0, False
+        for item, found in wanted:
+            mid = _mid(item)
+            if mid in carried:
+                items.append({'kept': carried[mid]['name']})
+                continue
+            if mid in _held:
+                continue                        # counted in `missing` already
+            if full or total + found['size'] > MEDIA_TOTAL_LIMIT:
+                counts['skipped'] += 0 if full else 1
+                full, missing = True, missing + 1
+                continue
             try:
                 data = await client.download_media(item, file=bytes)
             except Exception:  # noqa: BLE001 - one file that cannot be downloaded never stops the others
@@ -419,21 +538,307 @@ async def collect_media(client, messages, by_id, counts):
                 counts['failed'] += 1
                 missing += 1
                 continue
+            if not archive.telegram_file_ok(found['kind'], data):
+                _held[mid] = 'rejected'         # not a picture, MP4 video or audio file it can keep
+                counts['failed'] += 1
+                continue
             total += len(data)
-            items.append({'kind': kind, 'data': bytes(data), 'duration': duration})
-        if not items:
+            fetched += 1
+            items.append({'kind': found['kind'], 'data': bytes(data), 'duration': found['duration'],
+                          'title': found['title'], 'voice': found['voice'], 'mid': mid})
+        if not fetched or (kept and not carried and len(items) < len(kept['items'])):
+            if kept:                            # nothing new, or a smaller set than one kept before ids were recorded
+                entry['media'] = {'url': url, **archive.telegram_counts(kept)}
             continue
         try:
-            saved = archive.save_telegram_media(url, {'text': entry.get('text', ''), 'date': entry.get('date', '')}, items,
-                                                missing=missing)
+            if others:                          # what the set left out before still counts
+                missing, over = max(missing, kept.get('missing', 0)), max(over, kept.get('over', 0))
+            saved = archive.save_telegram_media(url, message, items, missing=missing, over=over)
         except (archive.ArchiveError, OSError, ValueError):
-            counts['failed'] += len(items)
+            counts['failed'] += fetched
             continue
-        counts['failed'] += len(items) - saved['photos'] - saved['videos']
-        if saved['photos'] or saved['videos']:
-            counts['photos'] += saved['photos']
-            counts['videos'] += saved['videos']
-            entry['media'] = {'url': url, **saved}
+        counts['photos'] += saved['photos']
+        counts['videos'] += saved['videos']
+        counts['audio'] += saved['audio']
+        entry['media'] = {'url': url, **saved}
+
+
+# ── Large videos and audio, after the refresh ────────────────────────────────
+# With "Keep large videos and audio" on, a link whose video or audio file is
+# over VIDEO_LIMIT is left out of the refresh, which holds files in memory and
+# must hand back the links within minutes. Its files are downloaded right
+# after, in the background: every video and audio file streamed into the
+# archive folder with the free space checked first. The download holds the
+# session like a refresh, so a refresh or a sign-in step answers "busy" until
+# it ends; Settings shows how far it got and can stop it.
+
+LARGE_BUSY = ('A large video or audio file is downloading from Telegram. Wait for it to finish, or stop it under '
+              'Telegram Saved Messages in Settings, then retry.')
+_large_lock = threading.Lock()
+_large = {'running': False, 'total': 0, 'done': 0, 'kept': 0, 'failed': 0, 'received': 0, 'size': 0, 'reason': ''}
+_large_stop = threading.Event()
+# Message ids not tried again by themselves in this app run, with the reason: stopped by the owner, not a file the
+# app keeps ('rejected'), or a large download that broke off. The Refresh button tries the broken-off ones again;
+# turning "Keep large videos and audio" on again, or the next app run, tries them all.
+_held = {}
+_HELD = ('stopped', 'rejected', 'slow', 'unavailable', 'too_large')
+# Message ids whose file can't be kept (unkept_media) or is past a link's MEDIA_PER_LINK, said once in this app run.
+_unkept_said = set()
+_RETRY = ('slow', 'unavailable', 'too_large')
+
+
+def large_state():
+    """The background download as Settings shows it: whether it runs, the large files done of all of them, the bytes
+    of the current one, and why the last one that was not kept wasn't ('' when none failed)."""
+    with _large_lock:
+        return dict(_large)
+
+
+def forget_held(reasons=None):
+    """Let the next refresh try held files again: all of them, or those held for one of `reasons`. All of them: it says
+    again which files can't be kept, too."""
+    for message_id, reason in list(_held.items()):
+        if reasons is None or reason in reasons:
+            _held.pop(message_id, None)
+    if reasons is None:
+        _unkept_said.clear()
+
+
+def stop_large():
+    """Stop the background download: the file being downloaded is removed, and what was stopped waits for the next
+    app run. True when one was running."""
+    with _large_lock:
+        if _large['running']:
+            _large_stop.set()
+            return True
+    return False
+
+
+def _large_update(**changes):
+    with _large_lock:
+        _large.update(changes)
+
+
+def _start_large(later):
+    with _large_lock:
+        if _large['running']:
+            return False
+        _large.update(running=True, total=sum(len(link['large']) for link in later), done=0, kept=0, failed=0,
+                      received=0, size=0, reason='')
+        _large_stop.clear()
+    threading.Thread(target=_large_job, args=(later,), name='telegram-large-files', daemon=True).start()
+    return True
+
+
+def _large_job(later):
+    import telegram_auth
+    try:
+        # The refresh that queued these has just let go of the session. If a refresh or a
+        # sign-in step took it first, these wait for the next refresh.
+        if not _refresh_lock.acquire(timeout=5):
+            _large_update(reason='busy')
+            return
+        try:
+            if not telegram_auth._LOCK.acquire(timeout=5):
+                _large_update(reason='busy')
+                return
+            try:
+                asyncio.run(download_later(later))
+            finally:
+                telegram_auth._LOCK.release()
+        finally:
+            _refresh_lock.release()
+    except Exception:  # noqa: BLE001 - a background download never takes the app down; nothing personal is logged
+        _large_update(reason='unavailable')
+    finally:
+        _large_update(running=False, received=0, size=0)
+
+
+async def download_later(later):
+    """Download the sets collect_media put in `later`, each video and audio file streamed to disk."""
+    from telethon import TelegramClient
+    import archive
+    if not config.TELEGRAM_API_ID or not config.TELEGRAM_API_HASH or not Path(config.TELEGRAM_SESSION_FILE).is_file():
+        _large_update(reason='unavailable')
+        return
+    archive.discard_partials(idle=3600)
+    # Unlike the refresh, a download of many minutes reconnects after a dropped connection and sits out
+    # a short flood wait, rather than starting the file again at the next refresh.
+    client = TelegramClient(config.TELEGRAM_SESSION_FILE, config.TELEGRAM_API_ID, config.TELEGRAM_API_HASH,
+                            connection_retries=3, request_retries=5, timeout=15, raise_last_call_error=True,
+                            flood_sleep_threshold=60)
+    try:
+        async with asyncio.timeout(READ_BUDGET):
+            await client.connect()
+            if not await client.is_user_authorized():
+                _large_update(reason='unavailable')
+                return
+            # Asked for again by id: a message may have been deleted since the refresh.
+            found = await client.get_messages('me', ids=[i for link in later for i in link['ids']])
+        by_id = {getattr(message, 'id', None): message for message in found or [] if message is not None}
+        for link in later:
+            await _keep_later(client, link, by_id)
+    finally:
+        try:
+            await asyncio.wait_for(client.disconnect(), timeout=5)
+        except Exception:
+            pass
+
+
+async def _keep_later(client, link, by_id):
+    """Download one link's files and keep them with those kept before; Settings counts its large files."""
+    import archive
+    limit, key = archive.video_limit(), archive.copy_key(link['url'])
+    carried = _kept_by_message(archive.telegram_media_for_url(link['url']))
+    # Files of other messages with this link stay in the set.
+    items = [{'kept': item['name']} for mid, item in carried.items() if mid not in link['ids']]
+    missing, why, ended, saved = 0, {}, set(), False
+    try:
+        for message_id in link['ids']:
+            if message_id in carried:
+                items.append({'kept': carried[message_id]['name']})
+                continue
+            large = message_id in link['large']
+            reason = await _fetch_later(client, by_id.get(message_id), message_id, key, limit, large, items)
+            if reason:
+                why[message_id] = reason
+                if reason in ('stopped', 'rejected') or (large and reason in _HELD):
+                    _held[message_id] = reason
+                missing += reason != 'rejected'
+            if large:
+                ended.add(message_id)
+                with _large_lock:
+                    _large['done'] += 1
+        if any('kept' not in item for item in items):
+            if storage.url_identity(link['url']) in storage.deleted_identities():
+                why.update({message_id: 'gone' for message_id in link['large']})   # deleted while it downloaded
+            else:
+                archive.save_telegram_media(link['url'], {'text': link['text'], 'date': link['date']}, items,
+                                            missing=missing)
+                saved = True
+    except Exception:  # noqa: BLE001 - one link that fails never stops the others; its new files are not kept
+        pass
+    finally:
+        if not saved:
+            for item in items:
+                archive.drop_part(item.get('path'))
+        with _large_lock:
+            for message_id in link['large']:
+                _large['done'] += message_id not in ended
+                reason = why.get(message_id, '' if saved else 'unavailable')
+                _large['failed' if reason else 'kept'] += 1
+                if reason:
+                    _large['reason'] = reason
+
+
+async def _fetch_later(client, message, message_id, key, limit, large, items):
+    """Download one file of a set into `items`: '' when it arrived, else the reason it didn't."""
+    import archive
+    if _large_stop.is_set():
+        return 'stopped'
+    if message_id in _held:
+        return _held[message_id]
+    found = own_media(message, limit) if message is not None else None
+    if found is None:           # deleted from Saved Messages since the refresh, or too big now the switch is off
+        return 'gone'
+    if found['kind'] == 'photo':
+        data = None
+        try:
+            async with asyncio.timeout(PHOTO_SECONDS):
+                data = await client.download_media(message, file=bytes)
+        except Exception:  # noqa: BLE001 - one file that cannot be downloaded never stops the others
+            pass
+        if not isinstance(data, (bytes, bytearray)):
+            return 'unavailable'
+        if not archive.telegram_file_ok('photo', data):
+            return 'rejected'
+        items.append({'kind': 'photo', 'data': bytes(data), 'mid': message_id})
+        return ''
+    path, reason = await _stream_file(client, message, found, key, large)
+    if path:
+        items.append({'kind': found['kind'], 'path': path, 'duration': found['duration'], 'title': found['title'],
+                      'voice': found['voice'], 'mid': message_id})
+    return reason
+
+
+class _TooLarge(Exception):
+    pass
+
+
+def _disk_reason(error):
+    return 'no_space' if isinstance(error, OSError) and error.errno == errno.ENOSPC else 'unavailable'
+
+
+async def _stream_file(client, message, found, key, large):
+    """(path, '') for one video or audio file streamed into the archive folder, or (None, reason): 'no_space',
+    'slow', 'stopped', 'too_large', 'rejected' (not a file the app keeps) or 'unavailable'. The free space (its
+    size plus archive.DISK_MARGIN) is checked before the first byte; no partial file is left behind. `large`: its
+    progress shows in Settings."""
+    import archive
+    declared = found['size']
+    try:
+        os.makedirs(archive.ARCHIVE_DIR, exist_ok=True)
+        if shutil.disk_usage(archive.ARCHIVE_DIR).free < declared + archive.DISK_MARGIN:
+            return None, 'no_space'
+        handle = tempfile.NamedTemporaryFile(dir=archive.ARCHIVE_DIR, prefix=key + '.', suffix='.part', delete=False)
+    except OSError as error:
+        return None, _disk_reason(error)
+    path, kept, last = handle.name, False, [time.monotonic()]
+    if large:
+        _large_update(received=0, size=declared)
+
+    def progress(received, total):
+        if received > declared:
+            raise _TooLarge()             # more than Telegram said, and more than the free space was checked for
+        last[0] = time.monotonic()
+        if large:
+            _large_update(received=received)
+
+    reason, budget, started = 'unavailable', max(archive.LARGE_VIDEO_SECONDS, declared / LARGE_RATE), time.monotonic()
+    try:
+        with handle:
+            task = asyncio.ensure_future(client.download_media(message, file=handle, progress_callback=progress))
+            try:
+                while not task.done():
+                    await asyncio.wait({task}, timeout=0.5)
+                    if task.done():
+                        break
+                    if _large_stop.is_set():
+                        reason = 'stopped'
+                        break
+                    if time.monotonic() - last[0] > LARGE_STALL or time.monotonic() - started > budget:
+                        reason = 'slow'
+                        break
+            finally:
+                if not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
+            if task.cancelled():
+                return None, reason
+            error = task.exception()
+            if error is not None:
+                return None, 'too_large' if isinstance(error, _TooLarge) else _disk_reason(error)
+            handle.flush()
+            if handle.tell() != declared:
+                return None, 'unavailable'        # cut short
+            handle.seek(0)
+            head = handle.read(64)
+        if found['kind'] == 'video':
+            kept = head[4:8] == b'ftyp'
+        else:
+            kept = bool(archive.audio_extension(head))
+        return (path, '') if kept else (None, 'rejected')
+    except OSError as error:                    # writing, flushing or reading back the file
+        return None, _disk_reason(error)
+    finally:
+        if large:
+            _large_update(received=0, size=0)
+        if not kept:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 _startup = {'claimed': False}
@@ -456,9 +861,13 @@ def release_startup_check():
         _startup['claimed'] = False
 
 
-def refresh_saved_messages(keep_media=False):
+def refresh_saved_messages(keep_media=False, retry=False):
+    """Read Saved Messages (and, with keep_media, the files sent with links). `retry`: the owner pressed Refresh,
+    so large downloads that broke off earlier in this app run are tried again."""
     if not _refresh_lock.acquire(blocking=False):
-        raise RefreshError('busy', 'A Telegram refresh is already running. Wait for it to finish, then retry.', 409)
+        raise RefreshError('busy', LARGE_BUSY if large_state()['running']
+                           else 'A Telegram refresh is already running. Wait for it to finish, then retry.', 409)
+    later = []
     try:
         # Sign-in, check and disconnect use the same session file. Sharing their
         # lock means a refresh never races a logout (on Windows the open
@@ -467,8 +876,14 @@ def refresh_saved_messages(keep_media=False):
         if not telegram_auth._LOCK.acquire(blocking=False):
             raise RefreshError('busy', 'Telegram sign-in or disconnect is in progress. Wait for it to finish, then retry.', 409)
         try:
-            return asyncio.run(read_saved_messages(keep_media))
+            if retry:
+                forget_held(_RETRY)
+            result = asyncio.run(read_saved_messages(keep_media, later))
         finally:
             telegram_auth._LOCK.release()
     finally:
         _refresh_lock.release()
+    # Large videos and audio start once the session is free again; the links are already in the answer.
+    if later and not _start_large(later):
+        result['media']['waiting'] = 0
+    return result

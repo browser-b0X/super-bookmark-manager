@@ -20,9 +20,11 @@ import json
 import os
 import queue
 import re
+import shutil
 import tempfile
 import threading
 import time
+import unicodedata
 from urllib.parse import urljoin, urlsplit
 
 import safe_http
@@ -59,15 +61,25 @@ RESOURCE_TIMEOUT = 6.0
 FORMAT_VERSION = 1
 X_BUDGET = 120.0                      # an X post with a video
 VIDEO_LIMIT = 50 * 1024 * 1024        # one post's video; bigger ones keep their cover picture
+# "Keep large videos and audio" (Settings, off by default): a video, or a Telegram audio file, up to this ceiling is
+# streamed to disk.
+LARGE_VIDEO_LIMIT = 2 * 1024 * 1024 * 1024
+LARGE_VIDEO_SECONDS = 900.0           # a large video gets this long to download
+DISK_MARGIN = 512 * 1024 * 1024       # free space kept beyond a video that is being saved
+_progress = {}                        # copy key -> bytes of a large video received so far
 X_SPACING = 2.0                       # seconds between two posts fetched from X (and from TikTok)
 HELPER_TIMEOUT = 150.0                # the video helper fetching one TikTok video
+UPLOAD_LIFETIME = 2 * 3600            # an upload from the Save window no copy asked for is removed after this
+UPLOADS_LIMIT = 300 * 1024 * 1024     # all uploads waiting for their copy, together
 
 # What a copy may do when opened as a file. The viewer route adds `sandbox`.
 FILE_CSP = ("default-src 'none'; img-src data:; media-src 'self'; style-src 'unsafe-inline'; form-action 'none'; "
             "base-uri 'none'")
 
-ERROR_CODES = safe_http.ERROR_CODES | {"not_html", "not_zip", "disabled", "post_unavailable", "needs_browser",
-                                       "invalid_post", "video_unavailable"}
+ERROR_CODES = safe_http.ERROR_CODES | {"not_html", "not_zip", "disabled", "post_unavailable", "post_unread", "needs_browser",
+                                       "invalid_post", "video_unavailable", "copy_too_large", "empty", "not_media",
+                                       "uploads_full"}
+_PICTURE_KINDS = ("image/jpeg", "image/png", "image/gif", "image/webp")
 _KEY_RE = re.compile(r"[0-9a-f]{32}")
 
 _PAGE_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; SuperBookmarkManager/0.3; +saved copy)",
@@ -596,13 +608,21 @@ def _data_uri(kind, data):
 
 
 def _embedded_image(data_uri):
-    """Keep a picture the page already carried inline, if it really is one."""
-    match = re.match(r"data:(image/[a-z0-9.+-]+);base64,", data_uri[:64], re.I)
-    if not match or len(data_uri) > IMAGE_LIMIT * 4 // 3 + 64:
+    """Keep a picture the page already carried inline, if it really is one.
+
+    Base64 or plain: small SVG icons are usually written out as text (data:image/svg+xml,%3Csvg...)."""
+    match = re.match(r"data:(image/[a-z0-9.+-]+)((?:;[a-z0-9._=-]+)*?)(;base64)?,", data_uri[:200], re.I)
+    if not match or len(data_uri) > IMAGE_LIMIT * 3 + 200:
         return ""
     try:
-        data = base64.b64decode(data_uri[match.end():], validate=False)
+        if match.group(3):
+            data = base64.b64decode(data_uri[match.end():], validate=False)
+        else:
+            from urllib.parse import unquote_to_bytes
+            data = unquote_to_bytes(data_uri[match.end():])
     except (ValueError, TypeError):
+        return ""
+    if len(data) > IMAGE_LIMIT:
         return ""
     kind = _sniff(data, match.group(1))
     return _data_uri(kind, data) if kind else ""
@@ -655,7 +675,7 @@ def build_copy(url: str, *, deadline=None, now=None):
                 break
             cleaner.feed(text[offset:offset + PARSE_CHUNK])
             if len(cleaner.out) > MAX_PARTS:
-                raise ArchiveError("too_large")
+                raise ArchiveError("copy_too_large")
     except (AssertionError, ValueError):
         pass  # keep what was parsed before the malformed markup
     cleaner.finish()
@@ -766,7 +786,7 @@ def build_copy(url: str, *, deadline=None, now=None):
         "".join(body), "\n</body>\n</html>\n",
     ]).encode("utf-8", "replace")
     if len(document) > FILE_LIMIT:
-        raise ArchiveError("too_large")
+        raise ArchiveError("copy_too_large")
     record = {
         "version": FORMAT_VERSION, "url": url, "title": title,
         "savedAt": saved_at.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -795,15 +815,112 @@ def _picture(url, deadline):
     return _data_uri(kind, answer.body), ""
 
 
-def _video_file(video, deadline):
-    """(mp4 bytes or None, reason). Tries the sharpest rendition that fits VIDEO_LIMIT."""
+def _settings_path():
+    return ARCHIVE_DIR.rstrip(os.sep) + "-settings.json"
+
+
+def large_videos_on() -> bool:
+    """Whether "Keep large videos" is switched on (a small file beside the archive folder; off when unreadable)."""
+    try:
+        with open(_settings_path(), "r", encoding="utf-8") as handle:
+            return json.load(handle).get("largeVideos") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def set_large_videos(on) -> None:
+    path = _settings_path()
+    folder = os.path.dirname(path) or "."
+    os.makedirs(folder, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=folder, prefix=".settings.", suffix=".tmp", delete=False, encoding="utf-8") as handle:
+        temporary = handle.name
+        json.dump({"largeVideos": bool(on)}, handle)
+    os.replace(temporary, path)
+
+
+def video_limit() -> int:
+    """The most one X video may be: VIDEO_LIMIT, or the ceiling when "Keep large videos" is on."""
+    return LARGE_VIDEO_LIMIT if large_videos_on() else VIDEO_LIMIT
+
+
+class _NoSpace(Exception):
+    pass
+
+
+def _stream_video(address, key, limit, deadline):
+    """One rendition streamed into the archive folder: (path, "") or (None, reason). Checks the free space before the
+    first byte, counts the bytes received for the copy's state, and removes its file when it fails or is cancelled."""
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(dir=ARCHIVE_DIR, prefix=(key or "video") + ".", suffix=".part", delete=False)
+    path = handle.name
+    received, head, disk_failed, no_space = 0, b"", False, False
+
+    def sink(chunk):
+        nonlocal received, head, disk_failed
+        if len(head) < 8:
+            head += chunk[:8 - len(head)]
+        try:
+            handle.write(chunk)
+        except OSError:
+            disk_failed = True
+            raise
+        received += len(chunk)
+        if key:
+            _progress[key] = received
+
+    def room(length):
+        # The declared size (or the ceiling when none is declared) plus a margin must be free before the first byte.
+        nonlocal no_space
+        if shutil.disk_usage(ARCHIVE_DIR).free < (length if length is not None else limit) + DISK_MARGIN:
+            no_space = True
+            raise _NoSpace()           # the fetch layer turns this into its own error: the flag says why
+
+    reason = "unavailable"
+    try:
+        safe_http.get(address, deadline=deadline, limit=limit, headers=_VIDEO_HEADERS, sink=sink, on_headers=room)
+        handle.close()
+        if head[4:8] == b"ftyp":
+            return path, ""
+    except _NoSpace:
+        reason = "no_space"
+    except safe_http.SafeHTTPError as exc:
+        reason = "no_space" if no_space else ("too_large" if exc.code == "too_large" else "unavailable")
+    except OSError:
+        reason = "no_space" if disk_failed else "unavailable"
+    finally:
+        if not handle.closed:
+            handle.close()
+        if key:
+            _progress.pop(key, None)
+    try:
+        os.unlink(path)                    # no partial file is left behind
+    except OSError:
+        pass
+    return None, reason
+
+
+def _video_file(video, deadline, key=None):
+    """(an mp4 file path, mp4 bytes or None; reason). Tries the sharpest rendition that fits the limit: VIDEO_LIMIT,
+    or the ceiling when "Keep large videos" is on, in which case the file is streamed to disk."""
     if not video or not video.variants:
         return None, "unavailable"
-    reason = "unavailable"
+    limit = video_limit()
+    large = limit > VIDEO_LIMIT
+    if large:
+        deadline = max(deadline, time.monotonic() + LARGE_VIDEO_SECONDS)
+    reason, over = "unavailable", False
     for bitrate, address in video.variants:
-        if bitrate and video.duration_ms and bitrate * video.duration_ms / 8000 > VIDEO_LIMIT * 1.1:
-            reason = "too_large"
+        if bitrate and video.duration_ms and bitrate * video.duration_ms / 8000 > limit * 1.1:
+            over = True
             continue                       # clearly too big, don't start it
+        if large:
+            path, why = _stream_video(address, key, limit, deadline)
+            if path:
+                return path, ""
+            if why == "too_large":
+                over = True
+                continue                   # this rendition is over the ceiling: the next, smaller one
+            return None, ("too_large" if over else why)   # a smaller one failing: the size is what the owner needs to hear
         if deadline - time.monotonic() < 3:
             return None, "unavailable"
         try:
@@ -816,7 +933,7 @@ def _video_file(video, deadline):
         if answer.body[4:8] == b"ftyp":
             return answer.body, ""
         return None, "unavailable"
-    return None, reason
+    return None, ("too_large" if over else reason)
 
 
 def build_x_copy(url, identifier, *, deadline=None, now=None, key=None):
@@ -848,12 +965,15 @@ def build_x_copy(url, identifier, *, deadline=None, now=None, key=None):
     video_bytes, poster, missing, video_failed = None, "", "", False
     if post.video:
         poster, _ = _picture(post.video.poster, deadline)
-        video_bytes, why = _video_file(post.video, deadline)
+        video_bytes, why = _video_file(post.video, deadline, key)
         video_failed = video_bytes is None and why != "too_large"
         if video_bytes is None:
             word = "GIF" if post.video.gif else "video"
             if why == "too_large":
-                notes.append(f"The {word} is bigger than {VIDEO_LIMIT // (1024 * 1024)} MB, so only its cover picture was kept.")
+                notes.append(f"The {word} is bigger than {video_limit() // (1024 * 1024)} MB, so only its cover picture was kept."
+                             + ("" if video_limit() > VIDEO_LIMIT else " Keep large videos in Settings → Saved copies to keep bigger ones."))
+            elif why == "no_space":
+                notes.append(f"There was not enough free space to keep the {word}, so only its cover picture was kept.")
             else:
                 notes.append(f"The {word} could not be fetched, so only its cover picture was kept.")
             if not poster:
@@ -894,7 +1014,7 @@ def build_x_copy(url, identifier, *, deadline=None, now=None, key=None):
         _banner(url, title, saved_at, notes), "\n", body, "\n</body>\n</html>\n",
     ]).encode("utf-8", "replace")
     if len(document) > FILE_LIMIT:
-        raise ArchiveError("too_large")
+        raise ArchiveError("copy_too_large")
     record = {
         "version": FORMAT_VERSION, "url": url, "title": title, "kind": "x-post",
         "savedAt": saved_at.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -908,9 +1028,27 @@ def build_x_copy(url, identifier, *, deadline=None, now=None, key=None):
 
 # ── TikTok posts ──────────────────────────────────────────────────────────────
 
+def _tiktok_page(address, identifier, handle, deadline):
+    """A TikTok post's caption and cover from its page's preview tags, asked as link previews ask: under the app's
+    name, then once more under WhatsApp's link-preview crawler's when that gives no picture."""
+    import metadata_fetcher
+    text, cover_url = "", ""
+    for headers in (_PAGE_HEADERS, metadata_fetcher._WHATSAPP_HEADERS):
+        if deadline - time.monotonic() < 1:
+            break
+        tags = metadata_fetcher._crawler_page(tiktok_post.page_url(address), min(deadline, time.monotonic() + PAGE_TIMEOUT),
+                                              headers)
+        found_text, cover_url = tiktok_post.page_details(tags, identifier)
+        text = text or found_text
+        if cover_url:
+            break
+    return x_post.Post(id=identifier, text=text, name="", handle=handle, site="TikTok", link=address), cover_url
+
+
 def build_tiktok_copy(url, link, *, deadline=None, now=None, key=None):
-    """Save a TikTok post: caption, author and cover from TikTok's oEmbed data, the
-    video when the optional helper is installed. Returns (html, record, mp4 or None)."""
+    """Save a TikTok post: caption, author and cover from TikTok's oEmbed data (or, when
+    that names the post without them, from its page), the video when the optional
+    helper is installed. Returns (html, record, mp4 or None)."""
     deadline = deadline if deadline is not None else time.monotonic() + X_BUDGET + HELPER_TIMEOUT
     kind, handle, identifier = link
     if kind == "short":
@@ -931,20 +1069,30 @@ def build_tiktok_copy(url, link, *, deadline=None, now=None, key=None):
             raise ArchiveError("post_unavailable") from None
         raise ArchiveError(exc.code) from None
     post, cover_url = tiktok_post.parse(answer.body, address, identifier)
+    from_page = post is None and tiktok_post.confirms(answer.body, identifier)
+    if from_page:
+        post, cover_url = _tiktok_page(address, identifier, handle, deadline)
     if post is None:
         raise ArchiveError("post_unavailable")
     key = key or copy_key(url)
     cover, _ = _picture(cover_url, deadline)
-    notes, video_bytes, missing, video_failed = [], None, False, False
+    notes, video_bytes, missing, video_failed, details = [], None, False, False, {}
+    # TikTok's pages gave the cover but no caption in November 2026: then the caption, and the author's name, come
+    # from the details the helper's run writes beside the video.
+    uncaptioned = from_page and not post.text
     if kind == "photo":
-        notes.append("Photo slideshows are saved with their caption and cover picture only.")
+        notes.append("Photo slideshows are saved with their cover picture only: TikTok didn't share the caption." if uncaptioned
+                     else "Photo slideshows are saved with their caption and cover picture only.")
     elif not video_helper.installed():
         missing = video_failed = True
-        notes.append("Saved without the video. To keep the video too, get the video helper in Settings, then choose Update.")
+        notes.append("Saved without the video or its caption. To keep both, get the video helper in Settings, then choose Update."
+                     if uncaptioned else
+                     "Saved without the video. To keep the video too, get the video helper in Settings, then choose Update.")
     else:
         video_helper.update_if_due()
         try:
-            video_bytes = video_helper.fetch_video(address, VIDEO_LIMIT, max(5.0, min(HELPER_TIMEOUT, deadline - time.monotonic())))
+            video_bytes = video_helper.fetch_video(address, VIDEO_LIMIT, max(5.0, min(HELPER_TIMEOUT, deadline - time.monotonic())),
+                                                   details=details)
         except video_helper.HelperError as exc:
             missing = True
             video_failed = exc.code != "too_large"
@@ -952,6 +1100,11 @@ def build_tiktok_copy(url, link, *, deadline=None, now=None, key=None):
                 notes.append(f"The video is bigger than {VIDEO_LIMIT // (1024 * 1024)} MB, so only its cover picture was kept.")
             else:
                 notes.append("The video could not be fetched, so only its cover picture was kept. Update tries again.")
+        post.text, post.name = post.text or details.get("caption", ""), post.name or details.get("name", "")
+        if uncaptioned and not post.text:
+            notes.append("TikTok didn't share this post's caption.")
+    if from_page and not (post.text or cover or video_bytes):
+        raise ArchiveError("post_unread")          # TikTok shows the post, but nothing of it reached the app
     saved_at = now or datetime.now(timezone.utc)
     title = x_post.title(post)
     body = x_post.layout(post, video_src=f"{key}.mp4" if video_bytes else "", poster=cover,
@@ -967,7 +1120,7 @@ def build_tiktok_copy(url, link, *, deadline=None, now=None, key=None):
         _banner(url, title, saved_at, notes), "\n", body, "\n</body>\n</html>\n",
     ]).encode("utf-8", "replace")
     if len(document) > FILE_LIMIT:
-        raise ArchiveError("too_large")
+        raise ArchiveError("copy_too_large")
     record = {
         "version": FORMAT_VERSION, "url": url, "title": title, "kind": "tiktok-post",
         "savedAt": saved_at.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -1070,7 +1223,7 @@ def build_reddit_copy(url, link, *, deadline=None, now=None, key=None):
         _banner(url, title, saved_at, notes), "\n", body, "\n</body>\n</html>\n",
     ]).encode("utf-8", "replace")
     if len(document) > FILE_LIMIT:
-        raise ArchiveError("too_large")
+        raise ArchiveError("copy_too_large")
     record = {
         "version": FORMAT_VERSION, "url": url, "title": title, "kind": "reddit-post",
         "savedAt": saved_at.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -1098,24 +1251,49 @@ def build_instagram_copy(url, data, *, deadline=None, now=None, key=None):
         raise ArchiveError("invalid_post") from None
     deadline = deadline if deadline is not None else time.monotonic() + TOTAL_BUDGET
     key = key or copy_key(url)
+    # Files the owner's tab handed over (the extension, through the Save window): used instead of fetching.
+    named = instagram_post.files(data, pictures)
     budget = FILE_LIMIT - 64 * 1024 - 6 * len(post.text)
-    photos, notes, left_out, too_big = [], [], 0, 0
-    for address in pictures:
-        uri, why = _picture(address, deadline)
+    photos, notes, left_out, too_big, first_upload = [], [], 0, 0, None
+    for index, address in enumerate(pictures):
+        upload = uploaded(named["pictures"].get(address, ""))
+        if upload is not None and _sniff(upload) in _PICTURE_KINDS and len(upload) <= IMAGE_LIMIT:
+            uri, why = _data_uri(_sniff(upload), upload), ""
+            first_upload = upload if index == 0 else first_upload
+        else:
+            uri, why = _picture(address, deadline)      # not handed over (or gone): fetched, as the bookmark button's are
         if uri and len(uri) <= budget:
             photos.append(uri)
             budget -= len(uri)
         else:
             left_out += 1
             too_big += 1 if (why == "too_large" or uri) else 0
+    video_bytes = None
     if video:
-        notes.append("This is a video post: its cover picture is saved. The video needs the browser extension (planned for v0.4.0).")
+        movie = uploaded(named["video"]) if named["video"] not in ("", "too_large", "unavailable", "not_on_page") else None
+        if movie is not None and movie[4:8] == b"ftyp" and len(movie) <= VIDEO_LIMIT:
+            video_bytes = movie
+        elif named["video"] == "too_large":
+            notes.append(f"The video is bigger than {VIDEO_LIMIT // (1024 * 1024)} MB, so only its cover picture was kept.")
+        elif named["video"] == "not_on_page":
+            # The extension read the post, but its page held no file of the video (a reel opened over a profile, 2026-11-08).
+            notes.append("The page didn't hold the video's file, so only its cover picture was kept." if photos
+                         else "The page didn't hold the video's file, so the video isn't kept.")
+        elif named["video"]:
+            notes.append("The video didn't come through from your tab, so only its cover picture was kept.")
+        else:
+            notes.append("This is a video post: its cover picture is saved. To keep the video too, save it with the "
+                         "SuperBookmarks extension from the open post.")
     if left_out:
         notes.append(f"{_plural(left_out, 'picture was', 'pictures were')} too big to keep and left out."
                      if too_big == left_out else f"{_plural(left_out, 'picture', 'pictures')} could not be fetched.")
     saved_at = now or datetime.now(timezone.utc)
     title = x_post.title(post)
-    body = x_post.layout(post, photos=photos, missing="" if photos else "No pictures came with this post.")
+    if video_bytes:
+        # The first picture of a video post is its cover: the video's poster.
+        body = x_post.layout(post, photos=photos[1:], video_src=f"{key}.mp4", poster=photos[0] if photos else "")
+    else:
+        body = x_post.layout(post, photos=photos, missing="" if photos else "No pictures came with this post.")
     document = "".join([
         '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n',
         f'<meta http-equiv="Content-Security-Policy" content="{FILE_CSP}">\n',
@@ -1127,20 +1305,116 @@ def build_instagram_copy(url, data, *, deadline=None, now=None, key=None):
         _banner(url, title, saved_at, notes), "\n", body, "\n</body>\n</html>\n",
     ]).encode("utf-8", "replace")
     if len(document) > FILE_LIMIT:
-        raise ArchiveError("too_large")
+        raise ArchiveError("copy_too_large")
     record = {
         "version": FORMAT_VERSION, "url": url, "title": title, "kind": "instagram-post",
         "savedAt": saved_at.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "bytes": len(document), "images": len(photos), "imagesLeftOut": left_out, "stylesheets": 1, "limited": False,
+        "bytes": len(document) + (len(video_bytes) if video_bytes else 0), "images": len(photos), "imagesLeftOut": left_out,
+        "stylesheets": 1, "limited": False, "video": video_bytes is not None,
+        "uploads": sorted({upload for upload in [*named["pictures"].values(), named["video"]] if instagram_post.is_file_id(upload)}),
     }
     if pictures:
         # The first picture also becomes the link's own preview, kept locally:
         # Instagram's picture addresses stop working after a while.
         import metadata_fetcher
-        thumbnail = metadata_fetcher._cache_instagram_thumb(pictures[0], url, min(deadline, time.monotonic() + 8))
+        thumbnail = (metadata_fetcher.keep_instagram_thumb(first_upload, url) if first_upload is not None
+                     else metadata_fetcher._cache_instagram_thumb(pictures[0], url, min(deadline, time.monotonic() + 8)))
         if thumbnail:
             record["thumbnail"] = thumbnail
-    return document, record, None
+    return document, record, video_bytes
+
+
+# ── Files the Save window uploads from the owner's tab ──────────────────────────
+
+_upload_lock = threading.Lock()
+
+
+def _uploads_dir():
+    return os.path.join(ARCHIVE_DIR, "incoming")
+
+
+def _expire_uploads():
+    folder = _uploads_dir()
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    cutoff = time.time() - UPLOAD_LIFETIME
+    for name in names:
+        path = os.path.join(folder, name)
+        try:
+            if os.path.islink(path) or os.path.getmtime(path) < cutoff:
+                os.unlink(path)
+        except OSError:
+            pass
+
+
+def store_upload(content):
+    """Keep a picture or a video the Save window sent from the owner's tab until its copy is asked for.
+    Returns {"id": SHA-256 hex, "kind": "picture" or "video", "bytes": n}. Raises ArchiveError: empty,
+    not_media, too_large, uploads_full or internal_error."""
+    if not content:
+        raise ArchiveError("empty")
+    if content[4:8] == b"ftyp" and content[8:12] not in (b"avif", b"avis"):
+        kind, limit = "video", VIDEO_LIMIT
+    elif _sniff(content) in _PICTURE_KINDS:
+        kind, limit = "picture", IMAGE_LIMIT
+    else:
+        raise ArchiveError("not_media")
+    if len(content) > limit:
+        raise ArchiveError("too_large")
+    digest = hashlib.sha256(content).hexdigest()
+    folder = _uploads_dir()
+    with _upload_lock:
+        _expire_uploads()
+        try:
+            os.makedirs(folder, exist_ok=True)
+            if os.path.islink(ARCHIVE_DIR) or os.path.islink(folder):
+                raise ArchiveError("internal_error")
+            target = os.path.join(folder, digest)
+            if not os.path.isfile(target):
+                waiting = sum(os.path.getsize(os.path.join(folder, name)) for name in os.listdir(folder))
+                if waiting + len(content) > UPLOADS_LIMIT:
+                    raise ArchiveError("uploads_full")
+                _install(target, content)
+            else:
+                os.utime(target)               # the same file again: it waits two more hours
+        except OSError:
+            raise ArchiveError("internal_error") from None
+    return {"id": digest, "kind": kind, "bytes": len(content)}
+
+
+def uploaded(file_id):
+    """The bytes of an upload still waiting, or None."""
+    if not instagram_post.is_file_id(file_id):
+        return None
+    _expire_uploads()
+    path = os.path.join(_uploads_dir(), file_id)
+    try:
+        if os.path.islink(path) or not os.path.isfile(path) or os.path.getsize(path) > VIDEO_LIMIT:
+            return None
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def _named_uploads(post):
+    """The upload ids a post's data names (none when it is malformed)."""
+    files = post.get("files") if isinstance(post, dict) else None
+    if not isinstance(files, dict):
+        return []
+    named = list(files.get("pictures", {}).values()) if isinstance(files.get("pictures"), dict) else []
+    return [value for value in [*named, files.get("video")] if instagram_post.is_file_id(value)]
+
+
+def _drop_uploads(ids):
+    for file_id in ids:
+        if instagram_post.is_file_id(file_id):
+            try:
+                os.unlink(os.path.join(_uploads_dir(), file_id))
+            except OSError:
+                pass
 
 
 # ── Files ─────────────────────────────────────────────────────────────────────
@@ -1164,22 +1438,50 @@ def _install(path, data):
         with tempfile.NamedTemporaryFile(dir=ARCHIVE_DIR, prefix=os.path.basename(path) + ".", suffix=".tmp", delete=False) as handle:
             temporary = handle.name
             handle.write(data)
-        for attempt in range(5):
-            try:
-                os.replace(temporary, path)
-                temporary = None
-                return
-            except PermissionError:
-                # Windows: the old copy is being read right now. Wait for the viewer.
-                if attempt == 4:
-                    raise
-                time.sleep(0.2)
+        _swap_in(temporary, path)
+        temporary = None
     finally:
         if temporary:
             try:
                 os.unlink(temporary)
             except OSError:
                 pass
+
+
+def _swap_in(source, path):
+    """Move a finished file over the target in one step."""
+    for attempt in range(5):
+        try:
+            os.replace(source, path)
+            return
+        except PermissionError:
+            # Windows: the old copy is being read right now. Wait for the viewer.
+            if attempt == 4:
+                raise
+            time.sleep(0.2)
+
+
+def discard_partials(idle=0.0) -> int:
+    """Remove unfinished downloads (*.part) from the archive folder that nothing has written to for `idle` seconds:
+    a large video or audio file cut off when the app quit. Run at start (idle 0) and before each large download.
+    A file still being written is skipped (on Windows it can't be removed while open)."""
+    if os.path.islink(ARCHIVE_DIR):
+        return 0
+    try:
+        with os.scandir(ARCHIVE_DIR) as entries:
+            found = [entry for entry in entries if entry.name.endswith(".part") and entry.is_file(follow_symlinks=False)]
+    except OSError:
+        return 0
+    removed, now = 0, time.time()
+    for entry in found:
+        try:
+            # idle 0 means all of them: on Windows a new file's time can be a moment ahead of time.time().
+            if not idle or now - entry.stat(follow_symlinks=False).st_mtime >= idle:
+                os.unlink(entry.path)
+                removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def read_record(key):
@@ -1222,10 +1524,16 @@ def save_copy(url: str, *, deadline=None, post=None):
     tiktok = tiktok_post.parse_link(url)
     if identifier:
         document, record, video = build_x_copy(url, identifier, deadline=deadline, key=key)
+        # A streamed video that never reached its copy (an error after this point) is removed, not kept half-made.
+        pending_file = video if isinstance(video, str) else None
     elif tiktok:
         document, record, video = build_tiktok_copy(url, tiktok, deadline=deadline, key=key)
     elif instagram_post.post_code(url):
-        document, record, video = build_instagram_copy(url, post, deadline=deadline, key=key)
+        try:
+            document, record, video = build_instagram_copy(url, post, deadline=deadline, key=key)
+        except ArchiveError:
+            _drop_uploads(_named_uploads(post))   # the window sends them again if the owner tries again
+            raise
     elif reddit_post.parse_link(url):
         document, record, video = build_reddit_copy(url, reddit_post.parse_link(url), deadline=deadline, key=key)
     else:
@@ -1237,19 +1545,65 @@ def save_copy(url: str, *, deadline=None, post=None):
         # gone) must not delete the one already saved: it fails and keeps the copy.
         raise ArchiveError("video_unavailable")
     record.pop("videoFailed", None)
+    used = record.pop("uploads", [])
     try:
         os.makedirs(ARCHIVE_DIR, exist_ok=True)
         if os.path.islink(ARCHIVE_DIR) or any(os.path.islink(path) for path in (page, sidecar, movie)):
             raise ArchiveError("internal_error")
-        if video:
+        if isinstance(video, str):
+            os.replace(video, movie)       # a streamed file, already in the archive folder
+        elif video:
             _install(movie, video)         # before the page that plays it
         elif os.path.exists(movie):
             os.unlink(movie)               # an update without the video
         _install(page, document)
         _install(sidecar, json.dumps(record, ensure_ascii=True, indent=1).encode("ascii"))
     except OSError:
+        _discard_stream(video)
         raise ArchiveError("internal_error") from None
+    except ArchiveError:
+        _discard_stream(video)
+        raise
+    _drop_uploads(used)
     return read_record(key)
+
+
+def _discard_stream(video):
+    """Remove a video streamed to disk that was not kept (a copy that failed after its download)."""
+    if isinstance(video, str):
+        try:
+            os.unlink(video)
+        except OSError:
+            pass
+
+
+def _member_to_file(bundle, info, limit, key, kind="video"):
+    """One mp4 entry of a backup (or, with kind "audio", an audio file), streamed into the archive folder (never held
+    in memory): (path, size). Raises ValueError when it is over `limit` or not that kind; no file is left behind then."""
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(dir=ARCHIVE_DIR, prefix=key + ".", suffix=".part", delete=False)
+    path, size, head = handle.name, 0, b""
+    try:
+        with handle, bundle.open(info) as source:
+            while True:
+                block = source.read(262144)
+                if not block:
+                    break
+                size += len(block)
+                if size > limit:
+                    raise ValueError("video")
+                if len(head) < 16:
+                    head += block[:16 - len(head)]
+                handle.write(block)
+        if not (head[4:8] == b"ftyp" if kind == "video" else audio_extension(head)):
+            raise ValueError(kind)
+        return path, size
+    except BaseException:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
 
 
 def delete_copy(key) -> bool:
@@ -1286,6 +1640,10 @@ def summary() -> dict:
                 elif (entry.is_file(follow_symlinks=False) and _KEY_RE.fullmatch(entry.name[:32]) and entry.name[32:33] == "."
                       and (entry.name[33:] == "tg.json" or _TG_NAME.fullmatch(entry.name[33:]))):
                     size += entry.stat(follow_symlinks=False).st_size
+        # Files uploaded from the owner's tab that wait for their copy (at most two hours) take room too.
+        with os.scandir(_uploads_dir()) as entries:
+            size += sum(entry.stat(follow_symlinks=False).st_size for entry in entries
+                        if entry.is_file(follow_symlinks=False) and instagram_post.is_file_id(entry.name))
     except OSError:
         pass
     return {"count": count, "bytes": size}
@@ -1400,11 +1758,11 @@ def export_zip(library_json: bytes, exported_at: str):
 
 # ── Restore from the zip ─────────────────────────────────────────────────────
 
-IMPORT_LIMIT = 1024 * 1024 * 1024     # the uploaded zip (waitress refuses bodies over 1 GB anyway)
+IMPORT_LIMIT = 16 * 1024 * 1024 * 1024   # the uploaded zip; the packaged server takes bodies this big
 RECORD_LIMIT = 64 * 1024
 MAX_ENTRIES = 200000
 _ZIP_COPY = re.compile(r"copies/([0-9a-f]{32})\.(html|json|mp4)")
-_ZIP_TELEGRAM = re.compile(r"copies/([0-9a-f]{32})\.(tg\.json|tg[0-9]\.(?:jpg|png|gif|webp|mp4))")
+_ZIP_TELEGRAM = re.compile(r"copies/([0-9a-f]{32})\.(tg\.json|tg[0-9]\.(?:jpg|png|gif|webp|mp4|mp3|m4a|aac|ogg|flac|wav))")
 _GENERATOR = b'<meta name="generator" content="Super Bookmark Manager saved copy '
 
 
@@ -1491,6 +1849,44 @@ def _read_member(bundle, info, limit):
     return None if len(data) > limit else data
 
 
+def _too_many_entries(path, cap):
+    """True when the zip's central directory lists more than `cap` files.
+
+    zipfile.ZipFile reads every entry into memory when it opens, before any count can be
+    checked: a crafted 1 GB zip could need gigabytes. This walks the directory's fixed-size
+    headers from the file instead, holding none of them, and stops at cap + 1. It counts
+    the headers themselves, so a false count in the end record changes nothing. A file
+    zipfile can't read as a zip is left for it to refuse."""
+    import struct
+    import zipfile
+    try:
+        with open(path, "rb") as handle:
+            end = zipfile._EndRecData(handle)
+            if not end:
+                return False
+            size, offset = end[zipfile._ECD_SIZE], end[zipfile._ECD_OFFSET]
+            start = end[zipfile._ECD_LOCATION] - size   # also right when data was put before the zip
+            if end[zipfile._ECD_SIGNATURE] == zipfile.stringEndArchive64:
+                start -= zipfile.sizeEndCentDir64 + zipfile.sizeEndCentDir64Locator
+            if start < 0 or offset < 0:
+                return False
+            handle.seek(start)
+            count, read = 0, 0
+            while read + 46 <= size:
+                header = handle.read(46)
+                if len(header) < 46 or header[:4] != zipfile.stringCentralDir:
+                    return False
+                count += 1
+                if count > cap:
+                    return True
+                names, extra, comment = struct.unpack("<HHH", header[28:34])
+                handle.seek(names + extra + comment, os.SEEK_CUR)
+                read += 46 + names + extra + comment
+    except (OSError, ValueError, struct.error):
+        return False
+    return False
+
+
 def import_zip(path, library):
     """Add the copies in an exported zip to this data folder.
 
@@ -1501,6 +1897,8 @@ def import_zip(path, library):
     written under names built from the 32-character key.
     """
     import zipfile
+    if _too_many_entries(path, MAX_ENTRIES):
+        raise ArchiveError("too_large")
     try:
         bundle = zipfile.ZipFile(path)
     except (zipfile.BadZipFile, OSError, ValueError):
@@ -1549,23 +1947,22 @@ def import_zip(path, library):
                     ("imagesLeftOut", int), ("stylesheets", int), ("limited", bool), ("finalUrl", str),
                     ("kind", str), ("video", bool), ("videoMissing", bool))
                     if type(stored.get(name)) is kind}
-                movie = None
+                movie, movie_size = None, 0
                 if "mp4" in parts:
-                    movie = _read_member(bundle, parts["mp4"], VIDEO_LIMIT)
-                    if movie is None or movie[4:8] != b"ftyp":
-                        raise ValueError("video")
+                    movie, movie_size = _member_to_file(bundle, parts["mp4"], LARGE_VIDEO_LIMIT, key)
                 record["video"] = movie is not None
-                record["bytes"] = len(page) + (len(movie) if movie else 0)
+                record["bytes"] = len(page) + movie_size
             except Exception:  # noqa: BLE001 - a damaged entry (bad JSON, CRC or zlib error) is skipped, never fatal
                 result["invalid"] += 1
                 continue
             html_path, sidecar = _paths(key)
             try:
                 if movie:
-                    _install(video_path(key), movie)
+                    os.replace(movie, video_path(key))
                 _install(html_path, page)
                 _install(sidecar, json.dumps(record, ensure_ascii=True, indent=1).encode("ascii"))
             except OSError:
+                _discard_stream(movie)
                 delete_copy(key)
                 raise ArchiveError("internal_error") from None
             restored = read_record(key) or {}
@@ -1576,13 +1973,15 @@ def import_zip(path, library):
 
 
 def _import_telegram(bundle, telegram, library, result):
-    """Restore kept Telegram photos and videos: links in this library only, never over existing ones.
+    """Restore kept Telegram photos, videos and audio: links in this library only, never over existing ones.
 
-    Counted apart from the copies (telegram*), so a link with both is not counted twice.
+    Counted apart from the copies (telegram*), so a link with both is not counted twice. Videos and audio files are
+    streamed to disk, so one kept with "Keep large videos and audio" on restores too.
     """
     result.update(telegramAlready=0, telegramNotInLibrary=0, telegramInvalid=0)
     restored = 0
     for key, parts in sorted(telegram.items()):
+        items = []
         try:
             raw = _read_member(bundle, parts["tg.json"], RECORD_LIMIT) if "tg.json" in parts else None
             record = _tg_clean_record(json.loads(raw), key) if raw is not None else None
@@ -1594,17 +1993,27 @@ def _import_telegram(bundle, telegram, library, result):
             if telegram_media(key):
                 result["telegramAlready"] += 1
                 continue
-            items = []
             for item in record["items"]:
                 info = parts.get(item["name"])
                 if info is None:
                     raise ValueError("missing")
-                data = _read_member(bundle, info, VIDEO_LIMIT if item["kind"] == "video" else TG_PHOTO_LIMIT)
-                found = _tg_item(item["kind"], data, item.get("duration"))
+                details = {"kind": item["kind"], "duration": item.get("duration"), "title": item.get("title"),
+                           "voice": item.get("voice") is True}
+                if item["kind"] == "photo":
+                    details["data"] = _read_member(bundle, info, TG_PHOTO_LIMIT)
+                    found = _tg_item(**details)
+                else:
+                    details["path"] = _member_to_file(bundle, info, LARGE_VIDEO_LIMIT, key, item["kind"])[0]
+                    items.append(details)          # from here on its file is removed whatever happens
+                    found = _tg_file(**details)
                 if not found or not item["name"].endswith("." + found[0]):
                     raise ValueError("file")
-                items.append({"kind": item["kind"], "data": data, "duration": item.get("duration")})
+                if item["kind"] == "photo":
+                    items.append(details)
+                details["mid"] = item.get("mid")      # checked: saved with the item, as before the backup
         except Exception:  # noqa: BLE001 - a damaged entry is skipped, never fatal
+            for entry in items:
+                drop_part(entry.get("path"))
             result["telegramInvalid"] += 1
             continue
         try:
@@ -1612,7 +2021,8 @@ def _import_telegram(bundle, telegram, library, result):
         except (ValueError, OverflowError):
             stamp = None
         try:
-            save_telegram_media(record["url"], record["message"], items, now=stamp, missing=record.get("missing", 0))
+            save_telegram_media(record["url"], record["message"], items, now=stamp, missing=record.get("missing", 0),
+                                over=record.get("over", 0))
         except ArchiveError:
             delete_telegram_media(key)
             raise
@@ -1667,7 +2077,7 @@ def _run(key, url, post=None):
             if unwanted:
                 delete_copy(key)   # the link was deleted while its copy was being made
         except ArchiveError as exc:
-            outcome = ("too_large" if exc.code == "too_large" else "failed", exc.code)
+            outcome = ("too_large" if exc.code in ("too_large", "copy_too_large") else "failed", exc.code)
         except Exception:
             outcome = ("failed", "internal_error")
         finally:
@@ -1704,9 +2114,10 @@ def _state(key):
     """Call with _lock held."""
     job = _jobs.get(key)
     record = read_record(key)
+    progress = {"progress": _progress[key]} if key in _progress else {}
     if job is None:
-        return record or {"key": key, "status": "none"}
-    result = {"key": key, "status": job["status"]}
+        return {**(record or {"key": key, "status": "none"}), **progress}
+    result = {"key": key, "status": job["status"], **progress}
     if job.get("error"):
         result["error"] = job["error"]
     if record:
@@ -1718,6 +2129,15 @@ def _state(key):
 def state(key) -> dict:
     with _lock:
         return _state(key)
+
+
+def missing_copies(keys) -> list:
+    """The keys among `keys` with no copy on this computer and none being made.
+
+    A JSON backup keeps each link's copy key but not the copies, so after a restore
+    on a new install the links still say they have one until it is saved again."""
+    with _lock:
+        return [key for key in keys if _state(key)["status"] == "none"]
 
 
 def request_copy(url: str, *, refresh: bool = False, post=None) -> dict:
@@ -1779,18 +2199,53 @@ def remove_for_url(url: str) -> bool:
     return remove(key)
 
 
-# ── Telegram photos and videos ───────────────────────────────────────────────
-# Photos and videos the owner sent to Saved Messages together with a link,
-# downloaded from their own account by a Telegram refresh. They sit beside the
-# link's copy as <key>.tg<i>.<ext> with a <key>.tg.json record, and exist with
-# or without an HTML copy. Every file is checked by its bytes before it is kept.
+# ── Telegram photos, videos and audio ────────────────────────────────────────
+# Photos, videos and audio files (music, voice messages) the owner sent to Saved
+# Messages together with a link, downloaded from their own account by a Telegram
+# refresh. They sit beside the link's copy as <key>.tg<i>.<ext> with a
+# <key>.tg.json record, and exist with or without an HTML copy. Every file is
+# checked by its bytes before it is kept.
 
 TG_MAX_ITEMS = 10
 TG_PHOTO_LIMIT = 10 * 1024 * 1024
 TG_TEXT_LIMIT = 4000
-_TG_NAME = re.compile(r"tg([0-9])\.(jpg|png|gif|webp|mp4)")
+TG_TITLE_LIMIT = 200
+_TG_AUDIO = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "aac": "audio/aac", "ogg": "audio/ogg", "flac": "audio/flac",
+             "wav": "audio/wav"}
+_TG_NAME = re.compile(r"tg([0-9])\.(jpg|png|gif|webp|mp4|mp3|m4a|aac|ogg|flac|wav)")
 _TG_PHOTO_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp"}
-_TG_TYPES = {"jpg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp", "mp4": "video/mp4"}
+_TG_TYPES = {"jpg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp", "mp4": "video/mp4",
+             **_TG_AUDIO}
+
+
+def _tg_kind(extension):
+    return "video" if extension == "mp4" else "audio" if extension in _TG_AUDIO else "photo"
+
+
+def audio_extension(head) -> str:
+    """The extension of an audio file by its first 12 bytes (MP3, MPEG-4 audio, AAC, Ogg, FLAC or WAV), or ""."""
+    if head[:3] == b"ID3" or (len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0 and head[1] & 0x06):
+        return "mp3"
+    if len(head) > 1 and head[0] == 0xFF and head[1] & 0xF6 == 0xF0:     # an ADTS frame: AAC without a container
+        return "aac"
+    if head[4:8] == b"ftyp":
+        return "m4a"
+    if head[:4] == b"OggS":
+        return "ogg"
+    if head[:4] == b"fLaC":
+        return "flac"
+    if head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return "wav"
+    return ""
+
+
+def _tg_title(value):
+    """An audio file's name as Telegram gave it: one line without control or format characters, at most TG_TITLE_LIMIT."""
+    if not isinstance(value, str):
+        return ""
+    kept = (" " if unicodedata.category(c) == "Cc" else c for c in value
+            if unicodedata.category(c) == "Cc" or unicodedata.category(c)[0] != "C")
+    return " ".join("".join(kept).split())[:TG_TITLE_LIMIT].strip()
 
 
 def _tg_record_path(key):
@@ -1813,24 +2268,71 @@ def telegram_type(name):
     return _TG_TYPES[match.group(2)] if match else ""
 
 
-def _tg_item(kind, data, duration=None):
-    """(extension, checked item) for one photo or video, or None when the bytes are not one."""
+def _tg_check(kind, head, size, limit, duration=None, title=None, voice=False):
+    """(extension, checked item) for one photo, video or audio file, judged by its first bytes and its size, or None."""
+    if kind == "photo":
+        extension = _TG_PHOTO_EXT.get(_sniff(head))
+        if not extension or size > TG_PHOTO_LIMIT:
+            return None
+        return extension, {"kind": "photo", "bytes": size}
+    if kind == "video":
+        extension = "mp4" if head[4:8] == b"ftyp" else ""
+    elif kind == "audio":
+        extension = audio_extension(head)
+    else:
+        return None
+    if not extension or size < 16 or size > limit:
+        return None
+    item = {"kind": kind, "bytes": size}
+    if isinstance(duration, (int, float)) and not isinstance(duration, bool) and 0 <= duration < 86400:
+        item["duration"] = int(round(duration))
+    if kind == "audio" and voice is True:
+        item["voice"] = True
+    elif kind == "audio" and _tg_title(title):
+        item["title"] = _tg_title(title)
+    return extension, item
+
+
+def _tg_item(kind, data, duration=None, title=None, voice=False):
+    """(extension, checked item) for one photo, video or audio file held in memory (videos and audio up to
+    VIDEO_LIMIT), or None when the bytes are not one."""
     if not isinstance(data, (bytes, bytearray)):
         return None
-    data = bytes(data)
-    if kind == "photo":
-        ext = _TG_PHOTO_EXT.get(_sniff(data))
-        if not ext or len(data) > TG_PHOTO_LIMIT:
-            return None
-        return ext, {"kind": "photo", "bytes": len(data)}
-    if kind == "video":
-        if len(data) > VIDEO_LIMIT or len(data) < 16 or data[4:8] != b"ftyp":
-            return None
-        item = {"kind": "video", "bytes": len(data)}
-        if isinstance(duration, (int, float)) and not isinstance(duration, bool) and 0 <= duration < 86400:
-            item["duration"] = int(round(duration))
-        return "mp4", item
-    return None
+    return _tg_check(kind, bytes(data[:64]), len(data), VIDEO_LIMIT, duration, title, voice)
+
+
+def telegram_file_ok(kind, data) -> bool:
+    """Whether bytes downloaded as a Telegram photo, video or audio file are one the app keeps."""
+    return _tg_item(kind, data) is not None
+
+
+def _streamed(path):
+    """A file being streamed into the archive folder (*.part): the only kind a "path" entry may name."""
+    return (isinstance(path, str) and path.endswith(".part")
+            and os.path.normcase(os.path.dirname(os.path.abspath(path))) == os.path.normcase(os.path.abspath(ARCHIVE_DIR)))
+
+
+def _tg_file(kind, path, duration=None, title=None, voice=False):
+    """(extension, checked item) for a video or audio file streamed into the archive folder (up to
+    LARGE_VIDEO_LIMIT), or None."""
+    if kind == "photo" or not _streamed(path) or os.path.islink(path) or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(64)
+            size = os.fstat(handle.fileno()).st_size
+    except OSError:
+        return None
+    return _tg_check(kind, head, size, LARGE_VIDEO_LIMIT, duration, title, voice)
+
+
+def drop_part(path):
+    """Remove a streamed file (*.part in the archive folder) that was not kept."""
+    if _streamed(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def _tg_message(message):
@@ -1840,40 +2342,78 @@ def _tg_message(message):
     return {"text": text[:TG_TEXT_LIMIT], "date": date}
 
 
-def save_telegram_media(url, message, items, *, now=None, missing=0):
-    """Keep a link's Telegram photos and videos; replaces what was kept before.
+def save_telegram_media(url, message, items, *, now=None, missing=0, over=0):
+    """Keep a link's Telegram photos, videos and audio files; replaces what was kept before.
 
-    items: [{"kind": "photo"|"video", "data": bytes, "duration": seconds}].
+    items: [{"kind": "photo"|"video"|"audio", "data": bytes, "duration": seconds, "title": str, "voice": bool}].
+    A video or audio file streamed to disk comes as "path" (a *.part file in the archive folder) instead of
+    "data": it is moved into place, or removed when it is not kept, so none is left behind whatever happens.
+    {"kept": name} carries over a file of the set kept before, as it is; "mid" is the Telegram message a file
+    came from, so a later refresh fetches only what is still missing. Files of the old set that are neither
+    carried over nor replaced are removed.
     `missing`: files of this message that could not be downloaded this time;
-    a later refresh fetches the set again. Returns {"photos": n, "videos": m};
-    files that are not real pictures or MP4 videos are left out.
+    a later refresh fetches the set again. `over`: videos and audio left out for
+    being over 50 MB; turning "Keep large videos and audio" on fetches the set
+    again. Returns {"photos": n, "videos": m, "audio": k}; files that are not
+    real pictures, MP4 videos or audio files are left out.
     """
+    try:
+        return _save_telegram_media(url, message, items, now, missing, over)
+    finally:
+        for entry in items or []:
+            if isinstance(entry, dict) and "path" in entry:
+                drop_part(entry["path"])          # already moved into place, or not kept
+
+
+def _save_telegram_media(url, message, items, now, missing, over):
     key = copy_key(url)
     record_path = _tg_record_path(key)
+    old = telegram_media(key)
+    before = {item["name"]: item for item in (old or {}).get("items", [])}
     checked = []
     for entry in (items or [])[:TG_MAX_ITEMS]:
         if not isinstance(entry, dict):
             continue
-        found = _tg_item(entry.get("kind"), entry.get("data"), entry.get("duration"))
+        if "kept" in entry:
+            if entry["kept"] in before and all(source != ("kept", entry["kept"]) for _, _, source in checked):
+                checked.append((None, dict(before[entry["kept"]]), ("kept", entry["kept"])))
+            continue
+        details = (entry.get("duration"), entry.get("title"), entry.get("voice") is True)
+        if "path" in entry:
+            found = _tg_file(entry.get("kind"), entry["path"], *details)
+            source = ("path", entry["path"])
+        else:
+            found = _tg_item(entry.get("kind"), entry.get("data"), *details)
+            source = ("data", bytes(entry["data"]) if found else b"")
         if found:
-            checked.append((found[0], found[1], bytes(entry["data"])))
-    if not checked:
-        return {"photos": 0, "videos": 0}
+            if type(entry.get("mid")) is int and entry["mid"] > 0:
+                found[1]["mid"] = entry["mid"]
+            checked.append((found[0], found[1], source))
+    if all(how == "kept" for _, _, (how, _) in checked):
+        return telegram_counts(old) if checked else {"photos": 0, "videos": 0, "audio": 0}    # nothing new
     stamp = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds").replace("+00:00", "Z")
     record = {"version": 1, "url": url, "message": _tg_message(message), "savedAt": stamp, "items": []}
-    if isinstance(missing, int) and not isinstance(missing, bool) and 0 < missing <= TG_MAX_ITEMS:
-        record["missing"] = missing
+    for name, value in (("missing", missing), ("over", over)):
+        if isinstance(value, int) and not isinstance(value, bool) and 0 < value <= TG_MAX_ITEMS:
+            record[name] = value
     try:
         os.makedirs(ARCHIVE_DIR, exist_ok=True)
         if os.path.islink(ARCHIVE_DIR) or os.path.islink(record_path):
             raise ArchiveError("internal_error")
-        old = telegram_media(key)
-        for index, (ext, item, data) in enumerate(checked):
-            name = f"tg{index}.{ext}"
+        used = {_TG_NAME.fullmatch(source).group(1) for _, _, (how, source) in checked if how == "kept"}
+        free = iter(str(index) for index in range(TG_MAX_ITEMS) if str(index) not in used)
+        for ext, item, (how, source) in checked:
+            if how == "kept":
+                record["items"].append(item)          # its file stays where it is
+                continue
+            name = f"tg{next(free)}.{ext}"
             path = os.path.join(ARCHIVE_DIR, f"{key}.{name}")
             if os.path.islink(path):
                 raise ArchiveError("internal_error")
-            _install(path, data)
+            if how == "path":
+                _swap_in(source, path)
+            else:
+                _install(path, source)
             record["items"].append({"name": name, **item})
         _install(record_path, json.dumps(record, ensure_ascii=True, indent=1).encode("ascii"))
         kept = {item["name"] for item in record["items"]}
@@ -1891,11 +2431,12 @@ def save_telegram_media(url, message, items, *, now=None, missing=0):
 def telegram_counts(record):
     items = (record or {}).get("items", [])
     return {"photos": sum(item["kind"] == "photo" for item in items),
-            "videos": sum(item["kind"] == "video" for item in items)}
+            "videos": sum(item["kind"] == "video" for item in items),
+            "audio": sum(item["kind"] == "audio" for item in items)}
 
 
 def _tg_clean_record(stored, key):
-    """The record's checked fields, or None. Item names must be tg<i>.<ext> and unique."""
+    """The record's checked fields, or None. Item names must be tg<i>.<ext> and unique; the kind follows the extension."""
     if not isinstance(stored, dict) or not isinstance(stored.get("url"), str) or copy_key(stored["url"]) != key:
         return None
     items, names = [], set()
@@ -1903,23 +2444,30 @@ def _tg_clean_record(stored, key):
         if not isinstance(item, dict) or not isinstance(item.get("name"), str):
             continue
         match = _TG_NAME.fullmatch(item["name"])
-        kind = "video" if match and match.group(2) == "mp4" else "photo"
+        kind = _tg_kind(match.group(2)) if match else ""
         if not match or item["name"] in names or item.get("kind") != kind or len(items) >= TG_MAX_ITEMS:
             continue
         names.add(item["name"])
         clean = {"name": item["name"], "kind": kind}
         if type(item.get("bytes")) is int and item["bytes"] >= 0:
             clean["bytes"] = item["bytes"]
-        if kind == "video" and type(item.get("duration")) is int and 0 <= item["duration"] < 86400:
+        if kind != "photo" and type(item.get("duration")) is int and 0 <= item["duration"] < 86400:
             clean["duration"] = item["duration"]
+        if kind == "audio" and item.get("voice") is True:
+            clean["voice"] = True
+        elif kind == "audio" and _tg_title(item.get("title")):
+            clean["title"] = _tg_title(item["title"])
+        if type(item.get("mid")) is int and item["mid"] > 0:
+            clean["mid"] = item["mid"]
         items.append(clean)
     if not items:
         return None
     saved = stored.get("savedAt") if isinstance(stored.get("savedAt"), str) and len(stored["savedAt"]) <= 40 else ""
     record = {"version": 1, "url": stored["url"], "message": _tg_message(stored.get("message")), "savedAt": saved,
               "items": items}
-    if type(stored.get("missing")) is int and 0 < stored["missing"] <= TG_MAX_ITEMS:
-        record["missing"] = stored["missing"]
+    for name in ("missing", "over"):
+        if type(stored.get(name)) is int and 0 < stored[name] <= TG_MAX_ITEMS:
+            record[name] = stored[name]
     return record
 
 

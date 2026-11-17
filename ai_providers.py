@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -110,7 +111,8 @@ _ADDRESSED = ("freellmapi", "local")
 
 # Benches after a failure, in seconds. A rejected key stays benched until the
 # owner changes it (cleared on save).
-_COOLDOWN = {"rate_limited": 60, "unavailable": 30, "timeout": 30, "bad_response": 15, "key_rejected": 10**9}
+_COOLDOWN = {"rate_limited": 60, "unavailable": 30, "timeout": 30, "bad_response": 15, "key_rejected": 10**9,
+             "someone_else": 30}
 
 _state: dict[str, dict] = {name: {} for name in ORDER}
 # A provider that keeps timing out or failing is benched longer each time (30 s, 2 min,
@@ -342,7 +344,25 @@ def available() -> bool:
 
 # ── calling ──────────────────────────────────────────────────────────────────
 
+def _someone_elses(url: str) -> bool:
+    """Is this address on this PC, with another signed-in person's program listening there? A port is free for anyone
+    while the owner's server is off, so whatever answers there isn't proof of anything: no key or link text goes to it."""
+    if sys.platform != "win32":
+        return False
+    try:
+        parts = urlsplit(url)
+        host, port = (parts.hostname or "").lower(), parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        return False
+    if host not in ("localhost", "::1") and not re.fullmatch(r"127\.\d+\.\d+\.\d+", host):
+        return False
+    import local_peer
+    return local_peer.someone_else_listens(port)
+
+
 def _post(url: str, key: str, payload: dict, timeout: float) -> dict:
+    if _someone_elses(url):
+        raise urllib.error.URLError("another Windows user's program")   # chat() checked, but the port can change hands
     headers = {"Content-Type": "application/json", "User-Agent": "SuperBookmarkManager"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -419,6 +439,10 @@ def chat(messages: list[dict], *, max_tokens: int = 1200, json_mode: bool = True
             continue
         if not only and _state[name].get("until", 0) > now:
             last = _state[name].get("reason", last)
+            continue
+        if _someone_elses(s["base"]):
+            _bench(name, "someone_else")
+            last = "someone_else"
             continue
         model = _resolved.get(name) or s["model"]
         if name == "local" and not model:
@@ -637,6 +661,8 @@ def list_models(name: str, base_override: Optional[str] = None) -> list[str]:
     base = base_override or s["base"]
     if name not in _ADDRESSED and not s["key"]:
         raise NoProvider("no_key")
+    if _someone_elses(base):
+        raise NoProvider("someone_else")
     headers = {"User-Agent": "SuperBookmarkManager"}
     if s["key"]:
         headers["Authorization"] = f"Bearer {s['key']}"
@@ -658,6 +684,49 @@ def list_models(name: str, base_override: Optional[str] = None) -> list[str]:
     return sorted(set(names))
 
 
+# FreeLLMAPI's Windows app listens on 31415; its Docker and source installs on 3001.
+_ROUTER_ADDRESSES = ("http://127.0.0.1:3001/v1", "http://127.0.0.1:31415/v1")
+
+
+def _page(base: str) -> bytes:
+    """The start of the page at a router's address, asked for without the key; b"" when nothing answers there."""
+    if _someone_elses(base):
+        return b"?"                            # something answers there, and it isn't asked anything
+    parts = urlsplit(base)
+    request = urllib.request.Request(f"{parts.scheme}://{parts.netloc}/", headers={"User-Agent": "SuperBookmarkManager"})
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            return response.read(65536)
+    except urllib.error.HTTPError:
+        return b"?"                            # something answers there, without a page
+    except (urllib.error.URLError, OSError, ValueError):
+        return b""
+
+
+def _router_moved(name: str) -> str:
+    """The address FreeLLMAPI turned out to be at, saved as if the owner had typed it, or "".
+
+    Only between its two known addresses, when nothing answers at the one in use and its own page answers at
+    the other: the page is asked for without the key, so the key only ever goes to FreeLLMAPI."""
+    s = _settings(name)
+    if name != "freellmapi" or not s["configured"] or s["base"] not in _ROUTER_ADDRESSES or _page(s["base"]):
+        return ""
+    other = next(address for address in _ROUTER_ADDRESSES if address != s["base"])
+    if b"FreeLLMAPI" not in _page(other):
+        return ""
+    update(name, {"baseUrl": other})
+    return other
+
+
+def _unreachable(name: str) -> str:
+    """What to check when nothing answered at a provider's address. Host and port only: the rest can hold a token."""
+    where = urlsplit(_settings(name)["base"]).netloc
+    if name == "freellmapi":
+        return (f"Couldn't reach FreeLLMAPI at {where}. Check that it is running and that Address has the port it "
+                "shows: its Windows app uses 31415, Docker 3001.")
+    return f"Couldn't reach the local server at {where}. Check that it is running and that Address is right."
+
+
 def test(name: str) -> dict:
     """Send one tiny request to one provider and report what happened."""
     if name not in PROVIDERS:
@@ -665,6 +734,7 @@ def test(name: str) -> dict:
     _clear(name)
     _details.pop(name, None)
     _resolved.pop(name, None)
+    moved = _router_moved(name)
     models: list[str] = []
     try:
         models = list_models(name)
@@ -675,6 +745,8 @@ def test(name: str) -> dict:
         text, _ = chat([{"role": "user", "content": 'Reply with the JSON {"ok": true}'}],
                        max_tokens=600, only=name, timeout=45)
         note = _details.get(name, "") if name in _resolved else ""
+        if moved:
+            note = f"found FreeLLMAPI on port {urlsplit(moved).port} and saved that address. {note}".strip()
         return {"ok": True, "reply": text[:80], "models": models[:200], "model": _resolved.get(name, ""), "note": note}
     except NoProvider as exc:
         messages = {
@@ -688,4 +760,9 @@ def test(name: str) -> dict:
         message = messages.get(exc.code, "Test failed.")
         if _details.get(name):
             message += " Provider said: " + _details[name]
+        elif exc.code == "unavailable" and name in _ADDRESSED:
+            message = _unreachable(name)
+        elif exc.code == "someone_else":
+            message = (f"Another Windows user's program is listening at {urlsplit(_settings(name)['base']).netloc}, so your "
+                       "key and links weren't sent to it. Start your own server there, or change Address.")
         return {"ok": False, "error": exc.code, "message": message, "models": models[:200]}

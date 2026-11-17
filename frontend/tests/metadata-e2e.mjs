@@ -4,25 +4,25 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
-import { appendFile, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { appendFile, mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import net from 'node:net';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
-assert.equal(resolve(process.cwd()).toLowerCase(), resolve(root).toLowerCase(), 'Run with explicit project-root cwd');
 const evidence = join(root, '.verify/metadata-enrichment-20260924');
+await mkdir(evidence, { recursive: true });
 const output = await mkdtemp(join(evidence, 'e2e-'));
-const python = process.env.C6_PYTHON || 'python';
-const playwright = process.env.C6_PLAYWRIGHT_MODULE || 'playwright';
+const python = process.env.C4_PYTHON || process.env.PYTHON || 'python';
+const playwright = process.env.C4_PLAYWRIGHT_MODULE || 'playwright';
 const { chromium } = createRequire(import.meta.url)(playwright);
 const fixture = 'http://metadata.fixture.test';
 const report = { started: new Date().toISOString(), output, checks: [], requests: [], responses: [], events: [],
   snapshots: [], screenshots: [], denied: [], errors: [], limitations: [
     'Synthetic HTTP/DNS/IP pinning fixture, not live provider or TLS verification.',
     'Categories and Telegram refresh payload are deterministic mocks; real fake-client B1 verification is separate.',
-    'Saved Views are browser-only and are not expected in a new browser profile.',
+    'Saved views are kept in SQLite (v0.4.0), so a new browser profile gets them.',
     'No source parser/store changes; no personal data, existing services or dependencies accessed.',
   ] };
 const pending = new Map();
@@ -168,6 +168,13 @@ async function curate(post, note) {
   if (post.status !== 'archived') await dialog.getByRole('button', { name: 'Archive', exact: true }).click();
   await dialog.getByTitle('Close', { exact: true }).click();
 }
+// The top bar has no "every link" tab: an empty search submit is the in-document (no reload)
+// route to /library, where every saved link, archived ones included, is listed.
+async function openAllLinks() {
+  const search = page.getByRole('search').getByLabel('Search your library');
+  await search.fill(''); await search.press('Enter');
+  await page.waitForURL(url => url.pathname === '/library' && !url.search);
+}
 const enrichCount = () => report.requests.filter(r => new URL(r.url).pathname === '/api/enrich').length;
 
 try {
@@ -199,7 +206,7 @@ try {
   assert.ok(!ready.failed, ready.failed);
   base = `http://127.0.0.1:${ready.port}`;
   report.origin = base;
-  browser = await chromium.launch({ channel: 'msedge', headless: true });
+  browser = await chromium.launch({ headless: true });
   ({ ctx: context, tab: page } = await newContext());
   await page.goto(base + '/library/settings'); await saved(0);
   assert.equal(enrichCount(), 0);
@@ -236,7 +243,7 @@ try {
   assert.equal(durableBefore.categoryMode, 'automatic');
   assert.deepEqual(durableBefore.categories, ['technology']);
   // Do not navigate/reload: keep this request owned by the live document.
-  await page.getByTitle('Every saved link, archived ones included', { exact: true }).click();
+  await openAllLinks();
   const htmlPost = (await state()).posts.find(p => p.url === gate.url);
   const firstCard = page.locator(`article[data-post-id="${htmlPost.id}"]`);
   await firstCard.getByLabel('No content preview available').waitFor();
@@ -280,7 +287,7 @@ try {
   await page.getByRole('status', { name: 'Telegram import result' }).filter({ hasText: '1 new' }).waitFor();
   await waitMetadata(fixture + '/telegram', 'enriched');
   await page.getByRole('button', { name: 'Refresh Telegram Saved Messages', exact: true }).click();
-  await page.getByRole('status', { name: 'Telegram refresh result' }).filter({ hasText: '1 new links' }).waitFor();
+  await page.getByRole('status', { name: 'Telegram refresh result' }).filter({ hasText: /— 1 new link,/ }).waitFor();
   await waitMetadata(fixture + '/refresh', 'enriched');
   assert.equal((await imported(htmlFile([[ready.instagram, 'Owner Instagram title']]))).added, 1);
   await waitMetadata(ready.instagram, 'enriched');
@@ -346,10 +353,11 @@ try {
   await context.close(); report.firstContextClosed = true;
   ({ ctx: context, tab: page } = await newContext());
   await page.goto(base + '/library');
-  assert.deepEqual(await snapshot('fresh-browser', 8, []), curated);
+  // Saved views are kept in SQLite since v0.4.0 (owner, 2026-10-23): a new browser profile gets them too.
+  assert.deepEqual(await snapshot('fresh-browser', 8, views), curated);
   assert.equal(enrichCount(), countBeforeDuplicates);
   assert.equal((await control('events')).httpRequests.length, networkBeforeDuplicates);
-  pass('Reload and fresh browser restore all metadata/curation exactly from SQLite; startup does not enrich; Views remain profile-local');
+  pass('Reload and fresh browser restore all metadata/curation exactly from SQLite; startup does not enrich; saved views come back from SQLite too');
 
   const recovery = await control('recover');
   report.events.push({ kind: 'wait-real-production-cooldown', milliseconds: recovery.retryAfterMs });
@@ -360,7 +368,7 @@ try {
   await dialog.getByText('Synthetic Recovered description & detail.', { exact: true }).waitFor();
   await screenshot('retry-recovered.png');
   await dialog.getByTitle('Close', { exact: true }).click();
-  const recovered = await snapshot('detail-retry', 8, []);
+  const recovered = await snapshot('detail-retry', 8, views);
   const recoveredFailure = recovered.find(p => p.id === failure.id);
   assert.deepEqual(withoutMetadata(recoveredFailure), withoutMetadata(curatedFailure));
   assert.equal(recoveredFailure.title, curatedFailure.title);
@@ -375,7 +383,7 @@ try {
   assert.equal((await imported(htmlFile([['/delete', 'Disposable metadata record']]))).added, 1);
   await bound(gate.started.promise, 15000, 'disposable metadata request');
   const disposable = (await state()).posts.find(p => p.url === gate.url);
-  await page.getByTitle('Every saved link, archived ones included', { exact: true }).click();
+  await openAllLinks();
   await page.locator(`main a[href="/library/item/${disposable.id}"]`).focus();
   await page.keyboard.press('Enter');
   dialog = page.getByRole('dialog', { name: 'Saved post detail' });
@@ -386,14 +394,15 @@ try {
   gate.release.resolve(); gate = undefined;
   await response;
   // Exercise a full browser turn and durable reconciliation after the late result.
-  await page.getByRole('link', { name: 'Settings', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Menu', exact: true }).click();
+  await page.getByRole('menuitem', { name: /^Settings/ }).click();
   await page.getByRole('button', { name: 'Re-sync from SQLite', exact: true }).click();
-  assert.deepEqual(await snapshot('deleted-inflight', 8, []), recovered);
+  assert.deepEqual(await snapshot('deleted-inflight', 8, views), recovered);
   assert.deepEqual((await state()).deletedUrls, [disposable.url]);
   assert.equal((await imported(htmlFile([['/delete', 'Disposable metadata record']]))).added, 0);
-  assert.deepEqual(await snapshot('deleted-reimport', 8, []), recovered);
+  assert.deepEqual(await snapshot('deleted-reimport', 8, views), recovered);
   await page.reload();
-  assert.deepEqual(await snapshot('deleted-reload', 8, []), recovered);
+  assert.deepEqual(await snapshot('deleted-reload', 8, views), recovered);
   assert.deepEqual((await state()).deletedUrls, [disposable.url]);
   pass('Deleting an in-flight new record preserves tombstone; late real metadata, reimport and reload cannot resurrect it');
 

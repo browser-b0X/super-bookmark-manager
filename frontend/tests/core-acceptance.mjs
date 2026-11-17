@@ -534,7 +534,7 @@ try {
   });
   await check('G5 fixture isolation and runtime errors', async () => {
     assert.deepEqual(errors, []); assert.deepEqual(denied, []);
-    assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers', '/api/archive'].includes(r.path)));
+    assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/categorize', '/api/enrich', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers', '/api/archive', '/api/archive/large-videos', '/api/extension', '/api/library/pending', '/api/claude-desktop'].includes(r.path)));
     assert.deepEqual((await snapshot()).blocked, []);
     return 'zero uncaught browser errors, forbidden API calls, outbound requests or fixture guard violations';
   });

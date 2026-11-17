@@ -43,7 +43,7 @@ try {
   const foods = ['Ten cheap weeknight dinners', 'A field guide to wild garlic', 'Sourdough, explained slowly', 'The best knife for small kitchens',
     'Why your rice is gummy', 'One-pan lemon chicken', 'Coffee ratios that work', 'Pickling anything in a day', 'The case for cast iron',
     'Soup stock from scraps', 'Tomato season notes', 'Bread flour vs plain flour'];
-  const posts = [post(1), ...foods.map((title, i) => post(10 + i, { id: `food-${i}`, url: `https://example.org/food/${i}`, title, status: 'reference',
+  const posts = [post(1), post(2, { status: 'archived' }), ...foods.map((title, i) => post(10 + i, { id: `food-${i}`, url: `https://example.org/food/${i}`, title, status: 'reference',
     categories: ['food-drink'], createdAt: new Date(Date.now() - (i + 1) * 86400000).toISOString() }))];
   assert.deepEqual((await (await fetch(base + '/api/library', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ posts, deletedUrls: [] }) })).json()).rejected, []);
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -71,6 +71,19 @@ try {
     await page.waitForTimeout(450);
     now = await visible();
     assert.deepEqual([now.away, now.visibility], [false, 'visible']);
+  });
+
+  await check('every shelf with links has its row: a link still waiting in "New to sort" shows on its shelf, an archived one doesn\'t', async () => {
+    // The owner, 2026-11-09: after an AI sort the shelves it had just filled were missing from Home. The sort puts a link
+    // on a shelf and leaves it waiting in the deck; the rows used to leave waiting links out.
+    await page.goto(base + '/');
+    await page.getByRole('region', { name: 'New to sort' }).locator('article[data-post-id="nav-1"]').waitFor();
+    const travel = page.getByRole('region', { name: 'travel', exact: true });
+    await travel.waitFor({ timeout: 5000 });
+    assert.match(await travel.innerText(), /1 link\b/);
+    assert.equal(await travel.locator('a[href="/library/item/nav-1"]').count(), 1, 'the waiting link, on its shelf');
+    assert.equal(await page.getByRole('region', { name: 'technology', exact: true }).count(), 0, 'a shelf with only an archived link has no row');
+    assert.equal(await page.locator('.shelf-row a[href="/library/item/nav-2"]').count(), 0);
   });
 
   await check('shelf rows: no scrollbar, a slow drift on hover, click-and-hold slides without opening a card, a click still opens', async () => {

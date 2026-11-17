@@ -77,6 +77,10 @@ try {
       return route.fulfill({ status: 400, json: { ok: false, error: 'Each link needs an id.' } });
     }
     if (mode === 'one-refused') return route.fulfill({ json: { ok: true, engine: 'freellmapi', items: answer(ids) } });
+    if (mode === 'titles') {
+      return route.fulfill({ json: { ok: true, engine: 'groq', items: ids.map(id => ({ id, shelf: 'technology', tags: ['sorted'],
+        title: `Clean title ${id}`, summary: `One line about ${id}.` })) } });
+    }
     if (mode === 'always-busy') {
       return route.fulfill({ json: { ok: true, engine: 'keywords', fallbackReason: 'rate_limited', retryIn: 30, missing: ids,
         items: ids.map(id => ({ id, shelf: 'other' })) } });
@@ -142,6 +146,32 @@ try {
     await progress.filter({ hasText: /^1\/1 checked/ }).waitFor({ timeout: 30000 });
     await section.getByRole('button', { name: /Apply 1/ }).click();
     await section.getByRole('button', { name: /Suggest for 0 links/ }).waitFor({ timeout: 10000 });
+  });
+
+  await check('new titles and summaries come unticked; only the ones the owner ticks are applied', async () => {
+    mode = 'titles';
+    const two = [0, 1].map(i => ({ ...posts[0], id: `n${i}`, url: `https://n${i}.example.invalid/post/${i}`, domain: `n${i}.example.invalid`,
+      title: `messy-title-${i}`, updatedAt: new Date().toISOString() }));
+    await fetch(base + '/api/library', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ posts: two, deletedUrls: [] }) });
+    await page.reload();
+    await section.getByRole('button', { name: /Suggest for 2 links/ }).click();
+    await progress.filter({ hasText: /^2\/2 checked/ }).waitFor({ timeout: 30000 });
+    const list = section.getByRole('list', { name: 'AI suggestions' });
+    await list.waitFor();
+    await section.getByText('New titles and summaries are not: tick the ones you want.', { exact: false }).waitFor();
+    const shelfBoxes = list.getByRole('checkbox', { name: /^Apply shelf and tags for/ });
+    const titleBoxes = list.getByRole('checkbox', { name: /^Use this new title:/ });
+    const summaryBoxes = list.getByRole('checkbox', { name: /^Use this summary:/ });
+    assert.deepEqual([await shelfBoxes.count(), await titleBoxes.count(), await summaryBoxes.count()], [2, 2, 2]);
+    for (const box of [...await shelfBoxes.all()]) assert.equal(await box.isChecked(), true, 'shelf and tags are ticked');
+    for (const box of [...await titleBoxes.all(), ...await summaryBoxes.all()]) assert.equal(await box.isChecked(), false, 'titles and summaries are not');
+    // The owner wants one new title (n1's) and nothing else beyond shelves and tags.
+    await list.getByRole('checkbox', { name: 'Use this new title: Clean title n1' }).check();
+    await section.getByRole('button', { name: /Apply 2/ }).click();
+    await until('both links filed in SQLite', async () => (await library()).filter(p => p.id.startsWith('n')).every(p => p.categories[0] === 'technology'));
+    const lib = Object.fromEntries((await library()).map(p => [p.id, p]));
+    assert.deepEqual([lib.n0.title, lib.n0.aiSummary, lib.n0.tags], ['messy-title-0', undefined, ['sorted']], 'n0: shelf and tags only');
+    assert.deepEqual([lib.n1.title, lib.n1.originalTitle, lib.n1.aiSummary], ['Clean title n1', 'messy-title-1', undefined], 'n1: the ticked title only');
   });
 
   await check('Stop ends a long wait at once and says so', async () => {

@@ -87,7 +87,8 @@ class SaveTests(InstagramCase):
     def test_video_posts_and_missing_pictures(self):
         record = archive.save_copy(POST_URL, post=data(video=True, pictures=[f"{CDN}/v/t51/one.jpg?stp=dst-jpg"]))
         document = (self.store / f"{self.key}.html").read_text()
-        self.assertIn("This is a video post: its cover picture is saved. The video needs the browser extension (planned for v0.4.0).", document)
+        self.assertIn("This is a video post: its cover picture is saved. To keep the video too, save it with the "
+                      "SuperBookmarks extension from the open post.", document)
         self.assertNotIn("<video", document)
         record = archive.save_copy(POST_URL, post=data(pictures=[f"{CDN}/v/t51/gone.jpg"]))
         self.assertEqual((record["images"], record["imagesLeftOut"]), (0, 1))

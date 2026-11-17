@@ -3,9 +3,9 @@ import { byFollowUp } from "../lib/followUp";
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  Globe, LayoutGrid, Link2, List, Plus, Search, Share2, Table2, X,
+  Globe, LayoutGrid, Link2, List, Plus, Search, Share2, Table2, X, Zap,
 } from "lucide-react";
-import { useLibrary } from "../store/library";
+import { byMyOrder, useLibrary } from "../store/library";
 import type { LibraryFilter, SavedPost, SavedView } from "../types";
 import { viewCriteria, viewPath } from "../lib/savedViews";
 import SavedViews from "../components/library/SavedViews";
@@ -17,7 +17,9 @@ import HomeView from "../components/home/HomeView";
 import { effectivePlatform } from "../lib/platform";
 import AddLinkDialog from "../components/library/AddLinkDialog";
 import ShareDialog from "../components/library/ShareDialog";
-import { isEmptyQuery, matchesQuery, parseQuery } from "../lib/librarySearch";
+import { describeQuery, isEmptyQuery, matchesQuery, parseQuery } from "../lib/librarySearch";
+import SmartShelfEditor from "../components/library/SmartShelfEditor";
+import { tagLookup } from "../lib/tags";
 import { useLibraryPersistence } from "../lib/libraryPersistence";
 import SiteGroups, { groupBySite } from "../components/library/SiteGroups";
 
@@ -37,9 +39,21 @@ export default function LibraryPage() {
   const posts = useLibrary(s => s.posts);
   const categories = useLibrary(s => s.categories);
   const views = useLibrary(s => s.views);
-  const [appliedId, setAppliedId] = useState<string | null>(null);
+  const tagInfo = useLibrary(s => s.tagInfo);
+  // A tag finds its other names and the tags under it (nested tags).
+  const tags = useMemo(() => tagLookup(tagInfo), [tagInfo]);
+  // creator:<name> finds a creator's posts by any of their names.
+  const creatorList = useLibrary(s => s.creators);
+  const creatorNames = useMemo(() => {
+    const byId = new Map(creatorList.map(c => [c.id, [c.name, ...c.aliases]]));
+    return (post: SavedPost) => (post.creatorId ? byId.get(post.creatorId) ?? [] : []);
+  }, [creatorList]);
+  // A saved view or smart shelf being applied comes in the navigation's state: changing the address remounts
+  // this page (Shell keys it by address), so it starts with the view already applied.
+  const arriving = views.find(v => v.id === (location.state as { applyView?: string } | null)?.applyView);
+  const [appliedId, setAppliedId] = useState<string | null>(arriving?.id ?? null);
 
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(arriving?.filter.search ?? "");
   const [sharing, setSharing] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem(storageKey("lib-view")) as ViewMode) || "grid");
   const [sort, setSort] = useState<SortMode>(() => {
@@ -53,6 +67,8 @@ export default function LibraryPage() {
   if (!params.postId) lastListWasFeed = location.pathname === "/";
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [addLink, setAddLink] = useState(false);
+  const [editingRules, setEditingRules] = useState(false);
+  const [searchHelp, setSearchHelp] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
 
   // Unfiled links ("other", "uncategorized") can be shown grouped by website, to file a whole site at once.
@@ -93,7 +109,7 @@ export default function LibraryPage() {
   const applyView = (view: SavedView) => {
     setQ(view.filter.search ?? "");
     setAppliedId(view.id);
-    navigate(viewPath(view.filter));
+    navigate(viewPath(view.filter), { state: { applyView: view.id } });
   };
   // Existing sidebar/bookmark links retain their supported entry point. Restore
   // visible controls, then use precisely the ordinary URL filtering path.
@@ -101,7 +117,7 @@ export default function LibraryPage() {
     const view = views.find(v => v.id === viewParam);
     if (view) {
       setQ(view.filter.search ?? ""); setAppliedId(view.id);
-      navigate(viewPath(view.filter), { replace: true });
+      navigate(viewPath(view.filter), { replace: true, state: { applyView: view.id } });
     }
   }, [viewParam, views, navigate]);
 
@@ -115,7 +131,8 @@ export default function LibraryPage() {
     return { kind: "all" as const };
   }, [params, statusParam, platformParam, location.pathname]);
   const criteria = viewCriteria(filter, q);
-  const viewModified = savedView && JSON.stringify(viewCriteria(savedView.filter)) !== JSON.stringify(criteria);
+  // A smart shelf's flag isn't a criterion: only its search and filter count as a change.
+  const viewModified = savedView && JSON.stringify({ ...viewCriteria(savedView.filter), smart: undefined }) !== JSON.stringify({ ...criteria, smart: undefined });
 
   // Typing stays responsive on large libraries: filtering follows a beat
   // behind. Small libraries filter immediately (no visible lag to hide).
@@ -136,7 +153,7 @@ export default function LibraryPage() {
       case "followup": list = list.filter(p => p.followUpAt && p.status !== "archived"); break;
       case "uncategorized": list = list.filter(p => p.categories.length === 0 || p.categories.every(c => c === "uncategorized")); break;
       case "category": list = list.filter(p => p.categories.includes(categories.find(c => c.id === f.categoryId)?.name ?? f.categoryId!)); break;
-      case "tag": list = list.filter(p => p.tags.includes(f.tag!)); break;
+      case "tag": { const wanted = new Set(tags.expand(f.tag!)); list = list.filter(p => p.tags.some(t => wanted.has(t))); break; }
       case "platform": list = list.filter(p => effectivePlatform(p) === f.platform); break;
       default:
         // The feed shows new links in the strip, so its grid holds the rest of the library.
@@ -144,20 +161,21 @@ export default function LibraryPage() {
         break; // All saved includes archived records; status filters narrow it.
     }
     const parsed = parseQuery(deferredQ);
-    if (!isEmptyQuery(parsed)) list = list.filter(p => matchesQuery(p, parsed));
+    if (!isEmptyQuery(parsed)) list = list.filter(p => matchesQuery(p, parsed, tags, creatorNames));
     const sorted = [...list];
     switch (sort) {
       case "newest": sorted.sort((a, b) => b.createdAt.localeCompare(a.createdAt)); break;
       case "oldest": sorted.sort((a, b) => a.createdAt.localeCompare(b.createdAt)); break;
       case "title": sorted.sort((a, b) => (a.title || a.url).localeCompare(b.title || b.url)); break;
       case "domain": sorted.sort((a, b) => a.domain.localeCompare(b.domain)); break;
-      case "custom": sorted.sort((a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER)
-        || b.createdAt.localeCompare(a.createdAt)); break;
+      case "custom": sorted.sort(byMyOrder); break;
     }
     // Follow up is a to-do list: overdue first, then by day, whatever the sort menu says.
     if (filter.kind === "followup") return sorted.sort(byFollowUp);
     return sorted.sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
-  }, [posts, filter, deferredQ, sort, categories, feed]);
+  }, [posts, filter, deferredQ, sort, categories, feed, tags, creatorNames]);
+  // How the search was read, as chips under the search box.
+  const readBack = useMemo(() => describeQuery(parseQuery(deferredQ)), [deferredQ]);
   const shelfName = filter.kind === "category" ? categories.find(c => c.id === filter.categoryId)?.name ?? filter.categoryId : "";
   const unfiledView = filter.kind === "uncategorized" || shelfName === "other" || shelfName === "uncategorized";
   // Any shelf can be grouped by website (a big shelf reads better a site at a time); on a shelf,
@@ -217,8 +235,8 @@ export default function LibraryPage() {
           <div className="relative min-w-[180px] flex-1 max-w-[340px]">
             <Search size={13} className="absolute top-1/2 left-3 -translate-y-1/2 text-[var(--faint)]" />
             <input ref={searchRef} className="input pl-8" placeholder="Search… ( / )" value={q} onChange={e => setQ(e.target.value)}
-              aria-describedby="search-hint" title="Operators: site:example.com  #tag  is:unread|later|favorite|due|often|gone|unfiled  shelf:travel  in:&quot;Folder&quot;" />
-            <span id="search-hint" className="sr-only">Supports site:, #tag, is:unread, is:later, is:favorite, is:due, is:often, is:gone, shelf: and in: folder filters.</span>
+              aria-describedby="search-hint" title="Operators: site:example.com  #tag  is:unread|later|favorite|due|often|gone|unfiled|reviewed  shelf:travel  in:&quot;Folder&quot;  no:notes  saved:7d  a or b  -word  &quot;a phrase&quot;  ( … )" />
+            <span id="search-hint" className="sr-only">Supports site:, #tag, is:unread, is:later, is:favorite, is:due, is:often, is:gone, is:reviewed, shelf:, in: folder, no: and has: for empty fields, saved: and opened: dates, or, a leading minus to leave out, quoted phrases and brackets.</span>
           </div>
           {(filter.kind === "category" || savedView) && filtered.length > 0 && (
             <button className="btn" onClick={() => setSharing(true)} title="Download these links as one page to send or put online">
@@ -229,7 +247,10 @@ export default function LibraryPage() {
             name={savedView ? savedView.name : categories.find(c => c.id === filter.categoryId)?.name ?? "Shelf"} />}
           <SavedViews criteria={criteria} onApply={applyView} />
           <button className="btn" onClick={() => { setQ(""); setAppliedId(null); navigate(feed ? "/" : "/library"); }}>Clear search and filters</button>
-          {savedView && <span className="max-w-full break-words text-xs text-[var(--dim)]">{savedView.name}{viewModified ? " — modified" : " — applied"}</span>}
+          {savedView && <span className="max-w-full break-words text-xs text-[var(--dim)]">{savedView.filter.smart ? "Smart shelf: " : ""}{savedView.name}{viewModified ? " — modified" : " — applied"}</span>}
+          {savedView?.filter.smart && <button className="btn" onClick={() => setEditingRules(true)}><Zap size={13} /> Edit rules</button>}
+          {editingRules && savedView && <SmartShelfEditor view={savedView} onClose={() => setEditingRules(false)}
+            onSaved={() => { const view = useLibrary.getState().views.find(v => v.id === savedView.id); if (view) setQ(view.filter.search ?? ""); }} />}
           {siteView && <button className={"btn" + (bySite ? " btn-on" : "")} aria-pressed={bySite} onClick={() => setBySite(v => !v)}
             title={unfiledView ? "Group these links by website, to move a whole site onto a shelf at once"
               : "Group this shelf's links by website, to see each site together or move a whole site to another shelf"}>
@@ -252,6 +273,22 @@ export default function LibraryPage() {
             ))}
           </div>
         </div>
+
+        {readBack.length > 0 && <div className="search-read" aria-label="How the search is read">
+          <span className="search-read__label">Searching for</span>
+          {readBack.map((part, i) => <span key={i} className="chip">{part}</span>)}
+          <button type="button" className="text-link" aria-expanded={searchHelp} onClick={() => setSearchHelp(v => !v)}>Search help</button>
+        </div>}
+        {searchHelp && <dl className="search-help" aria-label="Search help">
+          <dt>a or b</dt><dd>either one</dd>
+          <dt>-word</dt><dd>leave out links with that whole word (also -#tag, -site:x.com, -is:archived)</dd>
+          <dt>"two words"</dt><dd>exactly that phrase</dd>
+          <dt>( … )</dt><dd>a group, as in (#bread or #rye) -video</dd>
+          <dt>no:notes</dt><dd>empty: notes, tags, shelf, description, picture, title, copy (has: for the opposite)</dd>
+          <dt>saved:7d · saved:&gt;2026-10-01</dt><dd>saved in the last 7 days, after a day, before one (&lt;) or between two (2026-10-01..2026-10-20); opened: the same</dd>
+          <dt>site: #tag shelf: in: is:</dt><dd>a website, a tag, a shelf, a browser folder, a state (new, later, favorite, reviewed, unfiled, due…)</dd>
+          <dt>creator:ana</dt><dd>posts by a creator, by any of their names</dd>
+        </dl>}
 
         {demo && <div role="status" className="panel mb-4 p-3 text-[.82rem] text-[var(--amber)]">
           Sample library — these examples are not your imported content and are not saved to SQLite.
@@ -319,7 +356,8 @@ export default function LibraryPage() {
       </div>
 
       {/* overlays */}
-      <BulkBar ids={filtered.filter(p => selected.has(p.id)).map(p => p.id)} onClear={() => setSelected(new Set())} />
+      <BulkBar ids={filtered.filter(p => selected.has(p.id)).map(p => p.id)} onClear={() => setSelected(new Set())}
+        onUndoable={(message, undo) => setMoved({ message, undo })} />
       {drawerPost && <PostDrawer post={drawerPost} onClose={() => {
         // Opened straight into a link (a new tab, the Save window): there is no page to go back to.
         if (window.history.length > 1) navigate(-1);

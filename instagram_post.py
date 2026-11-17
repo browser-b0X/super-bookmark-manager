@@ -8,6 +8,10 @@ own Add window, which sends them here with the save.
 
 None of it is trusted: every field is type-checked and capped, and only
 https picture addresses on Instagram's own picture hosts are ever fetched.
+
+With the browser extension (v0.4.0) the Save window also uploads the pictures and
+the video the tab fetched, and `files` names them: picture ids by address, and the
+video's id or why it is missing. The copy is then made from those files.
 """
 
 import re
@@ -21,7 +25,9 @@ _POST_HOSTS = frozenset({"www.instagram.com", "instagram.com", "m.instagram.com"
 _POST_PATH = re.compile(r"/(?:[A-Za-z0-9._]{1,30}/)?(p|reel|reels|tv)/([A-Za-z0-9_-]{5,64})/?")
 _PICTURE_SUFFIXES = (".cdninstagram.com", ".fbcdn.net")
 _PICTURE_SCHEMES = ("https",)                     # tests point both at their own loopback host
-_FIELDS = {"caption", "author", "handle", "takenAt", "pictures", "video"}
+_FIELDS = {"caption", "author", "handle", "takenAt", "pictures", "video", "files"}
+_FILE_ID = re.compile(r"[0-9a-f]{64}")
+_VIDEO_MISSING = ("", "too_large", "unavailable", "not_on_page")
 
 
 class PostDataError(ValueError):
@@ -88,4 +94,26 @@ def parse(url, data):
         pass
     post = x_post.Post(id=code, text=text["caption"][:5000].strip(), name=text["author"][:200].strip(), handle=handle,
                        created=created, site="Instagram", link=canonical(code))
+    files(data, kept[:MAX_PICTURES])
     return post, kept[:MAX_PICTURES], video
+
+
+def is_file_id(value):
+    """An upload's id: the SHA-256 of its bytes, in hex."""
+    return isinstance(value, str) and _FILE_ID.fullmatch(value) is not None
+
+
+def files(data, pictures):
+    """{"pictures": {address: id}, "video": id, "too_large", "unavailable", "not_on_page" or ""}: the uploads the Save window
+    named for this post's pictures (only addresses the post has) and video. Raises PostDataError."""
+    value = data.get("files", {"pictures": {}, "video": ""}) if isinstance(data, dict) else None
+    if not isinstance(value, dict) or set(value) != {"pictures", "video"} or not isinstance(value["pictures"], dict):
+        raise PostDataError("files must name pictures and the video")
+    named = value["pictures"]
+    if len(named) > MAX_PICTURES or any(address not in pictures or not isinstance(upload, str) or not _FILE_ID.fullmatch(upload)
+                                        for address, upload in named.items()):
+        raise PostDataError("files must be uploads of this post's pictures")
+    video = value["video"]
+    if not isinstance(video, str) or not (video in _VIDEO_MISSING or _FILE_ID.fullmatch(video)):
+        raise PostDataError("the video must be an upload or why it is missing")
+    return {"pictures": dict(named), "video": video}

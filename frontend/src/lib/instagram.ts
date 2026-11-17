@@ -17,6 +17,13 @@ export const instagramCode = remembered((url: string): string | null => {
 
 export const isInstagramPost = (url: string) => instagramCode(url) !== null;
 
+/** Files the extension handed over from the tab and the Save window uploaded: picture ids by address, and the
+ *  video's id, or why it is missing ("too_large", "unavailable"; "" when none was asked for). */
+export interface InstagramFiles {
+  pictures: Record<string, string>;
+  video: string;
+}
+
 /** What the bookmark button reads on an open Instagram post. The server checks it all again. */
 export interface InstagramData {
   caption: string;
@@ -25,6 +32,8 @@ export interface InstagramData {
   takenAt: string;
   pictures: string[];
   video: boolean;
+  /** Only from the Save window itself, never from a message. */
+  files?: InstagramFiles;
 }
 
 const PICTURE_HOST = /(^|\.)(cdninstagram\.com|fbcdn\.net)$/i;

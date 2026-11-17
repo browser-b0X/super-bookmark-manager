@@ -19,11 +19,11 @@ export default function SocialPostsSettings() {
       <table className="social-kept mt-2 w-full text-[.74rem]" aria-label="What social posts keep">
         <thead><tr><th scope="col">Site</th><th scope="col">Text and pictures</th><th scope="col">Video</th></tr></thead>
         <tbody>
-          <tr><th scope="row">X</th><td>Text, photos</td><td><span className="kept-yes">Saved</span> up to 50 MB</td></tr>
-          <tr><th scope="row">TikTok</th><td>Caption, author, cover</td><td>{helper?.installed ? <span className="kept-yes">Saved with the helper</span> : <span className="kept-opt">With the video helper below</span>}</td></tr>
+          <tr><th scope="row">X</th><td>Text, photos</td><td><span className="kept-yes">Saved</span> up to 50 MB, or up to 2 GB with “Keep large videos and audio”</td></tr>
+          <tr><th scope="row">TikTok</th><td>Cover, author; the caption with the video helper</td><td>{helper?.installed ? <span className="kept-yes">Saved with the helper</span> : <span className="kept-opt">With the video helper below</span>}</td></tr>
           <tr><th scope="row">Reddit</th><td>Title, text, picture, link</td><td>{helper?.installed ? <span className="kept-yes">Saved with the helper</span> : <span className="kept-opt">With the video helper below</span>}</td></tr>
-          <tr><th scope="row">Instagram</th><td>Caption, author, up to 10 pictures, from the post open in your browser (bookmark button)</td>
-            <td><span className="kept-no">Cover picture only</span> — the video needs the browser extension (v0.4.0)</td></tr>
+          <tr><th scope="row">Instagram</th><td>Caption, author, up to 10 pictures, from the post open in your browser (extension or bookmark button)</td>
+            <td><span className="kept-yes">Saved</span> up to 50 MB with the extension, from the open post; the bookmark button keeps the cover picture</td></tr>
         </tbody>
       </table>
       {helper?.busy ? (

@@ -43,10 +43,10 @@ is set once in `packaging/release_paths.py` (`VERSION`).
 .\.venv\Scripts\python.exe packaging/build_installer.py
 ```
 
-The standalone output is `dist-standalone-v0.3.0/SuperBookmarkManager/SuperBookmarkManager.exe`
+The standalone output is `dist-standalone-v0.4.0/SuperBookmarkManager/SuperBookmarkManager.exe`
 plus its `_internal/` folder. Keep them together. Python and Telethon are bundled;
 end users need no system Python. The build includes project/third-party notices and
-generates `dist-standalone-v0.3.0/build-receipt.json` with hashes of every payload file.
+generates `dist-standalone-v0.4.0/build-receipt.json` with hashes of every payload file.
 
 Brand artwork lives in `frontend/public/brand-logo.svg` (the jar, one even line);
 `frontend/public/favicon.svg` is the same drawing on a dark tile, the icon design.
@@ -65,7 +65,7 @@ The installer wrapper verifies the receipt and current source frontend/assets be
 calling Inno Setup. It refuses changed or missing files. A receipt proves build-input
 integrity, not behavioral acceptance: run synthetic runtime tests before release.
 The compiler is discovered in the standard per-user/system location or on PATH.
-Output: `dist-installer-v0.3.0/SuperBookmarkManager-Setup.exe` and its `.sha256` file.
+Output: `dist-installer-v0.4.0/SuperBookmarkManager-Setup.exe` and its `.sha256` file.
 
 The per-user installer needs no elevation, offers an optional Desktop shortcut and
 Telegram Settings launch, and preserves user data on uninstall. Its AppId, install
@@ -139,7 +139,7 @@ py -3.12 -B packaging/tests/test_release_safety.py
 $env:SBM_TEST_PYTHON=(Resolve-Path .venv/Scripts/python.exe).Path
 $env:SBM_TEST_PLAYWRIGHT='C:/path/to/disposable/node_modules/playwright'
 node packaging/tests/runtime_acceptance.mjs
-node packaging/tests/runtime_acceptance.mjs (Resolve-Path dist-standalone-v0.3.0/SuperBookmarkManager/SuperBookmarkManager.exe).Path
+node packaging/tests/runtime_acceptance.mjs (Resolve-Path dist-standalone-v0.4.0/SuperBookmarkManager/SuperBookmarkManager.exe).Path
 ```
 
 Use an absolute executable argument. The runtime test creates synthetic profiles,
@@ -183,6 +183,6 @@ The simulation does not claim a separate-machine/VM test or byte-for-byte identi
 builds across machines. No signing identity is configured; release candidates are unsigned.
 
 For a subsequent candidate without replacing an earlier one, set
-`$env:SBM_BUILD_CANDIDATE="v0.3.0-r2"` before both build commands. Only
-`v0.3.0` or `v0.3.0-rN` (positive integer) is accepted; outputs and compiler
+`$env:SBM_BUILD_CANDIDATE="v0.4.0-r2"` before both build commands. Only
+`v0.4.0` or `v0.4.0-rN` (positive integer) is accepted; outputs and compiler
 scratch paths use that suffix. Clear the variable to use the initial candidate paths.

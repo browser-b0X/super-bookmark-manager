@@ -114,8 +114,16 @@ def isolate_routes():
         return jsonify(ok=True, providers=[], ready=[], available=False)
     # Saved copies: the app asks once at startup whether the server makes them.
     # Answer "no" so nothing is queued; every other /api/archive request stays blocked.
+    # Settings asks whether "Keep large videos and audio" is on (v0.4.0): off here, with the cap it would keep.
+    if request.path == "/api/archive/large-videos" and request.method == "GET":
+        return jsonify(ok=True, on=False, limit=2147483648, cap=52428800)
     if request.path == "/api/archive" and request.method == "GET" and not request.args:
         return jsonify(ok=True, enabled=False, count=0, bytes=0)
+    # Each tab reports the links it hasn't saved yet, and Settings asks about Claude Desktop (v0.4.0): not connected here.
+    if request.path == "/api/library/pending" and request.method == "POST":
+        return jsonify(ok=True, connected=False, change=None, suggestions=0, version="0")
+    if request.path == "/api/claude-desktop" and request.method == "GET":
+        return jsonify(ok=True, connected=False, createdAt="", lastUsedAt="", changes=[], suggestions=[])
     if request.path.startswith("/api/") and (request.method, request.path) not in (
             ("GET", "/api/library"), ("POST", "/api/library"), ("GET", "/api/stats")):
         BLOCKED.append("unexpected API " + request.method + " " + request.path)

@@ -34,14 +34,17 @@ const failures = [];
 async function check(name, run) {
   try { await run(); console.log(`PASS ${name}`); } catch (error) { failures.push(name); console.error(`FAIL ${name}: ${error.message.split('\n').slice(0, 6).join(' | ')}`); }
 }
+// Only post 7 is a favourite: Home's throwback picks a favourite by the day (lib/rediscover.ts), and a second one made
+// this test pass or fail with the date (189 days of 366).
 const post = (n, changes = {}) => ({ id: `nav-${n}`, url: `https://example.org/${n}`, source: 'manual', platform: 'web', domain: 'example.org',
   status: n <= 3 ? 'inbox' : 'reference', title: `Synthetic link ${n}`, categories: [n % 2 ? 'travel' : 'technology'], tags: [], projectIds: [],
-  favorite: n === 5, createdAt: `2026-10-0${n}T10:00:00Z`, updatedAt: `2026-10-0${n}T10:00:00Z`, metadataStatus: 'enriched', ...changes });
+  favorite: false, createdAt: `2026-10-0${n}T10:00:00Z`, updatedAt: `2026-10-0${n}T10:00:00Z`, metadataStatus: 'enriched', ...changes });
 try {
   let up = false;
   for (let i = 0; i < 150 && !up; i++) { try { up = (await fetch(base + '/api/stats')).ok; } catch {} if (!up) await new Promise(r => setTimeout(r, 100)); }
   assert.ok(up, 'server did not start: ' + serverLog.slice(-400));
-  const eightMonths = new Date(); eightMonths.setMonth(eightMonths.getMonth() - 8);
+  // From the 15th, which every month has: 8 months before 30 October is "30 February", which rolls over into March.
+  const eightMonths = new Date(); eightMonths.setDate(15); eightMonths.setMonth(eightMonths.getMonth() - 8);
   const posts = [...[1, 2, 3, 4, 5, 6].map(n => post(n, n === 6 ? { title: 'Hedgerow walk notes' } : {})),
     post(7, { title: 'The quiet joy of slow travel', favorite: true, createdAt: eightMonths.toISOString(), updatedAt: eightMonths.toISOString() })];
   assert.deepEqual((await (await fetch(base + '/api/library', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ posts, deletedUrls: [] }) })).json()).rejected, []);

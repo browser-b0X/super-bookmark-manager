@@ -12,10 +12,10 @@ py -3.12 packaging/build_standalone.py
 py -3.12 packaging/build_installer.py
 ```
 
-Outputs: `dist-standalone-v0.3.0/SuperBookmarkManager/`,
-`dist-installer-v0.3.0/SuperBookmarkManager-Setup.exe` and `.exe.sha256`.
+Outputs: `dist-standalone-v0.4.0/SuperBookmarkManager/`,
+`dist-installer-v0.4.0/SuperBookmarkManager-Setup.exe` and `.exe.sha256`.
 
-Version: 0.3.0 (set in `packaging/release_paths.py`). Display name, Start Menu shortcut, optional Desktop shortcut and
+Version: 0.4.0 (set in `packaging/release_paths.py`). Display name, Start Menu shortcut, optional Desktop shortcut and
 uninstall entry: **SuperBookmarks** (shown name since v0.3.0; folders, AppId and the exe keep the old spelling). Executable: `SuperBookmarkManager.exe`.
 Program files go to `%LOCALAPPDATA%\Programs\SuperBookmarkManager\`. The stable AppId
 upgrades earlier installs in place; an old v0.1.x program folder
@@ -43,6 +43,6 @@ server before reinstall/uninstall. Signing is not performed; no signing identity
 is configured. Current-machine checks do not prove cross-machine compatibility.
 
 For a subsequent candidate without replacing an earlier one, set
-`$env:SBM_BUILD_CANDIDATE="v0.3.0-r2"` before both build commands. Only
-`v0.3.0` or `v0.3.0-rN` (positive integer) is accepted; outputs and compiler
+`$env:SBM_BUILD_CANDIDATE="v0.4.0-r2"` before both build commands. Only
+`v0.4.0` or `v0.4.0-rN` (positive integer) is accepted; outputs and compiler
 scratch paths use that suffix. Clear the variable to use the initial candidate paths.

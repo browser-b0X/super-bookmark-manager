@@ -15,6 +15,7 @@ export function viewCriteria(filter: LibraryFilter, search = filter.search ?? ""
   if (result.kind === "category") result.categoryId = filter.categoryId;
   if (result.kind === "tag") result.tag = filter.tag;
   if (result.kind === "platform") result.platform = filter.platform;
+  if (filter.smart) result.smart = true;
   return result;
 }
 

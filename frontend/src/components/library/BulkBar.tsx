@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import AiReview from "./AiReview";
-import { fetchAiStatus } from "./AiProviders";
-import { Archive, FileDown, RefreshCw, Share2, Sparkles, Tag, Trash2, X } from "lucide-react";
+import { fetchAiStatus, notAnswering } from "./AiProviders";
+import { Archive, FileDown, Pencil, RefreshCw, Share2, Sparkles, Tag, Trash2, X } from "lucide-react";
+import BulkEditDialog from "./BulkEditDialog";
 import ShareDialog from "./ShareDialog";
 import { useLibrary } from "../../store/library";
 import { STATUS_META, STATUS_ORDER } from "../../lib/ui";
 import { enrichMany } from "../../lib/metadataEnrichment";
 import { useCopyAvailability } from "../../lib/copyAvailability";
 import { saveCopies } from "../../lib/savedCopies";
+import { checkLostCopies, hasCopy, useLostCopies } from "../../lib/lostCopies";
 
 const items = (n: number) => `${n} item${n === 1 ? "" : "s"}`;
 
-export default function BulkBar({ ids, onClear }: { ids: string[]; onClear: () => void }) {
+export default function BulkBar({ ids, onClear, onUndoable }: { ids: string[]; onClear: () => void; onUndoable?: (message: string, undo: () => void) => void }) {
   const posts = useLibrary(s => s.posts);
   const categories = useLibrary(s => s.categories);
   const bulkPatch = useLibrary(s => s.bulkPatch);
@@ -23,15 +25,22 @@ export default function BulkBar({ ids, onClear }: { ids: string[]; onClear: () =
   const [working, setWorking] = useState(false);
   const [tidying, setTidying] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [aiReady, setAiReady] = useState(false);
+  const [aiDown, setAiDown] = useState<string[]>([]);
   const copiesEnabled = useCopyAvailability(s => s.enabled);
-  const withoutCopy = ids.filter(id => posts.find(x => x.id === id)?.archiveStatus !== "saved").length;
+  const lostCopies = useLostCopies(s => s.keys);
+  const withoutCopy = ids.filter(id => { const post = posts.find(x => x.id === id); return !post || !hasCopy(post, lostCopies); }).length;
   const dialog = useRef<HTMLDialogElement>(null);
+
+  // Copies a restored backup's links point at may not be on this computer (see lostCopies).
+  const selecting = ids.length > 0;
+  useEffect(() => { if (selecting && copiesEnabled) void checkLostCopies(useLibrary.getState().posts); }, [selecting, copiesEnabled]);
 
   useEffect(() => {
     if (!tidying) return;
     dialog.current?.showModal();
-    void fetchAiStatus().then(s => setAiReady(!!s?.available));
+    void fetchAiStatus().then(s => { setAiReady(!!s?.available); setAiDown(notAnswering(s)); });
   }, [tidying]);
 
   if (!ids.length) return null;
@@ -86,6 +95,13 @@ export default function BulkBar({ ids, onClear }: { ids: string[]; onClear: () =
         {categories.filter(c => !c.archived).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
       <button className="btn" onClick={addTag}><Tag size={13} /> Tag</button>
+      <button className="btn" onClick={() => setEditing(true)} title="Add, remove or replace tags and shelves, or set the status, on all of them"><Pencil size={13} /> Edit…</button>
+      {editing && <BulkEditDialog ids={ids} onClose={() => setEditing(false)} onDone={records => {
+        if (!records.length) return;
+        const message = `Changed ${items(records.length)}`;
+        logActivity("organize", message);
+        onUndoable?.(message, () => { useLibrary.getState().undoEdit(records); });
+      }} />}
       <button className="btn" onClick={() => setTidying(true)} disabled={working} title="Suggest shelves, tags and clean titles to review">
         <Sparkles size={13} /> Tidy with AI
       </button>
@@ -103,7 +119,11 @@ export default function BulkBar({ ids, onClear }: { ids: string[]; onClear: () =
         posts={ids.map(id => posts.find(x => x.id === id)).filter((p): p is NonNullable<typeof p> => !!p)} onClose={() => setSharing(false)} />}
       {confirming ? (
         <>
-          <button className="btn btn-danger" onClick={() => { deletePosts(ids); onClear(); }}>Confirm</button>
+          <button className="btn btn-danger" onClick={() => {
+            const entry = deletePosts(ids);
+            onClear();
+            if (entry) onUndoable?.(`Removed ${items(ids.length)}. They're kept in Settings → Clean up & undo → Removed links.`, () => { useLibrary.getState().undoHistory(entry); });
+          }}>Confirm</button>
           <button className="btn" onClick={() => setConfirming(false)}>Cancel</button>
         </>
       ) : (
@@ -115,7 +135,7 @@ export default function BulkBar({ ids, onClear }: { ids: string[]; onClear: () =
         <div className="flex items-center justify-end pb-2">
           <button className="icon-btn" aria-label="Close" onClick={() => dialog.current?.close()}><X size={14} /></button>
         </div>
-        <AiReview aiReady={aiReady} selectedIds={ids} onDone={() => dialog.current?.close()} />
+        <AiReview aiReady={aiReady} aiDown={aiDown} selectedIds={ids} onDone={() => dialog.current?.close()} />
       </dialog>}
     </div>
   );

@@ -1,16 +1,21 @@
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
-import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {readFile,writeFile} from 'node:fs/promises';
 import path from 'node:path';
-const root=process.cwd();
-const dist=path.resolve(process.argv[2] || 'frontend/dist');
-const phase=process.argv[3] || 'green';
-const ev=path.join(root,'.verify/telegram-setup-fix-20261001');
-await mkdir(ev,{recursive:true});
-const {chromium}=createRequire(import.meta.url)(process.env.TELEGRAM_UI_PLAYWRIGHT_MODULE || 'playwright');
+import {mkdtemp} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {fileURLToPath} from 'node:url';
+// Setting up Telegram in one visit (Settings > Telegram): saving the developer credentials enables
+// Connect on the same page, Connect opens the focused phone field without any login request, the
+// portal link is right, Clear and a failed save leave Connect off. Runs on the built app with every
+// request answered here (no server, no network), at desktop and phone width.
+const dist=fileURLToPath(new URL('../dist/',import.meta.url));
+const phase='green';
+const ev=await mkdtemp(path.join(tmpdir(),'sbm-telegram-handoff-'));
+const {chromium}=createRequire(import.meta.url)(process.env.C4_PLAYWRIGHT_MODULE || 'playwright');
 const origin='http://127.0.0.1:58947';
 const report={phase,checks:[],denied:[],errors:[],status:'FAIL'};
-const browser=await chromium.launch({headless:true,channel:'msedge'});
+const browser=await chromium.launch({headless:true});
 try{
  for(const width of [1365,320]){
  let configured=false,authPosts=0,configPosts=0,mode='ok';
@@ -21,6 +26,13 @@ try{
  if(url.origin!==origin){report.denied.push(url.origin);return route.abort();}
  if(url.pathname==='/api/library')return route.fulfill({json:{posts:[],deletedUrls:[],legacyRows:[]}});
  if(url.pathname==='/api/stats')return route.fulfill({json:{total:0}});
+ // Quiet start-up questions, answered "nothing here".
+ if(url.pathname==='/api/ai/providers')return route.fulfill({json:{ok:true,providers:[],ready:[],available:false}});
+ if(url.pathname==='/api/archive/large-videos')return route.fulfill({json:{ok:true,on:false,limit:2147483648,cap:52428800}});if(url.pathname==='/api/archive')return route.fulfill({json:{ok:true,enabled:false,count:0,bytes:0}});
+ if(url.pathname==='/api/extension')return route.fulfill({json:{ok:true,connections:[],code:null}});
+ if(url.pathname==='/api/library/pending')return route.fulfill({json:{ok:true,connected:false,change:null,suggestions:0,version:'0'}});
+ if(url.pathname==='/api/claude-desktop')return route.fulfill({json:{ok:true,connected:false,createdAt:'',lastUsedAt:'',changes:[],suggestions:[]}});
+ if(url.pathname.startsWith('/fonts/'))return route.fulfill({status:404,body:''});
  if(url.pathname==='/api/telegram/config'){
  if(method==='POST'){
  configPosts++;

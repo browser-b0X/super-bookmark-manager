@@ -262,11 +262,39 @@ def wait_idle(timeout=30.0) -> bool:
     return False
 
 
-def fetch_video(url, limit, timeout):
+DETAILS_LIMIT = 4 * 1024 * 1024
+
+
+def _post_details(path):
+    """The caption and the author's name from the post details the helper wrote (yt-dlp's info JSON), or {}: site text,
+    type-checked and shortened here, escaped by the layout."""
+    try:
+        if os.path.islink(path) or os.path.getsize(path) > DETAILS_LIMIT:
+            return {}
+        with open(path, encoding="utf-8") as handle:
+            info = json.load(handle)
+    except (OSError, ValueError, RecursionError):
+        return {}
+    if not isinstance(info, dict):
+        return {}
+    found = {}
+    if isinstance(info.get("description"), str) and info["description"].strip():
+        found["caption"] = info["description"].strip()[:5000]
+    # The display name: yt-dlp's TikTok "channel" (its "uploader" is the handle, which the address already gives).
+    for key in ("channel", "creator"):
+        if isinstance(info.get(key), str) and info[key].strip():
+            found["name"] = info[key].strip()[:200]
+            break
+    return found
+
+
+def fetch_video(url, limit, timeout, details=None):
     """The MP4 of a TikTok video as bytes, fetched by the helper. Raises HelperError.
 
     `url` must already be a checked TikTok address; it is passed after "--" so
-    it can never be read as an option.
+    it can never be read as an option. `details`, a dict when given, gets the
+    post's "caption" and "name" from the details the helper writes beside the
+    video (no other request), even when the video turns out too large.
     """
     if not installed():
         raise HelperError("helper_missing")
@@ -280,6 +308,7 @@ def fetch_video(url, limit, timeout):
                    "--no-part", "--no-progress", "--quiet", "--no-warnings", "--socket-timeout", "15",
                    "--use-extractors", "default,-generic", "--max-filesize", f"{megabytes}M",
                    "-f", "b[ext=mp4][vcodec^=h264]/b[ext=mp4][vcodec^=avc]/b[ext=mp4]",
+                   *(["--write-info-json"] if details is not None else []),
                    "-o", os.path.join(work, "video.%(ext)s"), "--", url]
         try:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
@@ -294,6 +323,8 @@ def fetch_video(url, limit, timeout):
         except (OSError, subprocess.SubprocessError):
             _stop_tree(process)
             raise HelperError("helper_failed") from None
+        if details is not None:
+            details.update(_post_details(os.path.join(work, "video.info.json")))
         path = os.path.join(work, "video.mp4")
         if process.returncode != 0 or os.path.islink(path) or not os.path.isfile(path):
             # yt-dlp exits 0 and writes nothing when --max-filesize stops it.

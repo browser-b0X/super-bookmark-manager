@@ -60,8 +60,19 @@ def validate_backup(raw):
     except ValueError as exc:
         raise BackupError("Invalid backup export timestamp.") from exc
     data = document["library"]
-    if not isinstance(data, dict) or set(data) != {"posts", "tombstones", "categories"} or not all(isinstance(data[k], list) for k in data):
+    # Saved views since v0.4.0, tags and creators ("docs") since its phase 6; earlier backups have none.
+    if (not isinstance(data, dict) or set(data) - {"views", "docs"} != {"posts", "tombstones", "categories"}
+            or not all(isinstance(data[k], list) for k in data if k != "docs") or not isinstance(data.get("docs", {}), dict)):
         raise BackupError("Backup requires records, deletion markers and categories.")
+    try:
+        storage._validate_views({"views": data.get("views", [])})
+        if len({view["id"] for view in data.get("views", [])}) != len(data.get("views", [])):
+            raise storage.LibraryValidationError("Duplicate saved view.")
+        storage._validate_docs({"docs": data.get("docs", {})})
+        if any(len({d["id"] for d in items}) != len(items) for items in data.get("docs", {}).values()):
+            raise storage.LibraryValidationError("Duplicate tag or creator.")
+    except storage.LibraryValidationError as exc:
+        raise BackupError(str(exc)) from exc
     if type(document["recordCount"]) is not int or document["recordCount"] != len(data["posts"]):
         raise BackupError("Backup record count does not match its contents.")
     tombstones = data["tombstones"]
@@ -107,10 +118,14 @@ def export_backup():
 
 def preview_backup(raw):
     d = validate_backup(raw)
+    try:
+        saved_first = _has_content(storage.get_backup_library())
+    except storage.LibraryValidationError:        # links still coming in from Telegram: restore_backup says so
+        saved_first = False
     return {"version": d["version"], "exportedAt": d["exportedAt"], "recordCount": d["recordCount"],
             "deletedCount": len(d["library"]["tombstones"]), "sha256": d["sha256"], "mode": "replace",
             # Links in the library now, which the restore replaces (saved first; see restore_backup).
-            "currentCount": storage.live_count()}
+            "currentCount": storage.live_count(), "savedFirst": saved_first}
 
 
 def _safety_copy(library):
@@ -138,10 +153,15 @@ def _safety_copy(library):
     raise BackupError("Could not save the current library before restoring; nothing was changed.")
 
 
+def _has_content(library):
+    """What a restore would take away. Not shelves: every library has them, so an empty one would get a file too."""
+    return bool(library["posts"] or library["tombstones"] or library.get("views") or any(library.get("docs", {}).values()))
+
+
 def restore_backup(raw, confirmed_sha256):
     """Put a backup's links, deletion markers and shelves into the library in use.
 
-    A library that has links is saved first (see _safety_copy), so restoring is never a loss."""
+    A library that holds anything but shelves is saved first (see _safety_copy), so going back is always possible."""
     d = validate_backup(raw)
     if confirmed_sha256 != d["sha256"]:
         raise BackupError("Confirm the validated preview before restoring.")
@@ -150,7 +170,7 @@ def restore_backup(raw, confirmed_sha256):
     except storage.LibraryValidationError as exc:
         # Telegram links that Library has not saved yet would be in neither library.
         raise BackupError("Library is still saving links from Telegram. Restore once it shows them saved; nothing was changed.") from exc
-    safety = _safety_copy(current) if current["posts"] or current["tombstones"] else None
+    safety = _safety_copy(current) if _has_content(current) else None
     try:
         epoch = storage.replace_library(d["library"])
     except Exception as exc:

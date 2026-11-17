@@ -125,8 +125,9 @@ def isolate_routes():
             return jsonify(ok=False, error="Synthetic classifier unavailable"), 503
         return jsonify(ok=True, category_name="technology")
     if request.path == "/api/telegram/refresh" and request.method == "POST":
-        # The Refresh button: confirmed, plus the "keep photos and videos" switch (on by default).
-        assert request.get_json() == {"confirm": True, "media": True}
+        # The Refresh button: confirmed, plus the "keep photos, videos and audio" switch (on by default), and
+        # "retry": the button also tries large downloads that broke off earlier (v0.4.0).
+        assert request.get_json() == {"confirm": True, "media": True, "retry": True}
         record("mock-refresh")
         return jsonify(ok=True, checked=1, limit=200, malformed=0, export={"messages": [
             {"id": 81004, "type": "message", "date": "2026-09-24T12:00:00",
@@ -135,9 +136,21 @@ def isolate_routes():
         return jsonify(ok=True, providers=[], ready=[], available=False)
     # Saved copies: the app asks once at startup whether the server makes them.
     # Answer "no" so nothing is queued; every other /api/archive request stays blocked.
+    # Settings asks whether "Keep large videos and audio" is on (v0.4.0): off here, with the cap it would keep.
+    if request.path == "/api/archive/large-videos" and request.method == "GET":
+        return jsonify(ok=True, on=False, limit=2147483648, cap=52428800)
     if request.path == "/api/archive" and request.method == "GET" and not request.args:
         return jsonify(ok=True, enabled=False, count=0, bytes=0)
-    allowed = {"/api/library", "/api/enrich", "/api/stats", "/api/backup/export", "/api/backup/preview"}
+    # Settings asks which browsers have the extension paired (v0.4.0): none here.
+    if request.path == "/api/extension" and request.method == "GET":
+        return jsonify(ok=True, connections=[], code=None)
+    # Each tab reports the links it hasn't saved yet, and Settings asks about Claude Desktop (v0.4.0): not connected here.
+    if request.path == "/api/library/pending" and request.method == "POST":
+        return jsonify(ok=True, connected=False, change=None, suggestions=0, version="0")
+    if request.path == "/api/claude-desktop" and request.method == "GET":
+        return jsonify(ok=True, connected=False, createdAt="", lastUsedAt="", changes=[], suggestions=[])
+    allowed = {"/api/library", "/api/enrich", "/api/stats", "/api/backup/export", "/api/backup/preview",
+               "/api/thumbs/missing"}
     if FIREFOX:
         allowed.add("/api/import/firefox")
     if request.path.startswith("/api/") and request.path not in allowed:

@@ -42,9 +42,11 @@ tiktok_post._PICTURE_SUFFIXES = (".fixture.test",); tiktok_post._PICTURE_SCHEMES
 video_helper.RELEASE = BASE_URL + "/rel/"
 site = ControlledHTTP().__enter__()
 MP4 = b"\\x00\\x00\\x00\\x18ftypisom" + b"synthetic-mp4" * 300
-helper = ("#!" + sys.executable + "\\nimport sys\\nargs = sys.argv[1:]\\n"
+# The stand-in yt-dlp as a program this system runs (on Windows, inside pip's launcher: fake_program.py).
+from fake_program import program_bytes
+helper = program_bytes("import sys\\nargs = sys.argv[1:]\\n"
           "if args == ['--version']:\\n    print('2026.08.19'); sys.exit(0)\\n"
-          "open(args[args.index('-o') + 1].replace('%(ext)s', 'mp4'), 'wb').write(" + repr(MP4) + ")\\n").encode()
+          "open(args[args.index('-o') + 1].replace('%(ext)s', 'mp4'), 'wb').write(" + repr(MP4) + ")\\n")
 site.routes["/rel/SHA2-256SUMS"] = (200, {"Content-Type": "text/plain"}, (hashlib.sha256(helper).hexdigest() + "  " + video_helper.ASSET + "\\n").encode())
 site.routes["/rel/" + video_helper.ASSET] = (200, {"Content-Type": "application/octet-stream"}, helper)
 for path in ("/media/one?format=jpg&name=large", "/ext_tw_video_thumb/9/poster?format=jpg&name=large", "/obj/cover.jpeg"):
@@ -137,7 +139,7 @@ try {
     const kept = page.getByRole('table', { name: 'What social posts keep' });
     assert.deepEqual(await kept.locator('tbody th').allInnerTexts(), ['X', 'TikTok', 'Reddit', 'Instagram']);
     assert.match(await kept.locator('tbody tr').nth(1).innerText(), /With the video helper below/);
-    assert.match(await kept.locator('tbody tr').nth(3).innerText(), /up to 10 pictures[\s\S]*Cover picture only[\s\S]*browser extension \(v0\.4\.0\)/);
+    assert.match(await kept.locator('tbody tr').nth(3).innerText(), /up to 10 pictures[\s\S]*Saved[\s\S]*up to 50 MB with the extension, from the open post/);
   });
 
   await check('Settings gets the helper, checks its checksum and shows the version', async () => {

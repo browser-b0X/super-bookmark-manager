@@ -18,11 +18,12 @@ globalThis.innerWidth = 1400;
 const out = await build({
   stdin: {
     contents: `
-      export { useLibrary, findSavedByUrl, touchedSinceImport, updatePostInBackground, applyAutomaticCategoryInBackground } from './src/store/library';
+      export { useLibrary, byMyOrder, findSavedByUrl, touchedSinceImport, updatePostInBackground, applyAutomaticCategoryInBackground } from './src/store/library';
       export { syncLibrary, startLibraryPersistence } from './src/lib/libraryPersistence';
       export { parseWhatsAppChat } from './src/lib/whatsapp';
+      export { parseTelegramExport } from './src/lib/telegram';
       export { bookmarkPost } from './src/lib/bookmarks';
-      export { normalizeUrl, libraryUrl } from './src/lib/platform';
+      export { normalizeUrl, libraryUrl, titleFromUrl } from './src/lib/platform';
       export { parseQuery, matchesQuery } from './src/lib/librarySearch';
       export { fileName } from './src/lib/sharePage';`,
     resolveDir: fileURLToPath(new URL('../', import.meta.url)), loader: 'ts',
@@ -32,7 +33,7 @@ const out = await build({
 const lib = await import('data:text/javascript;base64,' + Buffer.from(out.outputFiles[0].text).toString('base64'));
 const { useLibrary, syncLibrary, libraryUrl } = lib;
 const fresh = useLibrary.getState();
-const reset = () => useLibrary.setState({ ...fresh, posts: [], pending: {}, deletedUrls: [], rejected: {}, purgeUrls: [], undeleteUrls: [], imports: [], syncRev: 0 }, false);
+const reset = () => useLibrary.setState({ ...fresh, posts: [], pending: {}, deletedUrls: [], rejected: {}, purgeUrls: [], purgeSeen: {}, undeleteUrls: [], imports: [], syncRev: 0 }, false);
 const check = async (name, run) => { reset(); await run(); console.log('PASS', name); };
 
 await check('a WhatsApp link already saved from a browser updates it, never a second post', () => {
@@ -56,6 +57,52 @@ await check('undoing an import keeps links the owner sorted (Keep and Later)', (
   assert.deepEqual(useLibrary.getState().undoImport('batch-1', false), { removed: 1, kept: 2 });
 });
 
+await check('undoing an import sends when each link was last changed; a link edited elsewhere since comes back', async () => {
+  const posts = [1, 2].map(n => ({ ...lib.bookmarkPost(`https://b.example/${n}`, `Link ${n}`, undefined, []), importBatchId: 'batch-2', status: 'inbox' }));
+  useLibrary.getState().importPosts(posts);
+  const [one, two] = useLibrary.getState().posts;
+  useLibrary.setState({ pending: {}, syncRev: 5 });
+  assert.deepEqual(useLibrary.getState().undoImport('batch-2', false), { removed: 2, kept: 0 });
+  const edited = { ...one, userNotes: 'edited in another tab', updatedAt: '2030-01-01T00:00:00.000Z' };
+  let sent;
+  globalThis.fetch = async (_url, init) => {
+    if (init?.method === 'POST') sent = JSON.parse(init.body);
+    return { ok: true, status: 200, json: async () => init?.method === 'POST'
+      ? { ok: true, posts: [edited], deletedUrls: [], legacyRows: [], categories: [], rev: 8, since: 5, purgedUrls: [two.url], keptUrls: [one.url], rejected: [] }
+      : { ok: true, posts: [], deletedUrls: [], legacyRows: [], categories: [], rev: 8, since: 5 } };
+  };
+  assert.equal(await syncLibrary(), true);
+  assert.deepEqual(sent.purgeSeen, { [one.url]: one.updatedAt, [two.url]: two.updatedAt });
+  const state = useLibrary.getState();
+  assert.deepEqual(state.posts.map(p => p.userNotes), ['edited in another tab']);
+  assert.deepEqual([state.purgeUrls, state.purgeSeen], [[], {}]);
+});
+
+await check('reordering inside a filtered view keeps "My order" of the links around them', () => {
+  const at = n => `2026-10-0${n}T10:00:00.000Z`;
+  // My order: A B C D E. A shelf view shows B and D only; the owner drags D above B.
+  const posts = ['A', 'B', 'C', 'D', 'E'].map((name, i) => ({ ...lib.bookmarkPost(`https://order.example/${name}`, name, undefined, []),
+    position: (i + 1) * 16, createdAt: at(i + 1) }));
+  useLibrary.setState({ posts, pending: {} });
+  const id = name => useLibrary.getState().posts.find(p => p.title === name).id;
+  const myOrder = () => [...useLibrary.getState().posts].sort(lib.byMyOrder).map(p => p.title).join('');
+  useLibrary.getState().reorderPosts([id('D'), id('B')]);
+  assert.equal(myOrder(), 'ADCBE');
+  const changed = useLibrary.getState().posts.filter(p => p.position !== posts.find(q => q.id === p.id).position).map(p => p.title);
+  assert.deepEqual(changed.sort(), ['B', 'D'], 'only the moved links change');
+  // Links never put in order (newest first after the ordered ones) keep their places too.
+  const loose = ['F', 'G', 'H'].map((name, i) => ({ ...lib.bookmarkPost(`https://order.example/${name}`, name, undefined, []), createdAt: at(9 - i) }));
+  useLibrary.setState({ posts: [...useLibrary.getState().posts, ...loose] });
+  assert.equal(myOrder(), 'ADCBEFGH');
+  useLibrary.getState().reorderPosts([id('E'), loose[2].id, loose[0].id].reverse());   // a view of E, F, H: dragged to F, H, E
+  assert.equal(myOrder(), 'ADCBFHGE', 'G, not in the view, keeps its place');
+  // Tied numbers from an older build are renumbered so the drag still shows.
+  useLibrary.setState({ posts: useLibrary.getState().posts.map(p => ({ ...p, position: 16 })) });
+  const before = myOrder();
+  useLibrary.getState().reorderPosts([id(before[1]), id(before[0])]);
+  assert.equal(myOrder(), before[1] + before[0] + before.slice(2));
+});
+
 await check('a shelf added with a renamed shelf\'s old name gets an id of its own', () => {
   const knitting = useLibrary.getState().addCategory('knitting');
   useLibrary.getState().renameCategory(knitting.id, 'yarn');
@@ -71,6 +118,32 @@ await check('links that differ only by a web app route are different links', () 
   assert.equal(lib.normalizeUrl('https://example.com/page#section'), lib.normalizeUrl('https://example.com/page'));
   useLibrary.getState().addByUrl('https://app.example.com/#/invoice/1001');
   assert.equal(lib.findSavedByUrl(useLibrary.getState().posts, 'https://app.example.com/#/invoice/2002'), undefined);
+});
+
+await check('an X post is named after who posted it on every way in, not by the number its address ends in', () => {
+  const telegram = 'https://x.com/nightbaker/status/1851200000000000003';
+  const ways = [
+    useLibrary.getState().addByUrl('https://x.com/nightbaker/status/1851200000000000001'),
+    lib.parseWhatsAppChat('12/10/2026, 21:41 - Me: https://x.com/nightbaker/status/1851200000000000002', 'Me').posts[0],
+    lib.parseTelegramExport(JSON.stringify({ type: 'saved_messages', messages: [{ id: 1, type: 'message', date: '2026-10-08T09:00:00+00:00', text: telegram,
+      text_entities: [{ type: 'link', text: telegram }] }] })).posts[0],
+    lib.bookmarkPost('https://x.com/nightbaker/status/1851200000000000004', '', undefined, []),
+  ];
+  assert.deepEqual(ways.map(p => [p.title, p.fieldSources?.title]), Array(4).fill(['@nightbaker on X', 'derived']));
+});
+
+await check('only post addresses on X and TikTok are named that way', () => {
+  for (const [url, title] of [
+    ['https://twitter.com/NightBaker/status/1851200000000000005?s=20', '@NightBaker on X'],
+    ['https://x.com/nightbaker/status/1851200000000000006/photo/1', '@nightbaker on X'],
+    ['https://x.com/i/web/status/1851200000000000007', 'X post'],
+    ['https://x.com/i/status/1851200000000000008', 'X post'],
+    ['https://www.tiktok.com/@kitchenlab/video/7412345', '@kitchenlab on TikTok'],
+    ['https://www.tiktok.com/@kitchenlab/photo/7412346', '@kitchenlab on TikTok'],
+    ['https://x.com/nightbaker', 'Nightbaker'],
+    ['https://www.instagram.com/p/CgridOne1/', 'CgridOne1'],
+    ['https://news.example.invalid/articles/1851200000000000009', '1851200000000000009'],
+  ]) assert.equal(lib.titleFromUrl(url), title, url);
 });
 
 await check('search: site: matches the site and its subdomains only; "-" excludes', () => {

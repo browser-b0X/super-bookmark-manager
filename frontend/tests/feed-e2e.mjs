@@ -56,12 +56,13 @@ try {
     const upNext = page.getByRole('region', { name: 'Up next' });
     assert.deepEqual(await upNext.getByRole('listitem').locator('b').allTextContents(), ['Story 1', 'Story 2', 'Story 3']);
     assert.match(await upNext.getByRole('link', { name: /See all 6/ }).getAttribute('href'), /\/library\/inbox$/);
-    for (const [shelf, n] of [['technology', 5], ['travel', 5]]) {
+    // Each shelf's row holds all its links, the three still waiting in the deck too (2026-11-09).
+    for (const [shelf, n] of [['technology', 8], ['travel', 8]]) {
       const row = page.getByRole('region', { name: shelf });
       assert.match(await row.innerText(), new RegExp(`${n} links`));
       assert.equal(await row.getByRole('listitem').count(), n);
     }
-    assert.equal(await page.locator('.shelf-row a[href="/library/item/f0"]').count(), 0, 'new links are not in the rows yet');
+    assert.equal(await page.getByRole('region', { name: 'technology' }).locator('a[href="/library/item/f0"]').count(), 1, 'a new link shows on its shelf while it waits');
   });
   await check('the keyboard sorts: → keeps, ← archives, ↓ later, Z undoes, Enter opens', async () => {
     await page.keyboard.press('ArrowRight');
@@ -90,7 +91,9 @@ try {
     await page.getByRole('region', { name: 'Up next' }).getByRole('button', { name: 'Keep Story 5' }).click();
     await synced();
     assert.deepEqual([await status('f2'), await status('f5')], ['reference', 'reference']);
-    assert.equal(await page.getByRole('region', { name: 'technology' }).getByRole('listitem').count(), 7, 'kept links join their shelf row');
+    assert.equal(await page.getByRole('region', { name: 'technology' }).getByRole('listitem').count(), 8, 'kept links stay on their shelf row');
+    assert.equal(await page.getByRole('region', { name: 'travel' }).getByRole('listitem').count(), 7, 'the archived one left its shelf row');
+    assert.equal(await page.locator('.shelf-row a[href="/library/item/f1"]').count(), 0);
   });
   await page.goto(base + '/library');
   await grid().first().waitFor();

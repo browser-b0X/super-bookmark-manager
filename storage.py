@@ -62,6 +62,26 @@ def init_db(path=None):
             value       INTEGER NOT NULL
         );
 
+        -- Saved views (named filters), merged per view like links; a deleted view keeps
+        -- its row with deleted_at for a while so the deletion reaches every browser.
+        CREATE TABLE IF NOT EXISTS library_views (
+            id          TEXT PRIMARY KEY,
+            document    TEXT,
+            updated_at  TEXT NOT NULL DEFAULT '',
+            deleted_at  TEXT
+        );
+
+        -- Library documents (v0.4.0): tags (parents, other names) and creators, one row per document,
+        -- merged per document like saved views; a deleted one keeps its row for a while.
+        CREATE TABLE IF NOT EXISTS library_docs (
+            kind        TEXT NOT NULL,
+            id          TEXT NOT NULL,
+            document    TEXT,
+            updated_at  TEXT NOT NULL DEFAULT '',
+            deleted_at  TEXT,
+            PRIMARY KEY (kind, id)
+        );
+
         CREATE TABLE IF NOT EXISTS library_purged (
             url         TEXT PRIMARY KEY,
             rev         INTEGER NOT NULL
@@ -412,7 +432,7 @@ _OPTIONAL_STRINGS = ("canonicalUrl", "sourceMessageId", "title", "description", 
                      "userNotes", "aiSummary", "lastOpenedAt", "metadataError", "categoryMode", "importBatchId",
                      "siteName", "author", "publishedAt", "lang", "faviconUrl", "finalUrl", "linkStatus", "enrichedAt",
                      "metadataRetryAt", "originalTitle", "archivedAt", "archiveKey", "archiveError", "followUpAt",
-                     "aiCheckedAt", "metadataTriedAt")
+                     "aiCheckedAt", "metadataTriedAt", "creatorId")
 _ENUMS = {
     "source": ("telegram", "whatsapp", "manual", "browser", "import", "api"),
     "platform": ("instagram", "x", "youtube", "github", "reddit", "tiktok", "facebook", "threads", "linkedin",
@@ -451,12 +471,14 @@ def _validate_post(post, label: str) -> str:
             raise LibraryValidationError(f"{label}.{field} must be an array of strings.")
     if "folderPath" in post and (not isinstance(post["folderPath"], list) or any(not isinstance(v, str) for v in post["folderPath"])):
         raise LibraryValidationError(f"{label}.folderPath must be an array of strings when supplied.")
-    for field in ("favorite", "pinned", "categoryReview", "archiveLimited", "archiveNoVideo", "useOften"):
+    for field in ("favorite", "pinned", "categoryReview", "archiveLimited", "archiveNoVideo", "useOften", "reviewed"):
         if field in post and not isinstance(post[field], bool):
             raise LibraryValidationError(f"{label}.{field} must be a boolean when supplied.")
     for field in ("wordCount", "readingMinutes", "httpStatus", "metadataAttempts", "position", "archiveBytes", "openCount"):
         if field in post and (type(post[field]) is not int or post[field] < 0):
             raise LibraryValidationError(f"{label}.{field} must be a non-negative integer when supplied.")
+    if "creatorId" in post and not re.fullmatch(r"[a-z0-9-]{1,64}", post["creatorId"]):
+        raise LibraryValidationError(f"{label}.creatorId is not a creator's id.")
     if "archiveKey" in post and not _ARCHIVE_KEY.fullmatch(post["archiveKey"]):
         raise LibraryValidationError(f"{label}.archiveKey is not a saved-copy key.")
     if "followUpAt" in post and not _FOLLOW_UP_DAY.fullmatch(post["followUpAt"]):
@@ -495,6 +517,259 @@ def _validate_category_ops(data):
         if names is None or set(op) != {"op", *names} or any(not isinstance(op[n], str) or not op[n].strip() for n in names):
             raise LibraryValidationError("categoryOps entries must be add/delete {name} or rename {from, to}.")
     return ops
+
+
+_VIEW_KEYS = {"id", "name", "filter", "updatedAt"}
+VIEW_LIMIT = 200
+FORGET_VIEW_DELETIONS_DAYS = 30
+
+
+_STAMP = re.compile(r"[0-9T:.+\-Z]{0,40}")
+
+
+def _stamp(value) -> bool:
+    """A change time as the browser writes it (or none): digits, T, colons, dots, signs and Z."""
+    return isinstance(value, str) and _STAMP.fullmatch(value) is not None
+
+
+def validate_view(view, where="view"):
+    """A saved view as the browser keeps it: id, name, its filter and when it last changed."""
+    if (not isinstance(view, dict) or not {"id", "name", "filter"} <= set(view) <= _VIEW_KEYS
+            or not isinstance(view["id"], str) or not 0 < len(view["id"]) <= 64
+            or not isinstance(view["name"], str) or not view["name"].strip() or len(view["name"]) > 200
+            or not isinstance(view["filter"], dict) or len(json.dumps(view["filter"])) > 4000
+            or not _stamp(view.get("updatedAt", ""))):
+        raise LibraryValidationError(f"{where} must be a saved view (id, name, filter).")
+    return view
+
+
+def _plain_text(value, limit):
+    """A short single-line name: no control or invisible characters (they could make a name show as another)."""
+    return (isinstance(value, str) and 0 < len(value.strip()) and len(value) <= limit
+            and not any(unicodedata.category(ch).startswith("C") for ch in value))
+
+
+def validate_tag_doc(doc, where="tag"):
+    """A tag's own document: its name (also its id), the tags it sits under and its other names."""
+    names = lambda key: isinstance(doc.get(key), list) and len(doc[key]) <= 20 and all(_plain_text(v, 100) for v in doc[key])
+    if (not isinstance(doc, dict) or set(doc) - {"id", "name", "parents", "aliases", "updatedAt"} or not {"id", "name"} <= set(doc)
+            or not _plain_text(doc["name"], 100) or doc["id"] != doc["name"] or doc["name"] != doc["name"].strip().lower()
+            or not names("parents") or not names("aliases") or doc["name"] in doc["parents"]
+            or not _stamp(doc.get("updatedAt", ""))):
+        raise LibraryValidationError(f"{where} must be a tag (name, parents, aliases).")
+    return doc
+
+
+_CREATOR_KEYS = {"id", "name", "aliases", "handles", "urls", "notes", "picture", "about", "reviewed", "seenAt", "kept", "updatedAt"}
+_CREATOR_PLATFORMS = {"x", "instagram", "tiktok", "reddit", "youtube"}
+
+
+def validate_creator_doc(doc, where="creator"):
+    """A creator's document (v0.4.0): a name, other names, handles per site, profile pages, a note, an about line,
+    a picture the app keeps itself (/thumb/…), the reviewed mark, when the owner last looked, refresh choices."""
+    def short_list(key, limit, test):
+        value = doc.get(key, [])
+        return isinstance(value, list) and len(value) <= limit and all(test(v) for v in value)
+    kept = doc.get("kept", {}) if isinstance(doc, dict) else None
+    ok = (isinstance(doc, dict) and not set(doc) - _CREATOR_KEYS and {"id", "name"} <= set(doc)
+          and isinstance(doc["id"], str) and re.fullmatch(r"[a-z0-9-]{1,64}", doc["id"]) is not None
+          and _plain_text(doc["name"], 200)
+          and short_list("aliases", 50, lambda v: _plain_text(v, 200))
+          and short_list("handles", 20, lambda h: isinstance(h, dict) and set(h) == {"platform", "handle"}
+                         and isinstance(h["platform"], str) and h["platform"] in _CREATOR_PLATFORMS
+                         and isinstance(h["handle"], str) and re.fullmatch(r"[a-z0-9._-]{1,60}", h["handle"]) is not None)
+          and short_list("urls", 20, lambda u: isinstance(u, str) and len(u) <= 500 and _library_http_url(u))
+          and isinstance(doc.get("notes", ""), str) and len(doc.get("notes", "")) <= 2000
+          and isinstance(doc.get("about", ""), str) and len(doc.get("about", "")) <= 1000
+          and (doc.get("picture", "") == "" or (isinstance(doc.get("picture"), str) and re.fullmatch(r"/thumb/[A-Za-z0-9_-]{1,200}", doc["picture"]) is not None))
+          and isinstance(doc.get("reviewed", False), bool) and _stamp(doc.get("seenAt", "")) and _stamp(doc.get("updatedAt", ""))
+          and isinstance(kept, dict) and len(kept) <= 10
+          and all(isinstance(k, str) and len(k) <= 40 and isinstance(v, str) and len(v) <= 2000 for k, v in kept.items()))
+    if not ok:
+        raise LibraryValidationError(f"{where} must be a creator (id, name, other names, handles, profile pages).")
+    return doc
+
+
+_REMOVED_KEYS = {"id", "url", "key", "how", "into", "post", "removedAt", "updatedAt"}
+
+
+def validate_removed_doc(doc, where="removed link"):
+    """A removed link's record (v0.4.0): its address, the post it is at any address (`key`), removed or merged
+    into another link (`into`), and the link as it was, checked as a link is."""
+    ok = (isinstance(doc, dict) and not set(doc) - _REMOVED_KEYS and {"id", "url", "how", "post", "removedAt"} <= set(doc)
+          and isinstance(doc["id"], str) and re.fullmatch(r"r-[0-9a-f]{16}", doc["id"]) is not None
+          and isinstance(doc["url"], str) and len(doc["url"]) <= 4096 and _library_http_url(doc["url"])
+          and ("key" not in doc or isinstance(doc["key"], str) and re.fullmatch(r"[a-z]{1,10}:[A-Za-z0-9_-]{1,64}", doc["key"]) is not None)
+          and doc["how"] in ("removed", "merged")
+          and ("into" not in doc or isinstance(doc["into"], str) and len(doc["into"]) <= 4096 and _library_http_url(doc["into"]))
+          and isinstance(doc["post"], dict) and doc["post"].get("url") == doc["url"]
+          and _stamp(doc["removedAt"]) and _stamp(doc.get("updatedAt", "")))
+    if not ok:
+        raise LibraryValidationError(f"{where} must be a removed link (id, url, how, the link as it was).")
+    if len(_validate_post(doc["post"], f"{where}.post")) > 20000:
+        raise LibraryValidationError(f"{where}.post is too large.")
+    return doc
+
+
+DOC_KINDS = {"tags": validate_tag_doc, "creators": validate_creator_doc, "removed": validate_removed_doc}
+# Kinds sent in a change-only answer only when they changed after it (removed links can be many and large):
+# their last change's revision is kept in library_meta as "docs:<kind>".
+LAZY_DOC_KINDS = {"removed"}
+DOC_LIMIT = 5000
+
+
+def _check_doc(kind, item, where):
+    try:
+        return DOC_KINDS[kind](item, where)
+    except (TypeError, AttributeError) as exc:        # a field of a shape the checks didn't expect
+        raise LibraryValidationError(f"{where} is malformed.") from exc
+
+
+def _validate_docs(data, refused=None):
+    """Tags and creators from a page or a backup. A malformed envelope is refused whole. A document or deletion mark
+    that fails its check is refused whole too when `refused` is None (backups); a save passes a list instead, and only
+    that document is left out and listed, so one bad record never stops the links and the other records."""
+    docs = data.get("docs", {})
+    deleted = data.get("deletedDocs", {})
+    if not isinstance(docs, dict) or set(docs) - set(DOC_KINDS) or not isinstance(deleted, dict) or set(deleted) - set(DOC_KINDS):
+        raise LibraryValidationError(f"docs must map kinds ({', '.join(DOC_KINDS)}) to lists of documents.")
+    kept_docs, kept_marks = {}, {}
+    for kind, items in docs.items():
+        if not isinstance(items, list) or len(items) > DOC_LIMIT:
+            raise LibraryValidationError(f"docs.{kind} must be a list of at most {DOC_LIMIT}.")
+        kept_docs[kind] = []
+        for index, item in enumerate(items):
+            try:
+                kept_docs[kind].append(_check_doc(kind, item, f"docs.{kind}[{index}]"))
+            except LibraryValidationError as exc:
+                if refused is None:
+                    raise
+                ident = item.get("id") if isinstance(item, dict) and isinstance(item.get("id"), str) else None
+                refused.append({"kind": kind, "id": ident[:200] if ident else None, "reason": "invalid", "error": str(exc)})
+    for kind, marks in deleted.items():
+        if not isinstance(marks, dict) or (refused is None and len(marks) > DOC_LIMIT):
+            raise LibraryValidationError(f"deletedDocs.{kind} must map ids to when each was deleted.")
+        if len(marks) > DOC_LIMIT:
+            # A page with more marks than SQLite keeps: the newest go in, the rest are listed (not the whole save refused).
+            newest = sorted(marks.items(), key=lambda item: item[1] if isinstance(item[1], str) else "", reverse=True)
+            refused.append({"kind": kind, "id": None, "reason": "too_many", "error": f"deletedDocs.{kind}: only the newest {DOC_LIMIT} are kept."})
+            marks = dict(newest[:DOC_LIMIT])
+        kept_marks[kind] = {}
+        for key, value in marks.items():
+            if _plain_text(key, 200) and _stamp(value):
+                kept_marks[kind][key] = value
+            elif refused is None:
+                raise LibraryValidationError(f"deletedDocs.{kind} must map ids to when each was deleted.")
+            else:
+                refused.append({"kind": kind, "id": None, "reason": "invalid", "error": f"deletedDocs.{kind} must map ids to when each was deleted."})
+    return kept_docs, kept_marks
+
+
+def _apply_docs(conn, docs, deleted) -> set:
+    """Merge documents and deletions from one browser, per document: the later change wins, and a deletion
+    removes a document unless it changed after (as saved views do). The kinds that changed."""
+    changed = set()
+    for kind in set(docs) | set(deleted):
+        rows = {row["id"]: row for row in conn.execute("SELECT id, document, updated_at, deleted_at FROM library_docs WHERE kind = ?", (kind,))}
+        live = sum(1 for row in rows.values() if row["document"] is not None)
+        for doc in docs.get(kind, []):
+            at = doc.get("updatedAt", "")
+            row = rows.get(doc["id"])
+            if (row is None or row["document"] is None) and live >= DOC_LIMIT:
+                continue                                # full: no new ones (backups and requests allow as many)
+            if row is not None and row["deleted_at"] and row["deleted_at"] >= at:
+                continue                                # deleted after this copy last changed
+            if row is not None and row["document"] is not None and row["updated_at"] and row["updated_at"] >= at:
+                continue                                # SQLite's copy is as new or newer
+            conn.execute("INSERT INTO library_docs (kind, id, document, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL) "
+                         "ON CONFLICT(kind, id) DO UPDATE SET document = excluded.document, updated_at = excluded.updated_at, deleted_at = NULL",
+                         (kind, doc["id"], json.dumps(doc, ensure_ascii=True), at))
+            if row is None or row["document"] is None:
+                live += 1
+            rows[doc["id"]] = {"id": doc["id"], "document": "x", "updated_at": at, "deleted_at": None}
+            changed.add(kind)
+        for doc_id, at in deleted.get(kind, {}).items():
+            row = rows.get(doc_id)
+            if row is not None and ((row["deleted_at"] or "") >= at or (row["document"] is not None and row["updated_at"] > at)):
+                continue                                # already deleted, or changed after the deletion
+            conn.execute("INSERT INTO library_docs (kind, id, document, updated_at, deleted_at) VALUES (?, ?, NULL, '', ?) "
+                         "ON CONFLICT(kind, id) DO UPDATE SET document = NULL, deleted_at = excluded.deleted_at", (kind, doc_id, at))
+            changed.add(kind)
+    cutoff = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - FORGET_VIEW_DELETIONS_DAYS * 86400, timezone.utc)
+    conn.execute("DELETE FROM library_docs WHERE document IS NULL AND deleted_at < ?", (cutoff.isoformat().replace("+00:00", "Z"),))
+    return changed
+
+
+def _docs(conn, since: int = 0) -> dict:
+    left = set()
+    for kind in LAZY_DOC_KINDS if since else ():
+        row = conn.execute("SELECT value FROM library_meta WHERE key = ?", (f"docs:{kind}",)).fetchone()
+        if not row or int(row[0]) <= since:
+            left.add(kind)
+    docs = {kind: [] for kind in DOC_KINDS if kind not in left}
+    deleted = {kind: {} for kind in DOC_KINDS if kind not in left}
+    for row in conn.execute("SELECT kind, id, document, deleted_at FROM library_docs ORDER BY rowid"):
+        if row["kind"] not in docs:
+            continue
+        if row["document"] is not None:
+            docs[row["kind"]].append(json.loads(row["document"]))
+        elif row["deleted_at"]:
+            deleted[row["kind"]][row["id"]] = row["deleted_at"]
+    return {"docs": docs, "deletedDocs": deleted}
+
+
+def _validate_views(data):
+    views = data.get("views", [])
+    deleted = data.get("deletedViews", {})
+    if not isinstance(views, list) or len(views) > VIEW_LIMIT:
+        raise LibraryValidationError(f"views must be a list of at most {VIEW_LIMIT} saved views.")
+    for index, view in enumerate(views):
+        validate_view(view, f"views[{index}]")
+    if (not isinstance(deleted, dict) or len(deleted) > 1000
+            or any(not isinstance(k, str) or not 0 < len(k) <= 64 or not _stamp(v) for k, v in deleted.items())):
+        raise LibraryValidationError("deletedViews must map view ids to when each was deleted.")
+    return views, deleted
+
+
+def _apply_views(conn, views, deleted) -> bool:
+    """Merge views and deletions from one browser: per view the later change wins, and a deletion
+    removes a view unless it changed after. True when anything was written."""
+    changed = False
+    rows = {row["id"]: row for row in conn.execute("SELECT id, document, updated_at, deleted_at FROM library_views")}
+    for view in views:
+        at = view.get("updatedAt", "")
+        row = rows.get(view["id"])
+        if row is not None and (row["deleted_at"] or "") >= at and row["deleted_at"]:
+            continue                                    # deleted after this copy last changed
+        if row is not None and row["document"] is not None and row["updated_at"] >= at and row["updated_at"]:
+            continue                                    # SQLite's copy is as new or newer
+        if row is not None and row["document"] is not None and json.loads(row["document"]) == view:
+            continue
+        conn.execute("INSERT INTO library_views (id, document, updated_at, deleted_at) VALUES (?, ?, ?, NULL) "
+                     "ON CONFLICT(id) DO UPDATE SET document = excluded.document, updated_at = excluded.updated_at, deleted_at = NULL",
+                     (view["id"], json.dumps(view, ensure_ascii=True), at))
+        rows[view["id"]] = {"id": view["id"], "document": "x", "updated_at": at, "deleted_at": None}
+        changed = True
+    for view_id, at in deleted.items():
+        row = rows.get(view_id)
+        if row is not None and ((row["deleted_at"] or "") >= at or (row["document"] is not None and row["updated_at"] > at)):
+            continue                                    # already deleted, or changed after the deletion
+        conn.execute("INSERT INTO library_views (id, document, updated_at, deleted_at) VALUES (?, NULL, '', ?) "
+                     "ON CONFLICT(id) DO UPDATE SET document = NULL, deleted_at = excluded.deleted_at", (view_id, at))
+        changed = True
+    cutoff = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - FORGET_VIEW_DELETIONS_DAYS * 86400, timezone.utc)
+    conn.execute("DELETE FROM library_views WHERE document IS NULL AND deleted_at < ?", (cutoff.isoformat().replace("+00:00", "Z"),))
+    return changed
+
+
+def _views(conn) -> dict:
+    views, deleted = [], {}
+    for row in conn.execute("SELECT id, document, deleted_at FROM library_views ORDER BY rowid"):
+        if row["document"] is not None:
+            views.append(json.loads(row["document"]))
+        elif row["deleted_at"]:
+            deleted[row["id"]] = row["deleted_at"]
+    return {"views": views, "deletedViews": deleted}
 
 
 def _validate_library_delta(data):
@@ -551,7 +826,7 @@ def _library_snapshot(conn, since: int = 0) -> dict:
     ]
     categories = [row[0] for row in conn.execute("SELECT name FROM categories ORDER BY sort_order, name")]
     result = {"posts": posts, "deletedUrls": deleted_urls, "legacyRows": legacy_rows, "categories": categories,
-              "rev": _current_rev(conn), "epoch": _current_epoch(conn)}
+              "rev": _current_rev(conn), "epoch": _current_epoch(conn), **_views(conn), **_docs(conn, since)}
     if since:
         result["since"] = since
         # A link removed by an import undo and imported again since is live: not purged.
@@ -605,6 +880,8 @@ def _backup_rows(conn) -> dict:
         "posts": [json.loads(row[0]) for row in conn.execute("SELECT document FROM library_items WHERE deleted = 0 ORDER BY rowid")],
         "tombstones": [dict(row) for row in conn.execute("SELECT url, id FROM library_items WHERE deleted = 1 ORDER BY rowid")],
         "categories": [dict(row) for row in conn.execute("SELECT name, sort_order, created_at FROM categories ORDER BY rowid")],
+        "views": _views(conn)["views"],
+        "docs": _docs(conn)["docs"],
     }
 
 
@@ -637,6 +914,15 @@ def replace_library(data) -> int:
             conn.execute("DELETE FROM library_purged")
             conn.execute("DELETE FROM categories")
             conn.executemany("INSERT INTO categories (name, sort_order, created_at) VALUES (:name, :sort_order, :created_at)", data["categories"])
+            if "views" in data:                       # backups from before v0.4.0 have none: keep today's
+                conn.execute("DELETE FROM library_views")
+                conn.executemany("INSERT INTO library_views (id, document, updated_at) VALUES (?, ?, ?)",
+                                 [(v["id"], json.dumps(v, ensure_ascii=True), v.get("updatedAt", "")) for v in data["views"]])
+            if "docs" in data:                        # tags and creators (v0.4.0 phase 6): the same
+                conn.execute("DELETE FROM library_docs")
+                conn.executemany("INSERT INTO library_docs (kind, id, document, updated_at) VALUES (?, ?, ?, ?)",
+                                 [(kind, d["id"], json.dumps(d, ensure_ascii=True), d.get("updatedAt", ""))
+                                  for kind, items in data["docs"].items() for d in items])
             conn.executemany("INSERT INTO library_items (url, id, document, ident, rev) VALUES (?, ?, ?, ?, ?)",
                              [(p["url"], p["id"], json.dumps(p, ensure_ascii=True, allow_nan=False), url_identity(p["url"]), epoch)
                               for p in data["posts"]])
@@ -644,7 +930,14 @@ def replace_library(data) -> int:
                              [(t["url"], t["id"], url_identity(t["url"]), epoch) for t in data["tombstones"]])
             conn.execute("INSERT INTO library_meta (key, value) VALUES ('epoch', ?) "
                          "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (epoch,))
-            if _backup_rows(conn) != data:
+            restored = _backup_rows(conn)
+            if "views" not in data:
+                restored.pop("views")
+            if "docs" not in data:
+                restored.pop("docs", None)
+            elif "docs" in restored:                  # kinds a backup doesn't name come back empty
+                restored["docs"] = {kind: items for kind, items in restored["docs"].items() if kind in data["docs"] or items}
+            if restored != data:
                 raise LibraryValidationError("The restored library did not match the backup, so nothing was changed.")
         return epoch
     finally:
@@ -707,7 +1000,23 @@ def save_library(data) -> dict:
     # Undoing an import removes its untouched links outright (no tombstone), so
     # the same file can be imported again later.
     purge_urls = _validate_url_list(data, "purgeUrls")
+    # When the client last saw each link it purges: a link changed since stays (and is sent back).
+    purge_seen = data.get("purgeSeen", {})
+    if not isinstance(purge_seen, dict) or any(not isinstance(url, str) or not isinstance(seen, str) or len(seen) > 64
+                                               for url, seen in purge_seen.items()):
+        raise LibraryValidationError("purgeSeen must map URLs to the time each was last seen.")
     category_ops = _validate_category_ops(data)
+    # Writers that read a link and change a few fields (the Claude Desktop extension) say which version they read:
+    # a link saved since is refused as stale rather than overwritten with the older fields.
+    if_updated = data.get("ifUpdatedAt", {})
+    if not isinstance(if_updated, dict) or any(not isinstance(url, str) or not isinstance(seen, str) or len(seen) > 64
+                                               for url, seen in if_updated.items()):
+        raise LibraryValidationError("ifUpdatedAt must map URLs to the updatedAt each was read with.")
+    # Saved views (named filters), merged per view (see _apply_views); pages before v0.4.0 send none.
+    views, deleted_views = _validate_views(data)
+    # Tags and creators, merged per document (see _apply_docs); pages before phase 6 send none.
+    refused_docs = []
+    docs, deleted_docs = _validate_docs(data, refused_docs)
     since = data.get("since", 0)
     if type(since) is not int or since < 0:
         raise LibraryValidationError("since must be a non-negative integer.")
@@ -762,10 +1071,17 @@ def save_library(data) -> dict:
                             index.setdefault(url_identity(href), row["ident"])
                     spellings.append(index)
                 return spellings[0].get(ident, ident)
-            removed_urls = []
+            removed_urls, kept_idents, kept_urls = [], set(), []
             for url in purge_urls:
                 ident = stored_ident(url)
-                stored = conn.execute("SELECT url FROM library_items WHERE ident = ? AND deleted = 0", (ident,)).fetchone()
+                stored = conn.execute("SELECT url, document FROM library_items WHERE ident = ? AND deleted = 0", (ident,)).fetchone()
+                seen = purge_seen.get(url)
+                if stored and seen is not None:
+                    changed = json.loads(stored["document"]).get("updatedAt")
+                    if isinstance(changed, str) and changed > seen:
+                        kept_idents.add(ident)     # edited after the undo's view of it: keep it
+                        kept_urls.append(url)
+                        continue
                 removed = conn.execute("DELETE FROM library_items WHERE ident = ? AND deleted = 0", (ident,)).rowcount
                 if removed:
                     removed_urls.append(stored["url"])
@@ -802,6 +1118,9 @@ def save_library(data) -> dict:
                 if existing and existing["deleted"]:
                     reject("deleted", "This link was deleted.")
                     continue
+                if post["url"] in if_updated and (not existing or json.loads(existing["document"]).get("updatedAt") != if_updated[post["url"]]):
+                    reject("stale", "This link changed since it was read.")
+                    continue
                 if existing and existing["id"] != post["id"]:
                     # A re-import under another ID never replaces existing curation.
                     reject("duplicate_url", "This link is already saved under another ID.")
@@ -828,16 +1147,20 @@ def save_library(data) -> dict:
                                  (post["url"], post["id"], document, ident, rev()))
             for url in adopted_urls:
                 conn.execute("INSERT OR IGNORE INTO legacy_adopted (url) VALUES (?)", (url,))
+            _apply_views(conn, views, deleted_views)
+            for kind in _apply_docs(conn, docs, deleted_docs) & LAZY_DOC_KINDS:
+                conn.execute("INSERT INTO library_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                             (f"docs:{kind}", rev()))
             result = _library_snapshot(conn, since if since and since <= _current_rev(conn) else 0)
             # A refused write leaves the client showing its own version. A change-only
             # answer would not include the link (SQLite didn't write it), so send what
             # SQLite holds for every refused link: the client then shows that instead.
+            # The same for a purge refused because the link changed since the undo saw it.
             if result.get("since"):
                 listed = {url_identity(post["url"]) for post in result["posts"]} | {url_identity(url) for url in result["deletedUrls"]}
-                for item in rejected:
-                    if item["reason"] not in ("stale", "duplicate_url", "deleted") or not item["url"]:
-                        continue
-                    ident = url_identity(item["url"])
+                refused = [url_identity(item["url"]) for item in rejected
+                           if item["reason"] in ("stale", "duplicate_url", "deleted") and item["url"]]
+                for ident in [*refused, *sorted(kept_idents)]:
                     row = conn.execute("SELECT document, url, deleted FROM library_items WHERE ident = ?", (ident,)).fetchone()
                     if row is None or ident in listed:
                         continue
@@ -850,9 +1173,27 @@ def save_library(data) -> dict:
         # removedUrls: the stored spelling of links removed under another spelling, so
         # their saved copies (named after the stored spelling) go too.
         return {**result, "rejected": rejected, **({"rejectedOps": rejected_ops} if rejected_ops else {}),
-                **({"removedUrls": removed_urls} if removed_urls else {})}
+                **({"rejectedDocs": refused_docs} if refused_docs else {}),
+                **({"removedUrls": removed_urls} if removed_urls else {}),
+                **({"keptUrls": kept_urls} if kept_urls else {})}
     finally:
         conn.close()
+
+
+def saved_link(url):
+    """The saved (not deleted) link with this address in any spelling the library treats as the same,
+    or None: {"title", "categories"} only, for the extension's "already saved" check."""
+    if not _library_http_url(url):
+        return None
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT document FROM library_items WHERE ident = ? AND deleted = 0", (url_identity(url),)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    document = json.loads(row[0])
+    return {"title": document.get("title") or "", "categories": document.get("categories") or []}
 
 
 def post_exists(tg_msg_id: int) -> bool:

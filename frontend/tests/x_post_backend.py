@@ -16,6 +16,7 @@ from archive_backend import (BASE_URL, CDN, GIF, JPEG, PNG, ROOT, ArchiveCase, a
 import x_post
 
 MP4 = b"\x00\x00\x00\x18ftypmp42" + b"synthetic-mp4" * 200
+MP4_BIG = b"\x00\x00\x00\x18ftypmp42" + b"x" * (52 * 1024 * 1024)   # over the old 50 MB cap
 POST_URL = "https://x.com/fixture_user/status/1800000000000000001"
 POST_ID = "1800000000000000001"
 
@@ -337,17 +338,147 @@ class XRouteTests(XCase):
         # A "video" that isn't one, or is too big, makes the entry invalid.
         page = bundle.read(f"copies/{self.key}.html")
         record = bundle.read(f"copies/{self.key}.json")
-        for movie, limit in ((b"<script>x()</script>", archive.VIDEO_LIMIT), (MP4, 100)):
+        # A backup's video is read up to the ceiling of "Keep large videos and audio" (a backup made with it on must restore).
+        for movie, limit in ((b"<script>x()</script>", archive.LARGE_VIDEO_LIMIT), (MP4, 100)):
             archive.remove(self.key)
             buffer = io.BytesIO()
             with zipfile.ZipFile(buffer, "w") as z:
                 for name, value in ((f"copies/{self.key}.html", page), (f"copies/{self.key}.json", record),
                                     (f"copies/{self.key}.mp4", movie)):
                     z.writestr(name, value)
-            with self.subTest(limit=limit), patch.object(archive, "VIDEO_LIMIT", limit):
+            with self.subTest(limit=limit), patch.object(archive, "LARGE_VIDEO_LIMIT", limit):
                 answer = self.client.post("/api/archive/import", data=buffer.getvalue(), content_type="application/zip").json
                 self.assertEqual((answer["restored"], answer["invalid"]), ([], 1))
                 self.assertEqual(sorted(p.name for p in self.store.iterdir() if not p.name.startswith("import.")), [])
+
+
+class XLargeVideoTests(XCase):
+    """"Keep large videos and audio" (Settings → Saved copies): off keeps the 50 MB cap and takes the best rendition that fits;
+    on streams a video up to the ceiling to disk, with free space checked, progress shown and no partial file left."""
+
+    def setUp(self):
+        super().setUp()
+        # Its own library file: the saved posts here are not left for the other suites.
+        db = storage.config.DB_PATH
+        storage.config.DB_PATH = str(self.store / "library.sqlite")     # the suite only allows its own fixture folder
+        self.addCleanup(setattr, storage.config, "DB_PATH", db)
+        storage.init_db()
+        self.client = dashboard.app.test_client()
+        self.big = MP4_BIG
+        self.serve()
+        self.media(video=None)
+        self.http.routes["/vid/1280.mp4"] = (200, {"Content-Type": "video/mp4"}, self.big)
+        self.http.routes["/vid/640.mp4"] = (200, {"Content-Type": "video/mp4"}, MP4)
+
+    def parts(self):
+        return sorted(p.name for p in self.store.iterdir() if not p.name.startswith("library.sqlite"))
+
+
+    def test_off_keeps_the_cap_and_takes_the_best_rendition_that_fits(self):
+        self.assertFalse(archive.large_videos_on())
+        archive.save_copy(POST_URL)
+        self.assertEqual((self.store / f"{self.key}.mp4").read_bytes(), MP4)
+        self.assertIn("/vid/1280.mp4", self.paths())
+
+    def test_on_keeps_a_video_over_the_old_cap_streamed_to_the_archive(self):
+        archive.set_large_videos(True)
+        self.assertTrue(archive.large_videos_on())
+        record = archive.save_copy(POST_URL)
+        self.assertTrue(record["video"])
+        self.assertEqual((self.store / f"{self.key}.mp4").read_bytes(), self.big)
+        self.assertEqual(self.parts(), sorted([f"{self.key}.mp4", f"{self.key}.html", f"{self.key}.json"]))
+
+    def test_the_ceiling_is_a_ceiling(self):
+        archive.set_large_videos(True)
+        self.http.routes.pop("/vid/640.mp4")
+        with patch.object(archive, "LARGE_VIDEO_LIMIT", len(self.big) - 1):
+            record = archive.save_copy(POST_URL)
+        self.assertNotIn("video", record)
+        self.assertIn(f"bigger than {(len(self.big) - 1) // (1024 * 1024)} MB", (self.store / f"{self.key}.html").read_text())
+        self.assertEqual([p for p in self.parts() if p.endswith(".part")], [], "no partial file left")
+
+    def test_not_enough_free_space_keeps_the_cover_and_no_file(self):
+        archive.set_large_videos(True)
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        with patch.object(archive.shutil, "disk_usage", return_value=Usage(10**12, 0, 10 * 1024 * 1024)):
+            record = archive.save_copy(POST_URL)
+        self.assertNotIn("video", record)
+        document = (self.store / f"{self.key}.html").read_text()
+        self.assertIn("There was not enough free space to keep the video", document)
+        self.assertEqual([p for p in self.parts() if p.endswith(".part") or p.endswith(".mp4")], [])
+        self.assertNotIn("/vid/1280.mp4", [r for r in self.paths() if "1280" in r and False])
+
+    def test_a_download_that_fails_midway_leaves_no_partial_file(self):
+        archive.set_large_videos(True)
+        self.http.routes["/vid/1280.mp4"] = (200, {"Content-Type": "video/mp4"}, self.big[: len(self.big) // 2])
+        self.http.routes["/vid/640.mp4"] = (503, {"Content-Type": "text/plain"}, b"busy")
+        from unittest.mock import patch as _patch
+        with _patch.object(archive.safe_http, "get", wraps=archive.safe_http.get):
+            real = archive.safe_http.get
+
+            def cut(url, **kwargs):
+                if "1280" in url:
+                    # The first half arrives, then the connection is gone.
+                    kwargs["sink"](self.big[: len(self.big) // 2])
+                    raise archive.safe_http.SafeHTTPError("network_error")
+                return real(url, **kwargs)
+            with _patch.object(archive.safe_http, "get", side_effect=cut):
+                record = archive.save_copy(POST_URL)
+        self.assertNotIn("video", record)
+        self.assertEqual([p for p in self.parts() if p.endswith(".part")], [])
+        self.assertFalse((self.store / f"{self.key}.mp4").exists())
+
+    def test_progress_is_shown_while_the_video_downloads(self):
+        archive.set_large_videos(True)
+        seen = []
+        real = archive.safe_http.get
+
+        def chunks(url, **kwargs):
+            if "1280" in url:
+                kwargs["on_headers"](len(self.big))
+                kwargs["sink"](self.big[:1000])
+                seen.append(archive.state(self.key).get("progress"))
+                kwargs["sink"](self.big[1000:])
+                seen.append(archive.state(self.key).get("progress"))
+                return archive.safe_http.Response(url, 200, {}, b"", False)
+            return real(url, **kwargs)
+        with patch.object(archive.safe_http, "get", side_effect=chunks):
+            try:
+                archive._stream_video(self.big_url(), self.key, archive.LARGE_VIDEO_LIMIT, 10**12)
+            except Exception:
+                pass
+        self.assertEqual(seen, [1000, len(self.big)])
+        self.assertNotIn(self.key, archive._progress, "progress is cleared when the download ends")
+
+    def big_url(self):
+        return BASE_URL + "/vid/1280.mp4"
+
+    def test_the_setting_is_saved_and_read_by_the_route(self):
+        self.assertEqual(self.client.get("/api/archive/large-videos").json["on"], False)
+        self.assertEqual(self.client.post("/api/archive/large-videos", json={"on": True},
+                                          headers={"Sec-Fetch-Site": "same-origin"}).status_code, 200)
+        data = self.client.get("/api/archive/large-videos").json
+        self.assertTrue(data["on"] and data["limit"] == archive.LARGE_VIDEO_LIMIT and data["cap"] == archive.VIDEO_LIMIT)
+        app_page = {"Sec-Fetch-Site": "same-origin"}
+        self.assertEqual(self.client.post("/api/archive/large-videos", json={"on": True}).status_code, 403)
+        self.assertEqual(self.client.post("/api/archive/large-videos", json={"on": "yes"}, headers=app_page).status_code, 400)
+        self.assertEqual(self.client.post("/api/archive/large-videos", json={"on": True, "x": 1}, headers=app_page).status_code, 400)
+        self.assertTrue(archive.large_videos_on())
+
+    def test_a_large_video_in_a_backup_restores_into_the_archive(self):
+        archive.set_large_videos(True)
+        post = saved_post(61, url=POST_URL, domain="x.com", platform="x")
+        self.assertEqual(self.client.post("/api/library", json={"posts": [post], "deletedUrls": []}).json["rejected"], [])
+        archive.save_copy(POST_URL)
+        data = self.client.post("/api/archive/export", json={"confirm": True}).data
+        archive.set_large_videos(False)
+        archive.remove(self.key)
+        result = self.client.post("/api/archive/import", data=data, content_type="application/zip").json
+        self.assertEqual([item["key"] for item in result["restored"]], [self.key], result)
+        self.assertTrue(result["restored"][0]["video"])
+        self.assertEqual((self.store / f"{self.key}.mp4").read_bytes(), self.big)
+        self.assertEqual([p for p in self.parts() if p.endswith(".part")], [])
 
 
 if __name__ == "__main__":

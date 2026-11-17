@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Bookmark, Copy, TriangleAlert } from "lucide-react";
 import { bookmarkletFor, DEFAULT_ORIGIN } from "../../lib/bookmarklet";
+import ExtensionSetup from "./ExtensionSetup";
 
-/** Settings → Sources: the bookmark button to drag onto the bookmarks bar. */
+/** Settings → Sources: the SuperBookmarks extension, and the bookmark button to drag onto the bookmarks bar. */
 export default function SaveFromBrowserCard() {
   const origin = window.location.origin;
   const code = useMemo(() => bookmarkletFor(origin), [origin]);
@@ -23,8 +24,16 @@ export default function SaveFromBrowserCard() {
         <Bookmark size={15} className="text-[var(--accent)]" /> Save from your browser
       </h3>
       <p className="mt-1.5 text-[.76rem] text-[var(--dim)]">
+        Save the page you're on without leaving it: with the SuperBookmarks extension, or with a bookmark button. Nothing is saved
+        until you click Save.
+      </p>
+      <ExtensionSetup />
+      {/* Open when the address moved: a button dragged before has stopped working, and the note says so. */}
+      <details className="mt-3" open={moved}>
+      <summary className="cursor-pointer text-[.78rem] font-semibold">No extension? Use the bookmark button</summary>
+      <p className="mt-1.5 text-[.76rem] text-[var(--dim)]">
         Drag this button onto your browser's bookmarks bar. On any page, click it to open a small Save window with the page's
-        address and title filled in. Nothing is saved until you click Save there. Works in Chrome, Edge, Brave and Firefox.
+        address and title filled in. Works in Chrome, Edge, Brave and Firefox.
       </p>
       {moved && <p role="note" className="mt-3 flex items-start gap-2 rounded-lg border p-2.5 text-[.76rem]" style={{ borderColor: "var(--amber)" }}>
         <TriangleAlert size={13} className="mt-0.5 shrink-0 text-[var(--amber)]" />
@@ -47,6 +56,7 @@ export default function SaveFromBrowserCard() {
         pictures, which the app saves at once. Only that one post, only when you click. Your Instagram login is never sent to the app.
       </p>
       <p className="mt-1 text-[.72rem] text-[var(--faint)]">The app must be running for the button to work. If it isn't, the browser shows a "can't connect" page.</p>
+      </details>
     </section>
   );
 }

@@ -20,13 +20,13 @@
 ; Release candidate. Compilation does not publish or tag a release.
 
 #ifndef StandaloneDir
-  #define StandaloneDir "..\dist-standalone-v0.3.0\SuperBookmarkManager"
+  #define StandaloneDir "..\dist-standalone-v0.4.0\SuperBookmarkManager"
 #endif
 #ifndef OutputDir
-  #define OutputDir "..\dist-installer-v0.3.0"
+  #define OutputDir "..\dist-installer-v0.4.0"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.3.0"
+  #define AppVersion "0.4.0"
 #endif
 
 ; Shown name since v0.3.0. Folders, AppId and the exe name keep the old spelling so upgrades find everything.
@@ -42,10 +42,14 @@ AppVersion={#AppVersion}
 AppVerName={#MyAppName} {#AppVersion}
 ; Project-neutral local metadata. No legitimate publisher/signing identity is claimed.
 AppPublisher=SuperBookmarks (local build)
-DefaultDirName={autopf}\SuperBookmarkManager
-; Builds up to v0.1.x installed into ...\Programs\SavedPostsDashboard. Do not reuse that
-; folder on upgrade: install into the new one and remove the old program files below.
+; An upgrade installs where the previous install is, also a folder the owner chose (else a second
+; copy appeared under Programs); see InstallDir. Builds up to v0.1.x installed into
+; ...\Programs\SavedPostsDashboard: that folder is never reused, the old program files are removed below.
+DefaultDirName={code:InstallDir}
 UsePreviousAppDir=no
+; Tasks are chosen afresh: a Desktop shortcut the owner deleted must not come back with an upgrade.
+; One that exists is kept (HadDesktopIcon).
+UsePreviousTasks=no
 DefaultGroupName=SuperBookmarks
 ; Per-user, no elevation. Command-line override is allowed; no interactive UAC prompt.
 PrivilegesRequired=lowest
@@ -83,6 +87,15 @@ Type: filesandordirs; Name: "{autopf}\SavedPostsDashboard"; Check: IsLegacyProgr
 ; again when there was one, see HadOldDesktopIcon).
 Type: files; Name: "{autoprograms}\Super Bookmark Manager.lnk"
 Type: files; Name: "{autodesktop}\Super Bookmark Manager.lnk"
+; The runtime folder is replaced whole, so files a newer PyInstaller no longer ships don't linger.
+; Only in a folder holding our program; user data never lives under {app}.
+Type: filesandordirs; Name: "{app}\_internal"; Check: IsOurProgramDir
+
+[UninstallDelete]
+; The runtime folder, including files the running app wrote into it (Python caches), so
+; uninstalling leaves no half-empty program folder behind. Never the user-data folder.
+Type: filesandordirs; Name: "{app}\_internal"
+Type: dirifempty; Name: "{app}"
 
 [Files]
 ; Copy the verified standalone runtime tree verbatim. ignoreversion so a same-version
@@ -92,8 +105,8 @@ Source: "{#StandaloneDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createalls
 [Icons]
 Name: "{autoprograms}\SuperBookmarks"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Comment: "Launch SuperBookmarks (local server)"
 Name: "{autodesktop}\SuperBookmarks"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
-; An upgrade (also a silent one) keeps a Desktop shortcut the owner already had, under the new name.
-Name: "{autodesktop}\SuperBookmarks"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Check: HadOldDesktopIcon
+; An upgrade (also a silent one) keeps a Desktop shortcut the owner has now, under the new name.
+Name: "{autodesktop}\SuperBookmarks"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Check: HadDesktopIcon
 
 [Run]
 ; Offer to launch after an INTERACTIVE install only; skipped for silent/very-silent.
@@ -122,44 +135,166 @@ begin
   Result := HasLegacyProgram() and (CompareText(LegacyProgramDir(), ExpandConstant('{app}')) <> 0);
 end;
 
-// A copy that is still running (possibly from the old folder) would keep serving
-// the old version and lock its files. Stop it before installing; its library is
-// already in SQLite, and edits not yet saved stay in the browser and sync on the
-// next start.
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+function IsOurProgramDir(): Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\{#MyAppExeName}'));
+end;
+
+// Where the previous install is, from its uninstall entry: a folder the owner chose stays the
+// folder. Not the v0.1.x SavedPostsDashboard folder, and only when our program is still there.
+function PreviousAppDir(): String;
+var
+  Key, Dir: String;
+begin
+  Result := '';
+  // AppId={{{#MyAppId}} registers "{<id>}}" (both closing braces): every release so far used that key.
+  Key := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{' + '{#MyAppId}' + '}}_is1';
+  if not RegQueryStringValue(HKCU, Key, 'Inno Setup: App Path', Dir) then
+    if not RegQueryStringValue(HKLM, Key, 'Inno Setup: App Path', Dir) then
+      Exit;
+  Dir := RemoveBackslashUnlessRoot(Dir);
+  if (Dir <> '') and FileExists(Dir + '\{#MyAppExeName}')
+      and (CompareText(ExtractFileName(Dir), 'SavedPostsDashboard') <> 0) then
+    Result := Dir;
+end;
+
+function InstallDir(Param: String): String;
+begin
+  Result := PreviousAppDir();
+  if Result = '' then
+    Result := ExpandConstant('{autopf}\SuperBookmarkManager');
+end;
+
+// The running copy's address and key, from the discovery record it writes in its data folder.
+function ReadRuntime(var Port, Token: String): Boolean;
+var
+  Raw: AnsiString;
+  Text: String;
+  P, I: Integer;
+begin
+  Result := False;
+  Port := '';
+  Token := '';
+  if not LoadStringFromFile(ExpandConstant('{localappdata}\SuperBookmarkManager\runtime.json'), Raw) then
+    Exit;
+  Text := String(Raw);
+  P := Pos('"port"', Text);
+  if P = 0 then Exit;
+  I := P + 6;
+  while (I <= Length(Text)) and ((Text[I] = ':') or (Text[I] = ' ')) do I := I + 1;
+  while (I <= Length(Text)) and (Text[I] >= '0') and (Text[I] <= '9') and (Length(Port) < 5) do
+  begin
+    Port := Port + Text[I];
+    I := I + 1;
+  end;
+  P := Pos('"token"', Text);
+  if P = 0 then Exit;
+  I := P + 7;
+  while (I <= Length(Text)) and (Text[I] <> '"') do I := I + 1;
+  I := I + 1;
+  while (I <= Length(Text)) and (Text[I] <> '"') and (Length(Token) < 64) do
+  begin
+    Token := Token + Text[I];
+    I := I + 1;
+  end;
+  Result := (Port <> '') and (Length(Token) = 64);
+end;
+
+// One request to the running copy; True when it answered 200.
+function AskRunningApp(Method, Path, Port, Token: String): Boolean;
+var
+  Http: Variant;
+begin
+  Result := False;
+  try
+    Http := CreateOleObject('WinHttp.WinHttpRequest.5.1');
+    Http.SetTimeouts(1000, 1000, 2000, 2000);
+    Http.Open(Method, 'http://127.0.0.1:' + Port + Path, False);
+    Http.SetRequestHeader('X-SBM-Instance', Token);
+    if Method = 'POST' then
+    begin
+      Http.SetRequestHeader('Content-Type', 'application/json');
+      Http.Send('{"confirm": true}');
+    end else
+      Http.Send('');
+    Result := Http.Status = 200;
+  except
+    Result := False;
+  end;
+end;
+
+function AppProcessRunning(): Boolean;
 var
   ResultCode: Integer;
 begin
-  Result := '';
+  // find exits 0 when tasklist lists the program.
+  Result := Exec(ExpandConstant('{cmd}'), '/C tasklist /FI "IMAGENAME eq {#MyAppExeName}" /NH | find /I "{#MyAppExeName}"',
+                 '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+// A running copy keeps serving the old version and holds its files (uninstalling left the
+// files and the server running). Ask it to quit the way its own Quit button does, so it
+// finishes what it is saving; wait for it to end; stop it only if it doesn't. This works
+// with any installed version: it needs only the quit route every copy has.
+procedure StopRunningApp();
+var
+  Port, Token: String;
+  Tries, ResultCode: Integer;
+begin
+  if ReadRuntime(Port, Token) and AskRunningApp('GET', '/api/runtime', Port, Token) then
+    if AskRunningApp('POST', '/api/runtime/quit', Port, Token) then
+    begin
+      Tries := 0;
+      while AppProcessRunning() and (Tries < 40) do
+      begin
+        Sleep(500);
+        Tries := Tries + 1;
+      end;
+    end;
   if Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#MyAppExeName}', '', SW_HIDE,
           ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
     Sleep(1500);
 end;
 
-var
-  OldDesktopIcon: Integer;   // 0 unknown, 1 yes, 2 no
-
-// Whether a Desktop shortcut under the pre-v0.3.0 name existed when setup started
-// (checked once, before [InstallDelete] removes it).
-function HadOldDesktopIcon(): Boolean;
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  if OldDesktopIcon = 0 then
-    if FileExists(ExpandConstant('{autodesktop}\Super Bookmark Manager.lnk')) then OldDesktopIcon := 1 else OldDesktopIcon := 2;
-  Result := OldDesktopIcon = 1;
+  Result := '';
+  StopRunningApp();
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  Result := True;
+  StopRunningApp();
+end;
+
+var
+  DesktopIcon: Integer;   // 0 unknown, 1 yes, 2 no
+
+// Whether a Desktop shortcut (either name) existed when setup started (checked once,
+// before [InstallDelete] removes the old-name one).
+function HadDesktopIcon(): Boolean;
+begin
+  if DesktopIcon = 0 then
+    if FileExists(ExpandConstant('{autodesktop}\Super Bookmark Manager.lnk'))
+        or FileExists(ExpandConstant('{autodesktop}\SuperBookmarks.lnk')) then
+      DesktopIcon := 1
+    else
+      DesktopIcon := 2;
+  Result := DesktopIcon = 1;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   // Remember it now, also in silent upgrades: [InstallDelete] runs before [Icons].
   if CurStep = ssInstall then
-    HadOldDesktopIcon();
+    HadDesktopIcon();
 end;
 
-// An existing Desktop shortcut would point at the removed folder; keep it by
-// re-creating it in the new location.
+// Keep an existing Desktop shortcut ticked on the wizard's tasks page.
 procedure CurPageChanged(CurPageID: Integer);
 begin
-  if (CurPageID = wpSelectTasks) and HadOldDesktopIcon() then
+  if (CurPageID = wpSelectTasks) and HadDesktopIcon() then
     WizardSelectTasks('desktopicon');
 end;
 
@@ -171,6 +306,5 @@ begin
     Result := '';
 end;
 
-// NOTE: No [UninstallDelete] section. The uninstaller removes only what it installed under
-// {app} (the install dir) plus the per-user uninstall entry and shortcuts. It deliberately
-// does NOT delete %LOCALAPPDATA%\SuperBookmarkManager\ (user DB, cache, backups, session).
+// NOTE: [UninstallDelete] removes only {app}\_internal and an empty {app}. The uninstaller
+// deliberately does NOT delete %LOCALAPPDATA%\SuperBookmarkManager\ (user DB, cache, backups, session).

@@ -1,5 +1,79 @@
 # SuperBookmarks — release readiness
 
+## v0.4.0 — status 2026-11-09
+
+**Source, the final build (r10) and the public commit are ready. Open: the owner's Claude
+Desktop check (checklist, step 1), then his push and the release.**
+
+The release text is RELEASE_NOTES_DRAFT.md, to paste as it is. The public commit is prepared
+the same way as for v0.3.0, as the local branch `public-release-v0.4.0`: one commit on top of
+the published `main` (`398f63b`: v0.3.0 plus the video line the owner added to the README)
+holding exactly the files in PUBLIC_SOURCE_MANIFEST.md (437), no private history. It was
+remade from the final `v0.4.0` on 2026-11-09, and the 437 files were scanned again for the
+owner's paths, names and addresses, for keys and for session links: none.
+
+The final candidate is r10, built 2026-11-09 from a clean copy of `3f158a2`, with the Get
+started card, the reader fixes for real X, Instagram and TikTok pages and, since r9, Home's
+shelf rows for links still waiting in New to sort:
+`dist-installer-v0.4.0-r10/SuperBookmarkManager-Setup.exe`, SHA-256
+`81b70892fa828a3c0b20e09c34ad061d7aac26db6caab3e3a0e8eace08b67543`, 15,695,427 bytes; its 106 payload
+files match the build receipt. With it go the extension zips in `dist-extension/` (rebuilt from
+`e3c8fc2` on 2026-11-09, after a last review of the extension; the Firefox file is version 0.4.0.1,
+since Mozilla already holds a 0.4.0 from the first upload; Mozilla signed it on 2026-11-09:
+`dist-extension/SuperBookmarks.xpi`, SHA-256
+`aba223f661c2d1ecd07fb8c3faf171d2c20974bcdfc28755c486a5ec0328000f`, the uploaded files byte for
+byte but for the manifest's final line break) and
+`dist-claude-desktop/SuperBookmarks.mcpb` (unchanged since 2026-11-02).
+
+Checks, no retries: the full regression on the clean copy (unit and Python suites 53 of 53,
+browser suites 45 of 45, `telegram-account-ui`, `free-port-e2e` 3 of 3 runs); on the built r10
+program, `test_release_safety` 7 of 7, `packaged_boundary_test` 27 (5 skipped: they need a test
+hook), `free-port-e2e` 10 of 10 in Edge and `runtime_acceptance` 17 of 17. The owner's steps
+on r10 found nothing (checklist, step 1), so r10 is the release build. The test builds before
+r8 are deleted.
+
+The last review of the extension (`fc85292`) changed only the extension: an unpaired extension
+now sends nothing, and Instagram captions, pictures and names are read more carefully. On the
+rebuilt extension `post-readers-e2e`, `page-posts-test`, `extension-e2e`, `firefox-pass`,
+`save-posts-e2e`, `extension-media-e2e`, `tab-media-e2e` and `bookmark-button-e2e` pass; the app
+was as it was (r10's regression ran with this extension).
+
+Not verifiable here:
+
+- The extension on real X, Instagram and TikTok pages and the signed add-on in Firefox beyond
+  the owner's own tries (the tests use synthetic stand-in pages), and Claude Desktop itself
+  (the extension was tested with a scripted stdio client).
+- Real providers, Telegram accounts and real-site saved copies.
+- A PC shared with a second person: another account's program on the app's address, and a
+  local AI server run as a service (both tried with stand-ins; see the release notes'
+  known limitations).
+
+### Release checklist (owner)
+
+1. Done 2026-11-09 by the owner, on r10: the upgrade (Home's rows after an AI sort confirmed),
+   the extension on his X, Instagram and TikTok tabs, the signed add-on in Firefox, a friend's
+   fresh install on a standard account and his own pass through the app. Done 2026-11-16: Claude Desktop
+   with the `.mcpb` (REVIEW.md owner step C), after associating `.mcpb` files with Claude by hand;
+   the README says how.
+2. Done 2026-11-09: Mozilla signed the Firefox add-on (version 0.4.0.1); the signed file is
+   `dist-extension/SuperBookmarks.xpi`.
+3. Push the public commit to `main`: `git push origin public-release-v0.4.0:main` (a fast-forward
+   from `398f63b`; GitHub Pages then serves the v0.4.0 website, and the release banner the
+   notes link to).
+4. Done 2026-11-09: the owner dragged `superbookmarks_60s_github.mp4` (the cut without a voice, his
+   choice) into the README on `main` (`398f63b`); the `user-attachments` line is in README.md on
+   `v0.4.0`, so the public commit keeps it. Checked signed-out: the video plays and both header
+   images load.
+5. Create release `v0.4.0` on `main` with `SuperBookmarkManager-Setup.exe`, its `.sha256`,
+   `SuperBookmarks-extension-chrome.zip`, `SuperBookmarks.xpi` and `SuperBookmarks.mcpb`; the
+   text is RELEASE_NOTES_DRAFT.md.
+6. Optional: put the installer's hash into `InstallerSha256` of the WinGet manifest and submit it
+   (packaging/winget/README.md).
+
+**SIGNING NOT PERFORMED — NO CONFIGURED CODE-SIGNING IDENTITY.**
+
+---
+
 ## v0.3.0 — status 2026-10-11
 
 **Source ready; the Windows build, an install check and publication remain.**

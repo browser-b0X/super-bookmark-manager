@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+/** Where Telegram sent the code (types only), and whether and how a resend can be asked for. */
+type Delivery = {
+  via: string;
+  email: string | null;
+  resend_via: string | null;
+  /** Seconds until a resend is allowed, counted from when this status was read. */
+  resend_in: number;
+};
+
 type Status = {
   credentials_configured: boolean;
   session_exists: boolean;
@@ -8,6 +17,9 @@ type Status = {
   expires_in: number | null;
   /** A refresh or another step holds the session right now; `authorized` may be unknown. */
   busy: boolean;
+  delivery: Delivery | null;
+  /** When this status was read (ms), so the resend countdown keeps running between answers. */
+  at: number;
 };
 type Phase = "idle" | "phone" | "code" | "password";
 
@@ -19,7 +31,10 @@ const MESSAGES: Record<string, string> = {
   code_expired: "That verification code expired. Start again to receive a new code.",
   password_required: "This account uses two-step verification. Enter your Telegram password.",
   password_invalid: "That two-step verification password is incorrect. Try again.",
-  flood: "Telegram is rate-limiting login attempts. Wait a while, then try again.",
+  flood: "Telegram is rate-limiting login attempts. Wait the full time it asks for, then try once.",
+  login_email_setup: "Telegram will not send a code to this account until it has a login email. In the Telegram app, open Settings → Privacy and Security → Two-Step Verification (or Login Email), add an email address, then start again.",
+  resend_unavailable: "Telegram offers no other way to send this code. Wait for it, or start again.",
+  resend_wait: "Telegram asks for a short wait before it sends the code again.",
   network: "Could not reach Telegram. Check your connection, then try again.",
   session_locked: "The local Telegram session file is locked. Close other copies of the app, then try again.",
   session_acl: "Windows could not protect the local session file, so the login was aborted. Nothing was stored.",
@@ -28,7 +43,7 @@ const MESSAGES: Record<string, string> = {
   cancelled: "Login cancelled. No session was changed.",
   login_active: "A login is already in progress. Cancel or restart it first.",
   login_step: "That step does not match the current login state. Check the status and try again.",
-  busy: "Telegram is busy with a refresh or another step. Wait for it to finish, then try again.",
+  busy: "Telegram is busy with a refresh, a large download or another step. Wait for it to finish (a large download can be stopped under Telegram Saved Messages), then try again.",
   cross_origin: "Cross-origin Telegram requests are blocked. Reload the app and try again.",
   content_type: "Unexpected request format. Reload the app and try again.",
   too_large: "That request was too large. Reload the app and try again.",
@@ -37,8 +52,29 @@ const MESSAGES: Record<string, string> = {
   unauthorized: "This session file is not authorized with Telegram. Connect your account to authorize it.",
   unknown: "Telegram login failed. No session was authorized. Try again.",
 };
-const message = (code: unknown) =>
-  (typeof code === "string" && MESSAGES[code]) || "Telegram account action failed. Nothing was confirmed. Try again.";
+/** A wait in words: "45 seconds", "15 minutes", "2 hours". */
+const waitText = (seconds: number) => seconds < 90 ? `${Math.ceil(seconds)} seconds`
+  : seconds < 7200 ? `${Math.ceil(seconds / 60)} minutes` : `${Math.ceil(seconds / 3600)} hours`;
+const message = (code: unknown, wait?: unknown) => {
+  const text = (typeof code === "string" && MESSAGES[code]) || "Telegram account action failed. Nothing was confirmed. Try again.";
+  if (typeof wait !== "number" || wait <= 0) return text;
+  if (code === "flood") return `Telegram asked for ${waitText(wait)} before the next login request. Repeated requests can block codes for hours, so wait the full time, then try once.`;
+  return `${text} Wait ${waitText(wait)}.`;
+};
+
+/** Where the code went, in words the owner can act on. */
+const deliveryNotice = (delivery: Delivery | null) => {
+  switch (delivery?.via) {
+    case "app": return "Telegram sent the code as a message in Telegram, not by SMS. Open Telegram on a device where you are signed in, find the message from Telegram, and enter the code.";
+    case "sms": return "Telegram sent the code by SMS to the phone number you entered.";
+    case "call": return "Telegram is calling the phone number to read out the code.";
+    case "fragment": return "Telegram sent the code by SMS through Fragment, the service for numbers without another Telegram app.";
+    case "email": return `Telegram sent the code to the login email ${delivery.email ?? "on this account"}. Check that inbox, including spam.`;
+    default: return "Telegram sent a verification code. Look for it in Telegram on your other devices and in your SMS messages.";
+  }
+};
+
+const RESEND_BY: Record<string, string> = { sms: "SMS", call: "a phone call", fragment: "SMS through Fragment" };
 
 function toStatus(data: unknown): Status | null {
   if (!data || typeof data !== "object") return null;
@@ -47,7 +83,15 @@ function toStatus(data: unknown): Status | null {
   if (!(d.authorized === true || d.authorized === false || d.authorized === null)) return null;
   if (!(d.login_step === null || typeof d.login_step === "string")) return null;
   if (!(d.expires_in === null || typeof d.expires_in === "number")) return null;
+  const delivery = d.delivery && typeof d.delivery === "object" ? d.delivery as Record<string, unknown> : null;
   return {
+    delivery: delivery && typeof delivery.via === "string" ? {
+      via: delivery.via,
+      email: typeof delivery.email === "string" ? delivery.email : null,
+      resend_via: typeof delivery.resend_via === "string" ? delivery.resend_via : null,
+      resend_in: typeof delivery.resend_in === "number" ? delivery.resend_in : 0,
+    } : null,
+    at: Date.now(),
     credentials_configured: d.credentials_configured,
     session_exists: d.session_exists,
     authorized: d.authorized,
@@ -69,6 +113,15 @@ export default function TelegramAccount() {
   const inflight = useRef<AbortController | null>(null);
   const recheck = useRef<number | undefined>(undefined);
   const connectButton = useRef<HTMLButtonElement>(null);
+  // Ticks while a resend is still waiting, so its countdown shows the time left.
+  const [clock, setClock] = useState(() => Date.now());
+  const resendLeft = status?.delivery && phase === "code"
+    ? Math.max(0, Math.ceil(status.delivery.resend_in - (clock - status.at) / 1000)) : 0;
+  useEffect(() => {
+    if (resendLeft <= 0) return;
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [resendLeft > 0]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const clearSecrets = useCallback(() => { setPhone(""); setCode(""); setPassword(""); }, []);
 
@@ -142,7 +195,7 @@ export default function TelegramAccount() {
       const identifier = data?.diagnostic;
       const diagnostic = typeof identifier === "string" && /^TG1-(?:(?:CLIENT|CONNECT|REQUEST)-(?:[0-9A-F]{12}|OTHER)|RESULT-EMPTY)$/.test(identifier)
         ? ` Diagnostic ID: ${identifier}. Share only this ID when reporting the failure.` : "";
-      setError((code_ === undefined ? MESSAGES.network : message(code_)) + diagnostic);
+      setError((code_ === undefined ? MESSAGES.network : message(code_, data?.retry_after)) + diagnostic);
       if (code_ === "login_active" || code_ === "configuration") setStatus(toStatus(data) ?? status);
       return;
     }
@@ -150,7 +203,16 @@ export default function TelegramAccount() {
     if (next) setStatus(next);
     if (next?.login_step === "awaiting_password") setPhase("password");
     else setPhase("code");
-    setNotice("Telegram sent a verification code to your account.");
+    setNotice(deliveryNotice(next?.delivery ?? null));
+  };
+
+  const resendCode = async () => {
+    setNotice("");
+    const { data, transport } = await call({ action: "resend" }, 45000);
+    if (!transport) { setError(message(data?.code, data?.retry_after)); return; }
+    const next = toStatus(data);
+    if (next) setStatus(next);
+    setNotice(deliveryNotice(next?.delivery ?? null));
   };
 
   const submitCode = async () => {
@@ -158,7 +220,7 @@ export default function TelegramAccount() {
     if (!/^[0-9]{4,8}$/.test(value)) { setError(MESSAGES.code_invalid); return; }
     const { data, transport } = await call({ action: "code", code: value }, 45000);
     setCode("");
-    if (!transport) { setError(message(data?.code)); return; }
+    if (!transport) { setError(message(data?.code, data?.retry_after)); return; }
     const next = toStatus(data);
     if (next) setStatus(next);
     if (data?.result === "password_required") { setPhase("password"); setNotice(MESSAGES.password_required); return; }
@@ -311,8 +373,21 @@ export default function TelegramAccount() {
           </div>
           <div className="flex min-w-0 flex-wrap gap-2">
             <button type="submit" className="btn btn-primary max-w-full whitespace-normal" disabled={busy}>Sign in</button>
+            {status?.delivery?.resend_via && (
+              <button type="button" className="btn max-w-full whitespace-normal" disabled={busy || resendLeft > 0}
+                onClick={() => void resendCode()}>
+                {resendLeft > 0
+                  ? `Send it again by ${RESEND_BY[status.delivery.resend_via] ?? "another way"} in ${resendLeft} s`
+                  : `Send it again by ${RESEND_BY[status.delivery.resend_via] ?? "another way"}`}
+              </button>
+            )}
             <button type="button" className="btn max-w-full whitespace-normal" disabled={busy} onClick={() => void cancelLogin()}>Cancel</button>
           </div>
+          {status?.delivery?.resend_via && (
+            <p className="text-[.72rem] text-[var(--dim)]">
+              Telegram only sends the code again the way it offers here. Sending again too often can block codes for hours.
+            </p>
+          )}
         </form>
       )}
 

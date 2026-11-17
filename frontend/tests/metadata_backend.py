@@ -194,6 +194,17 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(len([c for c in self.http.dns_calls if c[0] == "rebind.fixture.test"]), 1)
         self.assertEqual(metadata.fetch_metadata("http://rebind.fixture.test/b")["error"], "blocked_url")
 
+    def test_non_english_domains_are_spelled_as_browsers_spell_them(self):
+        # Old Telegram rows keep links as typed. Python's "idna" codec (2003 rules) made faß.de into fass.de.
+        for raw, host in (("https://faß.de/x", "xn--fa-hia.de"), ("https://президент.рф/b", "xn--d1abbgf6aiiy.xn--p1ai"),
+                          ("https://Bücher.Example/", "xn--bcher-kva.example"), ("https://ｅｘａｍｐｌｅ.com/", "example.com"),
+                          ("https://example。com/", "example.com"), ("https://xn--fa-hia.de/", "xn--fa-hia.de")):
+            with self.subTest(raw=raw):
+                self.assertEqual(safe.parse_url(raw).host, host)
+        self.assertEqual(safe.parse_url("https://faß.de/x").url, "https://xn--fa-hia.de/x")
+        with self.assertRaises(safe.SafeHTTPError):
+            safe.parse_url("https://a..b/")
+
     def test_redirects_revalidated_and_limited(self):
         self.http.routes["/allowed"] = (302, {"Location": "/done"}, b"")
         self.http.html("/done", '<title>Redirected</title><meta property="og:image" content="image.png">')
@@ -245,6 +256,15 @@ class BoundaryTests(unittest.TestCase):
             with self.subTest(path=path):
                 result = self.fetch(path)
                 self.assertEqual((result["error"], result["title"]), ("", "Big page"))
+        # A GitHub repository page: the preview picture sits in the head of a page well over the limit.
+        github = (b'<html><head><title>owner/repo: A synthetic repository</title>'
+                  b'<meta property="og:image" content="/repo-card.png"><meta property="og:site_name" content="GitHub"></head><body>')
+        github += b"<div>" * ((safe.HTML_LIMIT * 2) // 5)
+        self.http.routes["/owner/repo"] = (200, {"Content-Type": "text/html; charset=utf-8", "Content-Length": str(len(github))}, github)
+        self.http.routes["/repo-card.png"] = (200, {"Content-Type": "image/png"}, b"\x89PNG\r\n\x1a\n" + b"synthetic" * 50)
+        repo = self.fetch("/owner/repo")
+        self.assertEqual((repo["error"], repo["title"], repo["siteName"]), ("", "owner/repo: A synthetic repository", "GitHub"))
+        self.assertEqual(repo["thumbnail"], BASE_URL + "/repo-card.png")
         self.assertEqual(self.fetch("/short")["error"], "network_error")
         self.assertEqual(self.fetch("/gzip")["error"], "network_error")
         # Never more than the limit is kept in memory, and other callers still get too_large.
@@ -587,6 +607,37 @@ class EnrichmentDepthTests(unittest.TestCase):
         self.assertEqual(result["summary"], "Hello world")
         self.assertEqual(result["author"], "A")
 
+    def test_x_previews_take_the_picture_from_the_embed_data(self):
+        # X's oEmbed answer is text only; the embed JSON that saved copies read names the post's photos.
+        import x_post
+        for host in ("publish.twitter.com", "x.com", "cdn.syndication.twimg.com", "pbs.twimg.com"):
+            self.http.dns[host] = [PUBLIC_IP]
+        page_hits = []
+        for number, media in (("7", [{"type": "photo", "media_url_https": "https://pbs.twimg.com/media/p7.jpg"}]),
+                              ("8", [{"type": "video", "media_url_https": "https://pbs.twimg.com/media/v8.jpg",
+                                      "video_info": {"variants": []}}]),
+                              ("9", [])):
+            oembed = f"/oembed?url=https%3A%2F%2Fx.com%2Fa%2Fstatus%2F{number}&omit_script=1&dnt=true"
+            self.http.routes[oembed] = (200, {"Content-Type": "application/json"},
+                b'{"type":"rich","author_name":"A","provider_url":"https://twitter.com","html":"<blockquote><p>Post</p></blockquote>"}')
+            data = {"__typename": "Tweet", "id_str": number, "text": "Post", "user": {"name": "A", "screen_name": "a"},
+                    "mediaDetails": media}
+            self.http.routes[x_post.data_url(number).split("twimg.com", 1)[1]] = (
+                200, {"Content-Type": "application/json"}, json.dumps(data).encode())
+            if media:
+                self.http.routes[f"/a/status/{number}"] = lambda h: page_hits.append(1)
+        self.http.routes["/media/p7?format=jpg&name=large"] = (200, {"Content-Type": "image/jpeg"}, JPEG)
+        self.http.routes["/media/v8.jpg"] = (200, {"Content-Type": "image/jpeg"}, JPEG)
+        with self._plain_tls():
+            photo = metadata.fetch_metadata("https://x.com/a/status/7")
+            video = metadata.fetch_metadata("https://x.com/a/status/8")
+            text = metadata.fetch_metadata("https://x.com/a/status/9")
+        self.assertEqual((photo["summary"], photo["author"]), ("Post", "A"))
+        self.assertTrue(photo["thumbnail"].startswith("/thumb/img_"), photo)
+        self.assertTrue(video["thumbnail"].startswith("/thumb/img_"), "a video post shows its cover")
+        self.assertEqual((text["summary"], text["thumbnail"]), ("Post", ""), "a text post stays a text preview")
+        self.assertEqual(page_hits, [], "X's script-only page is not downloaded when the embed data answered")
+
     def test_reddit_feed_and_arxiv_abstract(self):
         # Reddit's .json now needs an API login and its page is a script shell: the post's RSS feed is read instead.
         from unittest.mock import patch
@@ -613,6 +664,7 @@ class EnrichmentDepthTests(unittest.TestCase):
             # Reddit refusing (rate limit) is "busy", so the app tries again later; a missing post is a plain failure.
             self.http.routes["/r/python/comments/zzz/.rss?limit=1"] = (429, {"Content-Type": "text/html"}, b"slow down")
             self.assertEqual(metadata.fetch_metadata("https://www.reddit.com/r/python/comments/zzz/x/")["error"], "busy")
+            metadata._host_rests.clear()     # Reddit now rests a minute (polite_fetch_backend); the cases below go on
             self.http.routes["/r/python/comments/yyy/.rss?limit=1"] = (200, {"Content-Type": "application/atom+xml"}, b'<feed xmlns="http://www.w3.org/2005/Atom"></feed>')
             missing = metadata.fetch_metadata("https://www.reddit.com/r/python/comments/yyy/x/")
             self.assertEqual((missing["status"], missing["error"]), ("failed", "http_error"))

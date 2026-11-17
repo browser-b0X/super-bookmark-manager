@@ -98,7 +98,8 @@ try {
     await reader.locator('article.card').first().waitFor();
     assert.equal(await reader.locator('article.card').count(), 3);
     assert.equal(await reader.locator('article.card img').count(), 2, 'the remote preview (through the app) and the kept one');
-    for (const img of await reader.locator('article.card img').all()) assert.ok(await img.evaluate(el => el.naturalWidth > 0));
+    // Each picture decodes (a broken one rejects); its size is read once it has, not the moment the card appears.
+    for (const img of await reader.locator('article.card img').all()) assert.ok(await img.evaluate(el => el.decode().then(() => el.naturalWidth > 0, () => false)));
     await reader.fill('#q', 'market');
     assert.equal(await reader.locator('article.card:not([hidden])').count(), 2);
     await reader.selectOption('#s', 'title');
@@ -117,8 +118,14 @@ try {
 
   await check('a selection can be shared from the bulk bar', async () => {
     await page.goto(base + '/library');
-    await page.locator('.tile__select').first().click({ force: true });
-    await page.getByRole('toolbar', { name: 'Bulk actions' }).getByRole('button', { name: 'Share' }).click();
+    // Select once the library has loaded from SQLite: a click while the tiles are re-rendered is lost.
+    await page.getByRole('status', { name: 'SQLite save status' }).filter({ hasText: /Library saved to SQLite/ }).waitFor();
+    const bar = page.getByRole('toolbar', { name: 'Bulk actions' });
+    for (let attempt = 0; attempt < 3 && !(await bar.count()); attempt++) {
+      await page.locator('.tile__select').first().click({ force: true });
+      await bar.waitFor({ timeout: 5000 }).catch(() => {});
+    }
+    await bar.getByRole('button', { name: 'Share' }).click();
     await page.getByRole('dialog', { name: 'Share as a page' }).getByText('What goes in: 1 link').waitFor();
     await page.getByRole('toolbar', { name: 'Bulk actions' }).screenshot({ path: join(evidence, 'bulk-bar.png') });
   });

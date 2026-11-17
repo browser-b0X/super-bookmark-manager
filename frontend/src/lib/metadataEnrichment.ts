@@ -3,7 +3,7 @@ import type { FieldSource, SavedPost } from "../types";
 import { libraryUrl, updatePostInBackground, useLibrary, type BackgroundChange } from "../store/library";
 import { useLibraryPersistence } from "./libraryPersistence";
 import { backendProvider, EnrichmentError, enrichmentFailure, isTerminalEnrichmentCode } from "./providers";
-import { faviconFor, titleFromUrl } from "./platform";
+import { faviconFor, postName, titleFromUrl } from "./platform";
 import { pictureFound, useLostPictures } from "./lostPictures";
 import { pictureCode } from "./previewHealth";
 
@@ -200,13 +200,14 @@ export function setEnrichmentPaused(paused: boolean) {
 /** Posts the background queue should (re)visit now. */
 export function needsEnrichment(post: SavedPost, now = Date.now()): boolean {
   if (post.metadataStatus === "pending") return true;
+  if (post.reviewed) return false;             // no automatic retries for a link the owner marked Reviewed
   if (post.metadataStatus === "failed" && post.metadataRetryAt) return Date.parse(post.metadataRetryAt) <= now;
   return false;
 }
 
 /** Old previews are refreshed when a link is looked at again, never in a sweep. */
 export function isStale(post: SavedPost, now = Date.now()): boolean {
-  if (post.metadataStatus === "none" || post.metadataStatus === "pending") return false;
+  if (post.reviewed || post.metadataStatus === "none" || post.metadataStatus === "pending") return false;
   if (!post.thumbnailUrl && post.metadataStatus === "enriched") return !post.enrichedAt || now - Date.parse(post.enrichedAt) > 7 * 86400_000;
   return !!post.enrichedAt && now - Date.parse(post.enrichedAt) > STALE_AFTER;
 }
@@ -237,12 +238,25 @@ function schedule(delay: number) {
   timer = setTimeout(resume, due - Date.now());
 }
 
+/** The name for a link saved before posts had one, still titled with the number in its address; null for any other. */
+function namedPost(post: SavedPost): Partial<SavedPost> | null {
+  const url = post.canonicalUrl || post.url;
+  const name = postName(url);
+  const title = post.title ?? "";
+  const known = post.fieldSources?.title;
+  // Nothing the owner chose changes: a Reviewed link, their own title, an accepted AI title, a bookmark's title.
+  if (!name || post.reviewed || (known && known !== "derived") || !/^\d+$/.test(title) || !url.includes(title)) return null;
+  return { title: name, fieldSources: { ...post.fieldSources, title: "derived" } };
+}
+
 /** Resume pending previews once SQLite has the library (called at startup). */
 export function startEnrichmentQueue(): () => void {
   let started = false;
   const stop = useLibraryPersistence.subscribe(state => {
     if (started || state.status !== "saved" || useLibrary.getState().demo) return;
     started = true;
+    // Checked again when applied, so an edit made meanwhile wins.
+    for (const post of useLibrary.getState().posts) if (namedPost(post)) void updatePostInBackground(post.id, namedPost);
     resume();
   });
   return () => { stop(); if (timer) clearTimeout(timer); timer = undefined; timerDue = 0; };

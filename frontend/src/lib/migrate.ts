@@ -3,6 +3,7 @@ import { useLibrary } from "../store/library";
 import { startLibraryPersistence, useLibraryPersistence } from "./libraryPersistence";
 import { startEnrichmentQueue } from "./metadataEnrichment";
 import { startCopyQueue } from "./savedCopies";
+import { startClaudeDesktopWatch } from "./claudeDesktop";
 
 export function useLegacyMigration() {
   const demo = useLibrary(s => s.demo);
@@ -10,6 +11,8 @@ export function useLegacyMigration() {
   useEffect(() => startLibraryPersistence(), []);
   useEffect(() => startEnrichmentQueue(), []);
   useEffect(() => startCopyQueue(), []);
+  // Tells the app which links this tab hasn't saved yet, and hears what Claude Desktop changed.
+  useEffect(() => startClaudeDesktopWatch(), []);
   useEffect(() => {
     if (status === "error" && !useLibrary.getState().migrated) useLibrary.getState().seedDemo();
   }, [status]);

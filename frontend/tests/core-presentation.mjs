@@ -107,7 +107,13 @@ export async function verifyPresentation({ page, browser, origin, evidenceDir, b
             // no startsWith, no regex) so any unexpected route still fails loudly. Focused rerun recorded exactly these.
             // Settings > AI & previews reads provider status (no keys, no provider traffic): /api/ai/providers.
             // The app asks once at startup whether the server makes saved copies: GET /api/archive (answered "no" here).
-            assert.ok(['/api/library', '/api/stats', '/api/telegram/config', '/api/telegram/auth', '/api/ai/providers', '/api/archive'].includes(url.pathname), 'Presentation fixture must not exercise unrelated APIs');
+            // Settings > Save from your browser asks which browsers have the extension paired: GET /api/extension (none).
+            // Each tab tells the app which links it hasn't saved yet (for Claude Desktop): POST /api/library/pending.
+            assert.ok(['/api/library', '/api/stats', '/api/telegram/config', '/api/telegram/auth', '/api/ai/providers', '/api/archive', '/api/archive/large-videos', '/api/extension', '/api/library/pending', '/api/claude-desktop'].includes(url.pathname), 'Presentation fixture must not exercise unrelated APIs');
+            if (url.pathname === '/api/claude-desktop') { assert.equal(request.method(), 'GET'); return await route.fulfill({ status: 200, json: { ok: true, connected: false, createdAt: '', lastUsedAt: '', changes: [], suggestions: [] } }); }
+            if (url.pathname === '/api/library/pending') { assert.equal(request.method(), 'POST'); return await route.fulfill({ status: 200, json: { ok: true, connected: false, change: null, suggestions: 0, version: '0' } }); }
+            if (url.pathname === '/api/extension') { assert.equal(request.method(), 'GET'); return await route.fulfill({ status: 200, json: { ok: true, connections: [], code: null } }); }
+            if (url.pathname === '/api/archive/large-videos') return await route.fulfill({ status: 200, json: { ok: true, on: false, limit: 2147483648, cap: 52428800 } });
             if (url.pathname === '/api/archive') { assert.equal(request.method(), 'GET'); assert.equal(url.search, ''); return await route.fulfill({ status: 200, json: { ok: true, enabled: false, count: 0, bytes: 0 } }); }
             if (url.pathname === '/api/ai/providers') { assert.equal(request.method(), 'GET'); return await route.fulfill({ status: 200, json: { ok: true, providers: [], ready: [], available: false } }); }
             if (url.pathname === '/api/stats') assert.equal(request.method(), 'GET');
@@ -286,7 +292,8 @@ export async function verifyPresentation({ page, browser, origin, evidenceDir, b
     }));
 
     await check('C7 true empty library is distinct from retained library and sample data', async () => variant('empty-library', [], async p => {
-      await p.getByRole('heading', { name: 'Your library is empty', exact: true }).waitFor();
+      // A new empty library gets Get started in place of "Your library is empty" (get-started-e2e checks the card).
+      await p.getByRole('region', { name: 'Get started' }).waitFor();
       assert.equal((await state(p)).demo, false); assert.equal(await cards(p).count(), 0);
       assert.doesNotMatch(await p.locator('main').innerText(), /sample library|demo only/i);
       const [health] = await Promise.all([

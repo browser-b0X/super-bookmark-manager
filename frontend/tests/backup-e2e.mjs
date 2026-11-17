@@ -138,7 +138,7 @@ try {
     assert.equal((await post(page, '/api/library', { posts: [], deletedUrls: [deleted.url] })).status, 200);
     await page.reload();
     await saved(page, 17);
-    // A Saved View: a browser preference, which a restore leaves alone.
+    // A Saved View, which goes into the backup.
     await page.goto(old.base + '/library');
     await saved(page, 17);
     await page.getByRole('button', { name: 'Saved Views', exact: true }).click();
@@ -184,6 +184,12 @@ try {
     await preview(page).waitFor();
     assert.match(await preview(page).innerText(), /Version 1 · 17 links · 1 deletion marker\b/);
     assert.match(await preview(page).innerText(), /This library is empty: the backup's 17 links become your library\./);
+    // The panel says what a restore does: Saved Views are in the backup, and it replaces them.
+    const panel = await page.locator('section[aria-labelledby="backup-heading"]').innerText();
+    assert.match(panel, /includes [^.]*Saved Views/);
+    assert.doesNotMatch(panel, /excludes [^.]*Saved Views/);
+    assert.match(panel, /Restore replaces [^.]*Saved Views/);
+    assert.match(await preview(page).innerText(), /A backup from before v0\.4\.0 has no Saved Views, so yours stay\./);
     await tabTo(page, page.getByRole('button', { name: 'Cancel restore' }));
     await page.keyboard.press('Enter');
     await result(page).filter({ hasText: 'Restore canceled. Nothing changed.' }).waitFor();
@@ -200,7 +206,7 @@ try {
     const local = await cache(page);
     assert.deepEqual(byId(local.posts), byId(backup.library.posts), 'this tab holds exactly the backup, without a reload');
     assert.deepEqual(local.deletedUrls, [deleted.url]);
-    assert.deepEqual(local.views, views, 'Saved Views stay');
+    assert.deepEqual(local.views, views, "the backup's Saved View");
     // The backup kept the pictures' addresses; the files stayed with the old install.
     assert.deepEqual((await post(page, '/api/thumbs/missing', { codes: pictures })).data.missing, pictures);
     // The library page, reached inside the app (no reload), lists the backup's links.
@@ -245,9 +251,11 @@ try {
     await page.goto(fresh.base + '/library/settings');
     await saved(page, 17);
     const epoch = (await fresh.control('backup-snapshot')).epoch;
-    assert.equal((await post(page, '/api/library', { posts: [added], deletedUrls: [], epoch })).status, 200);
+    const viewAfter = { ...backup.library.views[0], id: 'view-after-backup', name: 'Made after the backup' };
+    assert.equal((await post(page, '/api/library', { posts: [added], deletedUrls: [], epoch, views: [viewAfter] })).status, 200);
     await page.reload();
     await saved(page, 18);
+    assert.deepEqual((await cache(page)).views.map(v => v.name).sort(), ['Kept across a restore', 'Made after the backup']);
     const before = (await fresh.control('backup-snapshot')).result;
     await restore(page, file, /This replaces the 18 links in this library with the backup's 17 links\. This library is saved first as a backup file, so you can go back\./);
     safety = await page.locator('[data-safety-copy]').innerText();
@@ -269,6 +277,7 @@ try {
     const back = await fresh.control('backup-snapshot');
     assert.ok(back.result.posts.some(p => p.url === added.url));
     assert.equal(back.result.posts.length, 18);
+    assert.deepEqual(back.result.views.map(v => v.name).sort(), ['Kept across a restore', 'Made after the backup'], 'the saved file has the replaced Saved View');
     assert.equal(back.backups.length, 2);
     const second = await page.locator('[data-safety-copy]').innerText();
     assert.notEqual(second, safety);
@@ -374,6 +383,29 @@ try {
       await page.screenshot({ path: join(evidence, `restore-preview-${width}.png`) });
     }
     await page.getByRole('button', { name: 'Cancel restore' }).click();
+  });
+
+  await check('the preview says what happens to a library with no links, and one link reads as one', async () => {
+    const app = await install('no-links');
+    const browserProfile = await profile(app.base);
+    const tab = await open(browserProfile, app.base + '/library/settings');
+    await saved(tab, 0);
+    const one = structuredClone(backup);
+    one.library.posts = one.library.posts.slice(0, 1);
+    one.recordCount = 1;
+    const chooseOne = () => choose(tab, { name: 'one.json', mimeType: 'application/json', buffer: Buffer.from(sign(one)) });
+    await chooseOne();
+    await preview(tab).waitFor();
+    assert.match(await preview(tab).innerText(), /This library is empty: the backup's 1 link becomes your library\./);
+    await tab.getByRole('button', { name: 'Cancel restore' }).click();
+    assert.equal((await post(tab, '/api/library', { posts: [], deletedUrls: [], views: backup.library.views })).status, 200);
+    await tab.reload();
+    await saved(tab, 0);
+    await chooseOne();
+    await preview(tab).waitFor();
+    assert.match(await preview(tab).innerText(), /This library has no links, but it isn't empty: it is saved first as a backup file, so you can go back\. The backup's 1 link becomes your library\./);
+    await browserProfile.close();
+    await app.stop();
   });
 
   await check('no page errors, no requests outside the app, nothing personal or external touched', async () => {

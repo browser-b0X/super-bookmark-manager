@@ -1,25 +1,29 @@
 import { type ReactNode, useState } from "react";
-import { Archive, Database, FileJson, Link2, Palette, RefreshCw, Send, Sparkles, Upload } from "lucide-react";
+import { Archive, Database, FileJson, History, Link2, Palette, RefreshCw, Send, Sparkles, Upload } from "lucide-react";
 import { parseTelegramExport } from "../lib/telegram";
-import { refreshTelegram } from "../lib/telegramRefresh";
-import { usePrefs } from "../store/prefs";
+import { refreshTelegram, useTimedTelegram } from "../lib/telegramRefresh";
+import { TELEGRAM_CHECK_MINUTES, usePrefs, type TelegramCheckMinutes } from "../store/prefs";
 import { useCopyAvailability } from "../lib/copyAvailability";
 import { importFilePosts } from "../lib/importCategorization";
 import AddLinkDialog from "../components/library/AddLinkDialog";
 import BackupRestore from "../components/library/BackupRestore";
 import TelegramConfig from "../components/library/TelegramConfig";
 import TelegramAccount from "../components/library/TelegramAccount";
+import TelegramLargeDownload from "../components/library/TelegramLargeDownload";
 import BookmarkImport from "../components/library/BookmarkImport";
 import UnsavedChanges from "../components/library/UnsavedChanges";
 import RuntimeControl from "../components/library/RuntimeControl";
 import SyncPanel from "../components/library/SyncPanel";
 import SavedCopiesSettings from "../components/library/SavedCopiesSettings";
-import AiProviders from "../components/library/AiProviders";
+import AiProviders, { notAnswering } from "../components/library/AiProviders";
 import AiReview from "../components/library/AiReview";
 import PreviewTools from "../components/library/PreviewTools";
 import { SettingsGroup, SettingsNav } from "../components/library/SettingsLayout";
 import SaveFromBrowserCard from "../components/library/SaveFromBrowserCard";
 import AppearanceSettings from "../components/library/AppearanceSettings";
+import DuplicatePosts from "../components/library/DuplicatePosts";
+import RemovedLinks from "../components/library/RemovedLinks";
+import HistoryPanel from "../components/library/HistoryPanel";
 
 export default function LibrarySettingsPage() {
   const [addLink, setAddLink] = useState(false);
@@ -27,17 +31,21 @@ export default function LibrarySettingsPage() {
   const [importMsg, setImportMsg] = useState<string | null>(null);
   const [importingTelegram, setImportingTelegram] = useState(false);
   const [aiReady, setAiReady] = useState(false);
+  const [aiDown, setAiDown] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const checkOnStart = usePrefs(s => s.telegramCheckOnStart);
   const keepMedia = usePrefs(s => s.telegramKeepMedia);
+  const timedCheck = usePrefs(s => s.telegramTimedCheck);
+  const checkMinutes = usePrefs(s => s.telegramCheckMinutes);
+  const timed = useTimedTelegram();
   const copiesOn = useCopyAvailability(s => s.enabled);
 
   const runRefresh = async () => {
     setRefreshing(true);
     setRefreshMsg(null);
     try {
-      setRefreshMsg((await refreshTelegram()).message);
+      setRefreshMsg((await refreshTelegram({ retry: true })).message);
     } finally {
       setRefreshing(false);
     }
@@ -88,22 +96,37 @@ export default function LibrarySettingsPage() {
         <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3.5">
           <div className="text-[.8rem] font-semibold">Automatic: refresh from your Telegram account</div>
           <p className="mt-1 text-[.74rem] text-[var(--dim)]">
-            Checks your most recent <b>200 Saved Messages</b> with the account connected above. It runs when you click it, or once at
-            start if you turn that on below: no background sync and no login prompts.
+            Checks your most recent <b>200 Saved Messages</b> with the account connected above. It runs when you click it, once at
+            start, or every so often while the app is open if you turn those on below. No login prompts.
           </p>
           <button className="btn btn-primary mt-2.5" onClick={() => void runRefresh()} disabled={refreshing}>
             <RefreshCw size={13} /> {refreshing ? "Checking Saved Messages…" : "Refresh Telegram Saved Messages"}
           </button>
           {refreshMsg && <p role="status" aria-label="Telegram refresh result" className="mt-3 rounded-lg border p-2.5 text-[.76rem]"
             style={{ borderColor: "var(--border-hi)", background: "var(--surface)" }}>{refreshMsg}</p>}
+          {copiesOn && <TelegramLargeDownload />}
           <div className="tg-switches mt-3.5 space-y-3 border-t border-[var(--border)] pt-3.5">
             <TelegramSwitch label="Check when the app starts" on={checkOnStart} onChange={usePrefs.getState().setTelegramCheckOnStart}>
               Looks for new Saved Messages once each time SuperBookmarks opens, with the account connected above.
-              Off until you turn it on; no checks while the app is open.
+              Off until you turn it on.
             </TelegramSwitch>
-            {copiesOn && <TelegramSwitch label="Keep photos and videos sent with your links" on={keepMedia} onChange={usePrefs.getState().setTelegramKeepMedia}>
-              When a Saved Message has a link plus photos or a video, they are kept with that link's saved copy,
-              downloaded from your own account. Videos up to 50 MB; nothing is kept for messages without a link.
+            <TelegramSwitch label="Check again while the app is open" on={timedCheck} onChange={usePrefs.getState().setTelegramTimedCheck}>
+              Looks for new Saved Messages every{" "}
+              <select className="input" aria-label="How often to check" value={checkMinutes}
+                style={{ width: "auto", padding: "1px 6px", fontSize: ".72rem", display: "inline-block" }}
+                onChange={e => usePrefs.getState().setTelegramCheckMinutes(Number(e.target.value) as TelegramCheckMinutes)}>
+                {TELEGRAM_CHECK_MINUTES.map(m => <option key={m} value={m}>{m === 30 ? "30 minutes" : m === 60 ? "hour" : "3 hours"}</option>)}
+              </select>{" "}
+              while SuperBookmarks is open. Nothing runs when it is closed. A note appears only when new links arrive.
+              {timedCheck && (timed.lastAt || timed.nextAt) && <span className="mt-1 block text-[var(--faint)]" aria-label="Timed Telegram check">
+                {[timed.lastAt && `Last checked ${clock(timed.lastAt)}`, timed.nextAt && `next around ${clock(timed.nextAt)}`,
+                  timed.lastAt && `${timed.added ?? 0} new link${timed.added === 1 ? "" : "s"}`].filter(Boolean).join(" · ")}
+              </span>}
+            </TelegramSwitch>
+            {copiesOn && <TelegramSwitch label="Keep photos, videos and audio sent with your links" on={keepMedia} onChange={usePrefs.getState().setTelegramKeepMedia}>
+              When a Saved Message has a link plus photos, a video or audio (music or a voice message), they are kept with that link's
+              saved copy, downloaded from your own account. Videos and audio up to 50 MB, or up to 2 GB with “Keep large videos and audio”
+              in Saved copies; those download in the background after the refresh. Nothing is kept for messages without a link.
             </TelegramSwitch>}
           </div>
         </div>
@@ -139,8 +162,8 @@ export default function LibrarySettingsPage() {
 
         <SettingsGroup id="ai" title="AI & previews" icon={<Sparkles size={16} />}
           intro="Thumbnails, titles and shelves for your feed.">
-          <AiProviders onChange={status => setAiReady(status.available)} />
-          <AiReview aiReady={aiReady} />
+          <AiProviders onChange={status => { setAiReady(status.available); setAiDown(notAnswering(status)); }} />
+          <AiReview aiReady={aiReady} aiDown={aiDown} />
           <PreviewTools />
         </SettingsGroup>
 
@@ -150,6 +173,13 @@ export default function LibrarySettingsPage() {
           <SyncPanel />
           <UnsavedChanges />
           <RuntimeControl />
+        </SettingsGroup>
+
+        <SettingsGroup id="cleanup" title="Clean up & undo" icon={<History size={16} />}
+          intro="The same post saved twice, links you removed, and what changed many links at once.">
+          <DuplicatePosts />
+          <RemovedLinks />
+          <HistoryPanel />
         </SettingsGroup>
 
         <SettingsGroup id="backup" title="Backup" icon={<Archive size={16} />}
@@ -179,3 +209,5 @@ function TelegramSwitch({ label, on, onChange, children }: { label: string; on: 
     </div>
   );
 }
+
+const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });

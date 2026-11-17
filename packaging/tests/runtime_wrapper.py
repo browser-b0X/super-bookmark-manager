@@ -25,5 +25,13 @@ def browser(origin):
         (profile/'provider-boundary.txt').write_text('PASS: inherited synthetic keys absent; safe defaults only')
     with open(profile/'opened.txt','a') as f:f.write(origin+'\n')
 entry._open_browser=browser
+# The app then takes whoever connects for a program of another Windows user: a second account can't be made in a test.
+if os.environ.get('SBM_TEST_ANOTHER_USER'):
+    import local_peer
+    local_peer.own_user=lambda:b'another user'
+# The port this copy wanted is held by another person's program: nobody else is signed in during a test.
+if os.environ.get('SBM_TEST_SOMEONE_ELSE'):
+    import local_peer
+    local_peer.someone_else_listens=lambda port:True
 entry._notify=lambda message: (profile/'startup-error.txt').write_text(message)
 raise SystemExit(entry.main())

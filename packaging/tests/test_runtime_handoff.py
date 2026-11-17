@@ -86,6 +86,14 @@ class Handoff(unittest.TestCase):
         self.assertEqual(calls, [("/api/runtime/quit", TOKEN, {"confirm": True})])
         self.assertEqual(self.opened, [])
 
+    def test_a_newer_running_build_is_reopened_never_replaced(self):
+        # An older copy (say a leftover install in another folder) must not take over a newer one.
+        newer = f"{int(entry.BUILD.split('-')[0]) + 86400}-123"
+        server, calls = fake_copy(newer)
+        result, origin = self.run_against(server)
+        self.assertEqual((result, self.opened, calls), (0, [origin], []))
+        self.assertTrue(self.notes and "newer copy" in self.notes[0])
+
     def test_copies_from_before_build_ids_are_replaced_too(self):
         server, calls = fake_copy(None)
         result, _ = self.run_against(server)

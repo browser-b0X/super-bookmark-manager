@@ -4,8 +4,11 @@ DNS answers are all validated; the socket connects to a numeric answer, never
 resolving the hostname again. Every redirect goes through the same boundary.
 """
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import http.client
 import ipaddress
+import math
 import queue
 import re
 import socket
@@ -33,12 +36,37 @@ ERROR_CODES = frozenset({"invalid_url", "blocked_url", "dns_failure", "timeout",
 
 
 class SafeHTTPError(Exception):
-    def __init__(self, code, status=None):
+    def __init__(self, code, status=None, retry_after=None, host=None):
         self.code = code if code in ERROR_CODES else "internal_error"
         # HTTP status of an http_error, so callers can tell a gone page (404/410)
         # from a temporary server fault (5xx).
         self.status = status if isinstance(status, int) else None
+        # Seconds a 429/503 site asked us to wait, or None.
+        self.retry_after = retry_after if isinstance(retry_after, int) and not isinstance(retry_after, bool) else None
+        # The host that answered (after redirects), so a "slow down" rests that host, not the link's.
+        self.host = host if isinstance(host, str) else None
         super().__init__(self.code)
+
+
+def _retry_after_seconds(value):
+    """Seconds from a Retry-After header (delta-seconds or HTTP-date), 1..3600; None if unusable."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if re.fullmatch(r"[0-9]+", value):
+        seconds = int(value) if len(value) <= 12 else 3600
+    else:
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        try:
+            seconds = math.ceil((when - datetime.now(timezone.utc)).total_seconds())
+        except OverflowError:
+            return None
+    return max(1, min(3600, seconds))
 
 
 @dataclass(frozen=True)
@@ -84,6 +112,18 @@ def _public_ip(value):
     return str(address)
 
 
+def _ascii_host(host):
+    """A host name as browsers send it: each non-ASCII label as xn-- punycode of its NFKC,
+    lower-case form (storage.py spells library links the same way). Python's "idna" codec
+    follows the 2003 rules, which turn faß.de into fass.de, another site."""
+    import unicodedata
+    labels = []
+    host = host.replace("。", ".").replace("．", ".").replace("｡", ".")
+    for label in unicodedata.normalize("NFKC", host).lower().split("."):
+        labels.append(label if label.isascii() else "xn--" + label.encode("punycode").decode("ascii"))
+    return ".".join(labels)
+
+
 def parse_url(url):
     """Syntax and literal-address checks without any network or filesystem I/O."""
     if (not isinstance(url, str) or not url or len(url) > 4096 or "\\" in url
@@ -96,7 +136,7 @@ def parse_url(url):
                 or parts.username is not None or parts.password is not None
                 or "%" in parts.netloc or not parts.hostname):
             raise ValueError()
-        host = parts.hostname.rstrip(".").encode("idna").decode("ascii").lower()
+        host = _ascii_host(parts.hostname.rstrip("."))
         port = parts.port if parts.port is not None else (443 if parts.scheme == "https" else 80)
         if not 1 <= port <= 65535 or len(host) > 253:
             raise ValueError()
@@ -209,7 +249,7 @@ class _PinnedConnection(http.client.HTTPConnection):
         raise SafeHTTPError("network_error")
 
 
-def _request(target, address, deadline, limit, headers, truncate=False):
+def _request(target, address, deadline, limit, headers, truncate=False, sink=None, on_headers=None):
     sock = None
     connection = None
     response = None
@@ -269,7 +309,8 @@ def _request(target, address, deadline, limit, headers, truncate=False):
         if response.status in (301, 302, 303, 307, 308):
             return Response(target.url, response.status, response_headers, b"")
         if not 200 <= response.status < 300:
-            raise SafeHTTPError("http_error", response.status)
+            wait = _retry_after_seconds(response_headers.get("retry-after")) if response.status in (429, 503) else None
+            raise SafeHTTPError("http_error", response.status, wait, target.host.lower())
         encoding = response_headers.get("content-encoding", "identity").lower().strip()
         if encoding not in ("", "identity", "gzip"):
             raise SafeHTTPError("unsupported_encoding")
@@ -282,7 +323,11 @@ def _request(target, address, deadline, limit, headers, truncate=False):
         transfer = response_headers.get("transfer-encoding", "").lower().strip()
         if transfer not in ("", "chunked") or (transfer and length is not None):
             raise SafeHTTPError("network_error")
+        if on_headers is not None:
+            # The caller sees the declared size (None when unknown) before any body is read, and may refuse.
+            on_headers(int(length) if length is not None else None)
         body = bytearray()
+        produced = 0           # decoded bytes so far (what `body` holds, or what `sink` got)
         wire_size = 0
         cut = False
         decoder = zlib.decompressobj(16 + zlib.MAX_WBITS) if encoding == "gzip" else None
@@ -300,9 +345,14 @@ def _request(target, address, deadline, limit, headers, truncate=False):
             if decoder is not None:
                 if decoder.eof:
                     raise SafeHTTPError("network_error")
-                chunk = decoder.decompress(chunk, limit + 1 - len(body))
-            body.extend(chunk)
-            if len(body) > limit or wire_size > limit:
+                chunk = decoder.decompress(chunk, limit + 1 - produced)
+            produced += len(chunk)
+            if sink is not None:
+                # A large file goes to the caller piece by piece: nothing is held here.
+                sink(chunk)
+            else:
+                body.extend(chunk)
+            if produced > limit or wire_size > limit:
                 if not truncate:
                     raise SafeHTTPError("too_large")
                 # The caller wants the start of the page only: keep `limit` bytes, stop reading.
@@ -340,14 +390,14 @@ def _request(target, address, deadline, limit, headers, truncate=False):
             sock.close()
 
 
-def _request_any(target, addresses, deadline, limit, headers, truncate=False):
+def _request_any(target, addresses, deadline, limit, headers, truncate=False, sink=None, on_headers=None):
     """Try each validated address in turn: a broken IPv6 route must not sink a
     dual-stack site. Only connection-level failures move on to the next one,
     including a connect that timed out (a route that silently drops packets)."""
     last = None
     for address in addresses[:4]:
         try:
-            return _request(target, address, deadline, limit, headers, truncate)
+            return _request(target, address, deadline, limit, headers, truncate, sink, on_headers)
         except SafeHTTPError as exc:
             moves_on = exc.code == "network_error" or (exc.code == "timeout" and getattr(exc, "unreachable", False))
             if not moves_on or time.monotonic() >= deadline:
@@ -356,13 +406,13 @@ def _request_any(target, addresses, deadline, limit, headers, truncate=False):
     raise last or SafeHTTPError("network_error")
 
 
-def get(url, *, deadline=None, limit=HTML_LIMIT, headers=None, truncate=False):
+def get(url, *, deadline=None, limit=HTML_LIMIT, headers=None, truncate=False, sink=None, on_headers=None):
     """`truncate`: a body over `limit` is cut to its first `limit` bytes (Response.truncated)
     instead of failing with too_large; for reading a page's head, never for a whole file."""
     deadline = deadline if deadline is not None else time.monotonic() + TOTAL_TIMEOUT
     for hop in range(MAX_REDIRECTS + 1):
         target, addresses = validate_url(url, deadline)
-        response = _request_any(target, addresses, deadline, limit, headers, truncate)
+        response = _request_any(target, addresses, deadline, limit, headers, truncate, sink, on_headers)
         remaining(deadline)
         if response.status not in (301, 302, 303, 307, 308):
             return response

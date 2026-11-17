@@ -349,7 +349,7 @@ class StylesheetTests(ArchiveCase):
         started = time.monotonic()
         with self.assertRaises(archive.ArchiveError) as raised:
             archive.build_copy(BASE_URL + "/flood")
-        self.assertEqual(raised.exception.code, "too_large")
+        self.assertEqual(raised.exception.code, "copy_too_large")
         self.assertLess(time.monotonic() - started, 15)
         started = time.monotonic()
         for hostile in ("url(" * 250000, 'url("' * 200000, "/*" * 500000, "@import" * 150000, "expression" + " " * 900000,
@@ -390,6 +390,26 @@ class ImageTests(ArchiveCase):
         self.assertEqual(record["imagesLeftOut"], 2)
         self.assertIn("2 pictures could not be fetched.", document)
         self.assertFalse(record["limited"])
+
+    def test_inline_svg_icons_written_as_text_are_kept_not_counted_as_failed(self):
+        from urllib.parse import quote
+        icon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#123"/></svg>'
+        self.http.html("/page", f"""<p>{'text ' * 100}</p>
+            <img src="data:image/svg+xml,{quote(icon)}" alt="Percent">
+            <img src='data:image/svg+xml;charset=utf-8,{icon.replace('"', "&quot;")}' alt="Plain">
+            <img src="data:image/svg+xml;utf8,{quote(icon, safe='<>=/ :')}" alt="Utf8">
+            <img src="data:image/svg+xml,%3Cp%3Enot an svg%3C/p%3E" alt="Junk">""")
+        document, record = self.copy()
+        self.assert_inert(document)
+        self.assertEqual(document.count(f'src="data:image/svg+xml;base64,{b64(icon.encode())}"'), 3)
+        self.assertEqual((record["images"], record["imagesLeftOut"]), (3, 1), "only the one that isn't a picture is left out")
+        self.assertIn("<span>[Junk]</span>", document)
+
+    def test_a_copy_over_the_file_limit_is_named_for_that_limit_not_the_page_limit(self):
+        self.http.html("/long", "<p>" + "words " * 4000 + "</p>")
+        with patch.object(archive, "FILE_LIMIT", 9000), self.assertRaises(archive.ArchiveError) as raised:
+            archive.build_copy(BASE_URL + "/long")
+        self.assertEqual(raised.exception.code, "copy_too_large")
 
     def test_only_the_first_forty_pictures_are_saved(self):
         tags = "".join(f'<img src="/i{n}.gif" alt="p{n}">' for n in range(45))
@@ -615,6 +635,14 @@ class QueueTests(ArchiveCase):
         self.assertEqual(archive.state(archive.copy_key(BASE_URL + "/gone")),
                          {"key": archive.copy_key(BASE_URL + "/gone"), "status": "failed", "error": "http_error"})
         self.assertEqual(archive.state(archive.copy_key(BASE_URL + "/huge"))["status"], "too_large")
+        self.assertEqual(archive.state(archive.copy_key(BASE_URL + "/huge"))["error"], "too_large")
+        # A page under 3 MB whose copy would pass 15 MB: also final, under its own code.
+        self.http.html("/long", "<p>" + "words " * 4000 + "</p>")
+        with patch.object(archive, "FILE_LIMIT", 9000):
+            archive.request_copy(BASE_URL + "/long")
+            self.assertTrue(archive.wait_idle(10))
+        self.assertEqual({k: v for k, v in archive.state(archive.copy_key(BASE_URL + "/long")).items() if k != "key"},
+                         {"status": "too_large", "error": "copy_too_large"})
         self.assertEqual(os.listdir(self.store), [])
         for url, code in (("http://127.0.0.1/x", "blocked_url"), ("notaurl", "invalid_url"), ("file:///c:/x", "invalid_url")):
             self.assertEqual(archive.request_copy(url), {"key": "", "status": "failed", "error": code})
@@ -775,6 +803,20 @@ class RouteTests(ArchiveCase):
 
         total = self.client.get("/api/archive")
         self.assertEqual(total.json, {"ok": True, "enabled": True, "count": 1, "bytes": len(stored)})
+
+    def test_missing_copies_are_named_after_a_json_only_restore(self):
+        # A JSON backup keeps the links' copy keys, not the copies: the server says which aren't here.
+        self.client.post("/api/archive", json={"url": self.url})
+        self.assertTrue(archive.wait_idle(10))
+        gone = "e" * 32
+        answer = self.client.post("/api/archive/missing", json={"keys": [self.key, gone]})
+        self.assertEqual((answer.status_code, answer.json), (200, {"ok": True, "missing": [gone]}))
+        self.assertEqual(self.client.post("/api/archive/missing", json={"keys": []}).json["missing"], [])
+        for body in ({}, {"keys": "x"}, {"keys": ["../etc"]}, {"keys": [5]}):
+            self.assertEqual(self.client.post("/api/archive/missing", json=body).status_code, 400, body)
+        self.assertEqual(self.client.post("/api/archive/missing", data="keys", content_type="text/plain").status_code, 415)
+        foreign = self.client.post("/api/archive/missing", json={"keys": [gone]}, headers={"Origin": "https://example.com"})
+        self.assertEqual(foreign.status_code, 403)
 
     def test_switched_off_nothing_is_fetched(self):
         with patch.object(archive, "ENABLED", False):
@@ -996,6 +1038,40 @@ class RouteTests(ArchiveCase):
         # Importing the same zip again changes nothing.
         again = self._import(data).json
         self.assertEqual((len(again["restored"]), again["already"], again["notInLibrary"]), (0, 2, 1))
+
+    def test_restore_counts_entries_before_opening_the_zip(self):
+        import io
+        import zipfile
+        # zipfile reads the whole entry list into memory when it opens a zip: the count is checked first.
+        def bundle(count, prefix=b"", lie=None):
+            sink = io.BytesIO()
+            sink.write(prefix)
+            with zipfile.ZipFile(sink, "w") as out:
+                out.writestr("library.json", "{}")
+                for n in range(count - 1):
+                    out.writestr(f"extra/{n}.txt", "x")
+            data = bytearray(sink.getvalue())
+            if lie is not None:   # the end record claims another number of entries
+                end = data.rfind(b"PK\x05\x06")
+                data[end + 8:end + 12] = bytes([lie, 0, lie, 0])
+            return bytes(data)
+        opened = []
+        real = zipfile.ZipFile
+        def spy(*args, **kw):
+            opened.append(args[0])
+            return real(*args, **kw)
+        oversized = (("many", bundle(9)), ("false count", bundle(9, lie=1)), ("after other data", bundle(9, prefix=b"x" * 300)))
+        fits = bundle(5)
+        with patch.object(archive, "MAX_ENTRIES", 5), patch.object(zipfile, "ZipFile", spy):
+            for name, data in oversized:
+                with self.subTest(name):
+                    response = self._import(data)
+                    self.assertEqual((response.status_code, response.json["error"]),
+                                     (400, "That zip has too many files to be a backup from this app."))
+            self.assertEqual(opened, [], "zipfile never read the oversized entry lists")
+            self.assertEqual(self._import(fits).status_code, 200)
+            self.assertEqual(len(opened), 1)
+        self.assertFalse(archive._too_many_entries(__file__, 5), "not a zip: left for zipfile to refuse")
 
     def test_restore_refuses_tampered_or_foreign_files(self):
         import io

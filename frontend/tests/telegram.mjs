@@ -1,6 +1,6 @@
 // Run after npm run build. Uses preinstalled Playwright and a new browser profile.
 // All browser requests are fulfilled/aborted here: no server, DB, or network I/O.
-// C3_PLAYWRIGHT_MODULE and C3_BROWSER_CHANNEL select installed test tooling.
+// C4_PLAYWRIGHT_MODULE and C3_BROWSER_CHANNEL select installed test tooling.
 import assert from 'node:assert/strict';
 import { importThroughField } from './importField.mjs';
 import { readFile } from 'node:fs/promises';
@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
 const require = createRequire(import.meta.url);
-const { chromium } = require(process.env.C3_PLAYWRIGHT_MODULE || 'playwright');
+const { chromium } = require(process.env.C4_PLAYWRIGHT_MODULE || 'playwright');
 const fixturePath = name => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
 const raw = await readFile(fixturePath('telegram-saved-messages.json'), 'utf8');
 const fixture = JSON.parse(raw);
@@ -44,7 +44,18 @@ async function isolatedPage(unit = false) {
     if (url.origin !== origin) { denied.push(url.href); return route.abort(); }
     if (url.pathname.startsWith('/api/')) {
       apis.push(url.pathname);
-      const data = { '/api/stats': { total: 0 }, '/api/posts': [], '/api/categories': [] };
+      // The app saves through /api/library (an empty library that accepts every save) and asks a few
+      // quiet start-up questions; each is answered "nothing here" so no feature reaches a server.
+      const empty = { ok: true, posts: [], deletedUrls: [], legacyRows: [], categories: [] };
+      const data = { '/api/stats': { total: 0 }, '/api/library': empty, '/api/ai/providers': { ok: true, providers: [], ready: [], available: false },
+        '/api/archive': { ok: true, enabled: false, count: 0, bytes: 0 }, '/api/archive/large-videos': { ok: true, on: false, limit: 2147483648, cap: 52428800 }, '/api/extension': { ok: true, connections: [], code: null },
+        '/api/library/pending': { ok: true, connected: false, change: null, suggestions: 0, version: '0' },
+        '/api/claude-desktop': { ok: true, connected: false, createdAt: '', lastUsedAt: '', changes: [], suggestions: [] },
+        '/api/telegram/config': { ok: true, api_id_configured: false, api_hash_configured: false, config_readable: true },
+        '/api/telegram/auth': { ok: true, credentials_configured: false, session_exists: false, authorized: false, login_step: null, expires_in: null } };
+      // No classifier here: the import files each link under "other", for review.
+      if (url.pathname === '/api/categorize') return route.fulfill({ status: 503, json: { ok: false, error: 'Synthetic classifier unavailable' } });
+      if (url.pathname === '/api/enrich') return route.fulfill({ status: 502, json: { ok: false, status: 'failed', error: 'http_error' } });
       if (!(url.pathname in data)) { denied.push(url.pathname); return route.abort(); }
       return route.fulfill({ json: data[url.pathname] });
     }
@@ -53,6 +64,7 @@ async function isolatedPage(unit = false) {
       return route.fulfill({ contentType: url.pathname.endsWith('.js') ? 'text/javascript' : 'text/css',
         body: await readFile(new URL(`../dist${url.pathname}`, import.meta.url)) });
     }
+    if (url.pathname.startsWith('/fonts/')) return route.fulfill({ status: 404, body: '' }); // bundled fonts: not needed here
     return route.fulfill({ contentType: 'text/html', body: await readFile(new URL('../dist/index.html', import.meta.url)) });
   });
   const page = await context.newPage();
@@ -163,17 +175,22 @@ try {
   assert.equal(initial.filter(p => p.source === 'telegram').length, 3);
   assert.equal(initial.filter(p => p.telegramMessage).length, 4);
   const travel = initial.find(p => p.url === expectedUrls[0]);
+  // The import files each new link under a shelf a moment later; wait for that before curating.
+  await page.waitForFunction(id => JSON.parse(localStorage.getItem('library-store-v1')).state.posts.find(p => p.id === id)?.categories.length, travel.id);
+  const filed = (await readPosts()).find(p => p.id === travel.id);
   await page.goto(`${origin}/library/item/${travel.id}`);
   const dialog = page.getByRole('dialog', { name: 'Saved post detail' });
   await dialog.getByRole('button', { name: 'Favorite', exact: true }).click();
   await dialog.getByRole('button', { name: 'Archived', exact: true }).click();
-  await dialog.getByRole('button', { name: 'other', exact: true }).click();
+  // Categories toggle: switch off what the import chose, then pick the one this test curates.
+  for (const category of filed.categories) await dialog.getByRole('button', { name: category, exact: true }).click();
+  await dialog.getByRole('button', { name: 'technology', exact: true }).click();
   await dialog.getByPlaceholder('Your notes…').fill('UI Telegram note');
   await dialog.getByRole('button', { name: 'Close', exact: true }).click();
   const curated = await readPosts();
   const curatedTravel = curated.find(p => p.id === travel.id);
   assert.equal(curatedTravel.favorite, true); assert.equal(curatedTravel.status, 'archived');
-  assert.deepEqual(curatedTravel.categories, ['other']); assert.equal(curatedTravel.userNotes, 'UI Telegram note');
+  assert.deepEqual(curatedTravel.categories, ['technology']); assert.equal(curatedTravel.userNotes, 'UI Telegram note');
   await page.goto(`${origin}/library/settings`);
   for (const name of ['firefox', 'chromium']) {
     const imported = await importThroughField(page, fixturePath(`bookmarks-${name}.html`));
@@ -200,7 +217,7 @@ try {
   assert.equal(await page.evaluate(() => localStorage.getItem('library-store-v1')), before);
   pass('Settings UI: all 18 invalid inputs plus linkless export leave serialized persisted state unchanged');
   assert.deepEqual(errors, []); assert.deepEqual(denied, []);
-  assert.ok(apis.every(p => ['/api/stats', '/api/posts', '/api/categories'].includes(p)));
+  assert.ok(apis.every(p => ['/api/stats', '/api/library', '/api/ai/providers', '/api/archive', '/api/archive/large-videos', '/api/telegram/config', '/api/telegram/auth', '/api/categorize', '/api/enrich', '/api/extension', '/api/library/pending', '/api/claude-desktop'].includes(p)), [...new Set(apis)].join(' '));
   pass('all requests fulfilled from local fixtures/build; no network continuation, providers, DB, live Telegram, external images or uncaught browser errors');
   await context.close();
 } finally {

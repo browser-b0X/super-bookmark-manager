@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, ChevronRight, ExternalLink, KeyRound, Loader2, Sparkles, Trash2 } from "lucide-react";
+import ClaudeDesktopRow from "./ClaudeDesktop";
 
 export interface ProviderStatus {
   id: "gemini" | "groq" | "openrouter" | "nvidia" | "freellmapi" | "local";
@@ -14,7 +15,7 @@ export interface ProviderStatus {
   model: string;
   defaultModel: string;
   baseUrl: string;
-  state: "ready" | "off" | "rate_limited" | "key_rejected" | "unavailable" | "timeout" | "bad_response";
+  state: "ready" | "off" | "rate_limited" | "key_rejected" | "unavailable" | "timeout" | "bad_response" | "someone_else";
   retryIn: number;
   today: { requests: number; failures: number; tokens: number };
 }
@@ -23,7 +24,12 @@ export interface AiStatus { providers: ProviderStatus[]; ready: string[]; availa
 const STATE_LABEL: Record<ProviderStatus["state"], string> = {
   ready: "Ready", off: "Not set up", rate_limited: "Resting (rate limit)", key_rejected: "Key rejected",
   unavailable: "Unreachable", timeout: "Slow — resting", bad_response: "Odd reply — resting",
+  someone_else: "Another user's program — nothing sent",
 };
+
+/** The providers that are set up but can't answer right now, when none can (they come back on their own). */
+export const notAnswering = (status: AiStatus | null): string[] =>
+  status && !status.available ? status.providers.filter(p => p.configured && p.enabled).map(p => p.label) : [];
 
 export async function fetchAiStatus(): Promise<AiStatus | null> {
   try {
@@ -226,6 +232,7 @@ export default function AiProviders({ onChange }: { onChange?: (s: AiStatus) => 
             {others.map(p => <ProviderRow key={p.id} p={p} open={open.has(p.id)} onToggle={() => toggle(p.id)} onStatus={update} />)}
           </ol>}
         </li>}
+        <ClaudeDesktopRow />
       </ol>}
     </section>
   );

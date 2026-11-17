@@ -32,7 +32,7 @@ import SiteLine, { SiteIcon } from "./SiteLine";
 import { useIncremental } from "../../lib/incremental";
 
 /** Small mark on links that have a saved copy of their page. */
-import { FollowUpBadge, UseOftenMark } from "./FollowUp";
+import { FollowUpBadge, ReviewedMark, UseOftenMark } from "./FollowUp";
 
 function CopyMark({ post, className, size = 13 }: { post: SavedPost; className?: string; size?: number }) {
   if (post.archiveStatus !== "saved" || !post.archiveKey) return null;
@@ -173,6 +173,7 @@ function PostTile({ post: p, index, selected, onToggle, sortable }: {
         <Link to={`/library/item/${p.id}`} onClick={e => e.stopPropagation()} className="tile__title cell-title" title={p.title || p.url}>
           {p.title ? displayText(p.title) : untitledName(p)}
         </Link>
+        <ReviewedMark post={p} className="tile__reviewed" />
       </div>
       <div className="tile__pop" onClick={e => e.stopPropagation()}>
         <SiteLine post={p} compact />
@@ -321,6 +322,7 @@ export function PostTable({ posts, selected, onToggle, resetKey = "" }: ViewProp
                   {p.faviconUrl ? <SiteIcon post={p} /> : <PlatformIcon post={p} />}
                   <Link to={`/library/item/${p.id}`} onClick={e => e.stopPropagation()} className="max-w-[360px] truncate font-medium">{p.title || p.url}</Link>
                   {p.favorite && <Star size={12} className="text-[var(--amber)]" fill="currentColor" />}
+                  <ReviewedMark post={p} className="shrink-0 text-[var(--dim)]" />
                   <CopyMark post={p} className="shrink-0 text-[var(--dim)]" size={12} />
                 </div>
               </td>

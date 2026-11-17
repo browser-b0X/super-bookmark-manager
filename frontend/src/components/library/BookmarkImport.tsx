@@ -5,7 +5,8 @@ import { parseChromiumBookmarks } from "../../lib/chromiumBookmarks";
 import { parseFirefoxCopy } from "../../lib/firefoxBookmarks";
 import { parseFirefoxJson } from "../../lib/firefoxJson";
 import { parseTelegramExport } from "../../lib/telegram";
-import { detectImportFormat, FORMAT_LABELS, type ImportFormat } from "../../lib/importDetect";
+import { detectImportFormat, FORMAT_LABELS, READ_LATER, type ImportFormat } from "../../lib/importDetect";
+import { parsePocketHtml, parseReadLaterCsv, type ReadLaterSummary } from "../../lib/readLater";
 import { chatNameFrom, parseWhatsAppChat } from "../../lib/whatsapp";
 import { applyImportOptions, planImport, type FolderNode, type ImportPlan } from "../../lib/importPlan";
 import { applyImportTriage, IMPORT_TRIAGE_LABELS } from "../../lib/importTriage";
@@ -19,7 +20,7 @@ import type { SavedPost } from "../../types";
 interface Preview {
   fileName: string;
   format: Exclude<ImportFormat, "unknown">;
-  parsed: BookmarkImportResult & { historyIgnored?: number; walMode?: boolean };
+  parsed: BookmarkImportResult & { historyIgnored?: number; walMode?: boolean; readLater?: ReadLaterSummary };
   plan: ImportPlan;
 }
 
@@ -142,7 +143,7 @@ export default function BookmarkImport() {
     try {
       const { format, text } = await detectImportFormat(file);
       if (format === "unknown") {
-        setMessage("This file isn't a bookmark export this app can read. Use an HTML export, a Chrome/Edge/Brave Bookmarks file, a Firefox backup (.json) or places.sqlite copy, a Telegram JSON export, or a WhatsApp chat export (.txt or .zip).");
+        setMessage("This file isn't a bookmark export this app can read. Use an HTML export (from a browser, Raindrop.io or Pocket), a Chrome/Edge/Brave Bookmarks file, a Firefox backup (.json) or places.sqlite copy, a Pocket or Instapaper export (.csv), a Telegram JSON export, or a WhatsApp chat export (.txt or .zip).");
         return;
       }
       setBusy(`Reading ${FORMAT_LABELS[format].toLowerCase()}…`);
@@ -153,6 +154,8 @@ export default function BookmarkImport() {
       else if (format === "firefox-json") parsed = parseFirefoxJson(text!);
       else if (format === "firefox-db") parsed = await parseFirefoxCopy(file);
       else if (format === "whatsapp") parsed = parseWhatsAppChat(text!, chatNameFrom(file.name));
+      else if (format === "pocket" || format === "instapaper") parsed = parseReadLaterCsv(text!);
+      else if (format === "pocket-html") parsed = parsePocketHtml(text!);
       else {
         const telegram = parseTelegramExport(text!);
         parsed = telegram.errors.length
@@ -189,7 +192,8 @@ export default function BookmarkImport() {
     const batchId = `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const chosen = applyImportOptions(preview.plan, { excluded, shelfFor, tagMode, includeDuplicates, batchId });
     // Chat links are new by nature (Catch Up); browser bookmarks may be years old.
-    const browser = preview.format !== "telegram" && preview.format !== "whatsapp";
+    // Read-later exports say themselves what is unread (Inbox) and what was read (Kept).
+    const browser = preview.format !== "telegram" && preview.format !== "whatsapp" && !READ_LATER.has(preview.format);
     const triaged = browser ? applyImportTriage(chosen, importTriage) : { posts: chosen, filed: 0 };
     // Links already saved still refresh their source details (Telegram text, folders).
     const { added, updated, skipped } = importFilePosts([...triaged.posts, ...preview.plan.existing]);
@@ -226,9 +230,9 @@ export default function BookmarkImport() {
     <section className="panel mt-5 p-5" aria-labelledby="import-heading">
       <h2 id="import-heading" className="flex items-center gap-2 text-[.9rem] font-semibold"><FileUp size={15} className="text-[var(--accent)]" /> Import links</h2>
       <p className="mt-1.5 text-[.76rem] text-[var(--dim)]">
-        Drop any bookmark export here — HTML, a Chrome/Edge/Brave <b>Bookmarks</b> file, a Firefox backup (.json) or places.sqlite copy,
-        a Telegram JSON export, or a WhatsApp chat export (.txt, or the .zip an iPhone makes). The file type is detected
-        for you and nothing is saved until you confirm.
+        Drop any bookmark export here — HTML (from a browser, <b>Raindrop.io</b> or <b>Pocket</b>), a Chrome/Edge/Brave <b>Bookmarks</b> file,
+        a Firefox backup (.json) or places.sqlite copy, a <b>Pocket or Instapaper export (.csv)</b>, a Telegram JSON export, or a WhatsApp
+        chat export (.txt, or the .zip an iPhone makes). The file type is detected for you and nothing is saved until you confirm.
       </p>
       <p className="mt-1 text-[.72rem] text-[var(--faint)]">
         Importing the same file again keeps your titles, shelves, tags, notes, favourites and reading state. Only the file you choose is read;
@@ -269,6 +273,7 @@ export default function BookmarkImport() {
             <div><dt>Likely duplicates</dt><dd>{plan.likelyDuplicates.length}</dd></div>
             <div><dt>Skipped</dt><dd>{plan.skipped.length + preview.parsed.duplicates + preview.parsed.unsupported + preview.parsed.malformed}</dd></div>
           </dl>
+          {preview.parsed.readLater && <ReadLaterNote summary={preview.parsed.readLater} />}
           <div className="mt-2 space-y-1">
             <Samples title="New" items={plan.fresh.map(post => ({ post }))} />
             <Samples title="Likely duplicates of links you already have" items={plan.likelyDuplicates.map(d => ({ post: d.post, note: `matches “${d.match.title || d.match.url}”` }))} />
@@ -302,7 +307,7 @@ export default function BookmarkImport() {
                 </select>
               </label>
             )}
-            {preview.format !== "telegram" && preview.format !== "whatsapp" && (
+            {preview.format !== "telegram" && preview.format !== "whatsapp" && !READ_LATER.has(preview.format) && (
               <label className="flex items-center gap-2">Show in Catch Up
                 <select className="input" style={{ width: "auto", padding: "2px 6px", fontSize: ".72rem" }} value={importTriage}
                   onChange={e => setImportTriage(e.target.value as ImportTriage)} aria-label="Which imported bookmarks appear in Catch Up">
@@ -360,5 +365,22 @@ export default function BookmarkImport() {
       )}
       {undoing && <UndoDialog record={undoing} onClose={text => { setUndoing(null); if (text) setMessage(text); }} />}
     </section>
+  );
+}
+
+/** What a Pocket or Instapaper export brings besides the links: where each lands, tags, dates. */
+function ReadLaterNote({ summary }: { summary: ReadLaterSummary }) {
+  const parts = [
+    <>Unread → <b className="text-[var(--text)]">Inbox</b> ({summary.unread})</>,
+    <>{summary.source === "Pocket" ? "Archived" : "Archive"} → <b className="text-[var(--text)]">Kept</b> ({summary.archived})</>,
+    ...(summary.starred ? [<>Starred → <b className="text-[var(--text)]">Favourites</b> ({summary.starred})</>] : []),
+    ...(summary.tagged ? [<>{summary.source} tags become tags ({summary.tagged} link{summary.tagged === 1 ? "" : "s"})</>] : []),
+    <>the date each was saved is kept.</>,
+  ];
+  return (
+    <div className="mt-2.5 rounded-lg border p-2.5 text-[.74rem]" style={{ borderColor: "var(--border)" }} aria-label={`From ${summary.source}`}>
+      <div className="font-semibold">From {summary.source}</div>
+      <div className="text-[var(--dim)]">{parts.map((part, i) => <span key={i}>{i ? " · " : ""}{part}</span>)}</div>
+    </div>
   );
 }

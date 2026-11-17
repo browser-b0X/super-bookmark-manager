@@ -6,9 +6,10 @@ import { useCopyAvailability } from "../../lib/copyAvailability";
 import { formatBytes, restoreCopies } from "../../lib/savedCopies";
 import { useCopySummary } from "./SavedCopiesSettings";
 
-interface Preview { version: number; exportedAt: string; recordCount: number; deletedCount: number; sha256: string; currentCount: number }
+interface Preview { version: number; exportedAt: string; recordCount: number; deletedCount: number; sha256: string; currentCount: number; savedFirst: boolean }
 
 const links = (n: number) => `${n} link${n === 1 ? "" : "s"}`;
+const become = (n: number) => `${links(n)} become${n === 1 ? "s" : ""}`;
 
 export default function BackupRestore() {
   const file = useRef<HTMLInputElement>(null);
@@ -67,7 +68,7 @@ export default function BackupRestore() {
     const result = await restoreCopies(selected);
     const count = result.restored.length;
     const parts = [count ? `Restored ${count} saved cop${count === 1 ? "y" : "ies"}.` : "No saved copies were restored."];
-    if (result.telegram) parts.push(`Telegram photos and videos restored for ${result.telegram} link${result.telegram === 1 ? "" : "s"}.`);
+    if (result.telegram) parts.push(`Telegram photos, videos and audio restored for ${result.telegram} link${result.telegram === 1 ? "" : "s"}.`);
     if (result.already) parts.push(`${result.already} ${result.already === 1 ? "was" : "were"} already here and ${result.already === 1 ? "was" : "were"} kept.`);
     if (result.notInLibrary) parts.push(`${result.notInLibrary} belong${result.notInLibrary === 1 ? "s" : ""} to links that are not in this library and ${result.notInLibrary === 1 ? "was" : "were"} skipped.`);
     if (result.invalid) parts.push(`${result.invalid} ${result.invalid === 1 ? "was" : "were"} damaged or not made by this app and ${result.invalid === 1 ? "was" : "were"} skipped.`);
@@ -97,12 +98,12 @@ export default function BackupRestore() {
     <h2 id="backup-heading" className="text-[.9rem] font-semibold">Backup &amp; Restore</h2>
     <p className="mt-2 text-[.76rem] text-[var(--dim)]">
       JSON backup includes SQLite-saved links, full notes/tags/favorites/statuses, category choices,
-      source and Telegram associations, category definitions and deletion markers.
-      It excludes unsaved browser edits, Saved Views, theme/sidebar preferences, image files,
+      source and Telegram associations, category definitions, Saved Views and deletion markers.
+      It excludes unsaved browser edits, theme/sidebar preferences, image files,
       sessions/credentials and legacy dashboard tasks, scratchpad and layouts. Image URLs are retained.
     </p>
     <p className="mt-2 text-[.76rem] text-[var(--dim)]">
-      Restore replaces the links, deletion markers and shelves in this library with the backup's. If the library
+      Restore replaces the links, deletion markers, shelves and Saved Views in this library with the backup's. If the library
       has links, they are saved first as a backup file in a backups folder beside it, so you can restore them the
       same way. Keep your downloaded JSON. SHA-256 checks file integrity, not who created it.
     </p>
@@ -134,8 +135,10 @@ export default function BackupRestore() {
       <p>Exported: {preview.exportedAt}</p>
       <p className="mt-2">{preview.currentCount
         ? `This replaces the ${links(preview.currentCount)} in this library with the backup's ${links(preview.recordCount)}. This library is saved first as a backup file, so you can go back.`
-        : `This library is empty: the backup's ${links(preview.recordCount)} become your library.`}</p>
-      <p className="mt-2">Saved Views and other browser preferences stay as they are.</p>
+        : preview.savedFirst
+          ? `This library has no links, but it isn't empty: it is saved first as a backup file, so you can go back. The backup's ${become(preview.recordCount)} your library.`
+          : `This library is empty: the backup's ${become(preview.recordCount)} your library.`}</p>
+      <p className="mt-2">Theme and sidebar preferences stay as they are. A backup from before v0.4.0 has no Saved Views, so yours stay.</p>
       <div className="mt-3 flex flex-wrap gap-2">
         <button className="btn" disabled={busy} onClick={() => void restore()}>Confirm restore</button>
         <button className="btn" disabled={busy} onClick={() => { setPreview(null); setContent(""); setMessage("Restore canceled. Nothing changed."); trigger.current?.focus(); }}>Cancel restore</button>

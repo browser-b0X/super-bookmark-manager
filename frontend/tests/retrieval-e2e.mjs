@@ -280,7 +280,7 @@ try {
   });
   await check('fixture isolation and runtime errors', async () => {
     assert.deepEqual(errors, []); assert.deepEqual(denied, []);
-    assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers', '/api/archive'].includes(r.path)));
+    assert.ok(requests.every(r => ['/api/library', '/api/stats', '/api/categories', '/api/telegram/auth', '/api/telegram/config', '/api/ai/providers', '/api/archive', '/api/archive/large-videos'].includes(r.path)));
     assert.deepEqual((await control('snapshot')).result.blocked, []);
     return 'no provider/personal/external network access or uncaught browser errors';
   });

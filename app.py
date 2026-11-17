@@ -7,6 +7,7 @@ import hmac
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -123,7 +124,19 @@ _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 # Routes that already apply their own Origin/content-type rules with
 # route-specific responses; the generic guard below covers everything else.
 _SELF_GUARDED = {"api_telegram_auth", "api_telegram_config", "api_library", "api_backup",
-                 "api_import_firefox", "api_telegram_refresh", "api_enrich", "api_archive_import"}
+                 "api_import_firefox", "api_telegram_refresh", "api_enrich", "api_archive_import", "api_archive_media"}
+
+# The Claude Desktop extension's server (claude_desktop.py): a program on this computer, never a browser. These
+# routes refuse what browsers add to a website's request and need the token made in Settings (_claude_run).
+_CLAUDE_ROUTES = {"api_mcp_hello", "api_mcp_search", "api_mcp_shelves", "api_mcp_unfiled", "api_mcp_link", "api_mcp_file",
+                  "api_mcp_suggest"}
+# The browser extension's routes check that the request comes from an extension page (chrome-extension:// or
+# moz-extension://, which no website can send) and carries its token.
+_EXTENSION_ROUTES = {"api_extension_pair", "api_extension_hello", "api_extension_ping", "api_extension_status",
+                     "api_extension_saved"}
+# Neither extension is a page of this app, so neither holds the packaged app's instance token
+# (packaging/standalone_entry.py): these routes are not asked for it.
+OUTSIDE_ROUTES = _CLAUDE_ROUTES | _EXTENSION_ROUTES
 
 
 def _allowed_hosts() -> set:
@@ -139,6 +152,8 @@ def _local_boundary():
         hostname = ""
     if hostname not in _allowed_hosts():
         return jsonify(ok=False, error="This server only answers on its local address."), 403
+    if request.endpoint in OUTSIDE_ROUTES:
+        return None
     if request.method in ("GET", "HEAD", "OPTIONS"):
         # The API is read by the app's own pages. Another website can still make the
         # browser send a GET (an <img>, a link), and some reads do work: shelf
@@ -277,6 +292,8 @@ def api_telegram_auth():
             return jsonify(ok=True, **telegram_auth.start_login(data["phone"], data.get("restart", False)))
         if action == "code" and set(data) == {"action", "code"}:
             return jsonify(ok=True, **telegram_auth.submit_code(data["code"]))
+        if action == "resend" and set(data) == {"action"}:
+            return jsonify(ok=True, **telegram_auth.resend_code())
         if action == "password" and set(data) == {"action", "password"}:
             return jsonify(ok=True, **telegram_auth.submit_password(data["password"]))
         if action == "cancel" and set(data) == {"action"}:
@@ -287,7 +304,8 @@ def api_telegram_auth():
     except telegram_auth.AuthError as exc:
         # Fixed safe message and bounded class/stage identifier; no secret values.
         return jsonify(ok=False, code=exc.code, error=str(exc),
-                       **({"diagnostic": exc.diagnostic} if exc.diagnostic else {})), exc.status
+                       **({"diagnostic": exc.diagnostic} if exc.diagnostic else {}),
+                       **({"retry_after": exc.retry_after} if exc.retry_after else {})), exc.status
     except (BadRequest, ValueError, RecursionError):
         return invalid()
     except Exception:
@@ -347,7 +365,9 @@ def api_telegram_config():
 
 def _drop_copies(payload, result=None):
     """A deleted link takes its saved copy with it. Never fails the save itself."""
-    urls = [*payload.get("deletedUrls", []), *payload.get("purgeUrls", []), *((result or {}).get("removedUrls") or [])]
+    kept = set((result or {}).get("keptUrls") or [])     # purges refused: the link changed since
+    urls = [*payload.get("deletedUrls", []), *(url for url in payload.get("purgeUrls", []) if url not in kept),
+            *((result or {}).get("removedUrls") or [])]
     if not urls:
         return
     try:
@@ -455,8 +475,8 @@ def api_telegram_refresh():
     try:
         body = request.get_json()
         if (not isinstance(body, dict) or body.get("confirm") is not True
-                or not set(body) <= {"confirm", "media", "startup"}
-                or any(not isinstance(body.get(name, False), bool) for name in ("media", "startup"))):
+                or not set(body) <= {"confirm", "media", "startup", "retry"}
+                or any(not isinstance(body.get(name, False), bool) for name in ("media", "startup", "retry"))):
             return jsonify(ok=False, error="Explicit refresh confirmation is required."), 400
     except BadRequest:
         return jsonify(ok=False, error="Malformed refresh request."), 400
@@ -467,7 +487,9 @@ def api_telegram_refresh():
         return jsonify(ok=True, skipped="already_checked")
     try:
         # Photos and videos are kept beside saved copies, so not when copies are off for this run.
-        return jsonify(refresh_saved_messages(keep_media=body.get("media", False) and archive.ENABLED))
+        # "retry": the Refresh button, which also tries large downloads that broke off earlier.
+        return jsonify(refresh_saved_messages(keep_media=body.get("media", False) and archive.ENABLED,
+                                              retry=body.get("retry", False)))
     except RefreshError as exc:
         if body.get("startup") and exc.code in ("network", "busy"):
             release_startup_check()   # e.g. the app started before the network was up: a later load retries
@@ -662,7 +684,11 @@ def api_capture_delete(capture_id):
 def api_layout():
     if request.method == "POST":
         data = _json_object()
-        storage.save_layout(_text(data, "key", "main") or "main", json.dumps(data.get("layout", {})))
+        try:
+            layout = json.dumps(data.get("layout", {}), allow_nan=False)
+        except ValueError:
+            raise _BadBody("layout must be plain JSON: no NaN or Infinity.") from None
+        storage.save_layout(_text(data, "key", "main") or "main", layout)
         return jsonify({"ok": True})
     key = request.args.get("key", "main")
     raw = storage.get_layout(key)
@@ -689,8 +715,9 @@ def api_enrich():
     def failure(code, status, extra=None):
         response = jsonify(ok=False, title="", summary="", thumbnail="", status="failed", error=code, **(extra or {}))
         if code == "busy":
-            # Tell the client when to come back instead of letting it guess.
-            response.headers["Retry-After"] = "5"
+            # Tell the client when to come back (a resting site's own wait) instead of letting it guess.
+            wait = (extra or {}).get("retryAfter")
+            response.headers["Retry-After"] = str(wait) if isinstance(wait, int) and 1 <= wait <= 3600 else "5"
         return response, status
 
     origin = request.headers.get("Origin")
@@ -724,7 +751,7 @@ def api_enrich():
         if status == "failed":
             code = error or "internal_error"
             http_status = {"invalid_url": 400, "blocked_url": 400, "busy": 429, "timeout": 504}.get(code, 502)
-            detail = {k: meta[k] for k in ("httpStatus",) if isinstance(meta.get(k), int)}
+            detail = {k: meta[k] for k in ("httpStatus", "retryAfter") if isinstance(meta.get(k), int)}
             if meta.get("linkStatus") == "gone":
                 detail["linkStatus"] = "gone"
             return failure(code, http_status, detail)
@@ -865,6 +892,325 @@ def serve_thumb(code):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
     return response
+
+
+# ── The browser extension (extension_pairing.py) ───────────────────────────────
+
+def _app_page_only():
+    """Settings' own requests: a positive sign of the app's own page (the browser's Sec-Fetch-Site:
+    same-origin, or this origin), never just a missing Origin, which another extension can send."""
+    origin = request.headers.get("Origin")
+    if origin is not None:
+        if not _library_same_origin(origin):
+            abort(403)
+    elif request.headers.get("Sec-Fetch-Site") != "same-origin":
+        abort(403)
+
+
+def _extension_only(reading=False):
+    """The extension's own requests: its origin is chrome-extension:// or moz-extension://, which a
+    website can't send. Its GET requests carry no Origin at all (Chromium sends none for an extension
+    with access to the address): a read may come without one, never with a website's, and still needs
+    the token. Answers allow CORP, so the extension may read them."""
+    origin = request.headers.get("Origin")
+    if reading and origin is None:
+        return
+    if not (origin or "").startswith(("chrome-extension://", "moz-extension://")) or len(origin) > 120:
+        abort(403)
+
+
+def _extension_answer(body, status=200):
+    response = jsonify(body)
+    response.status_code = status
+    response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/api/extension", methods=["GET"])
+def api_extension():
+    """Settings: the connected browsers, and the pairing code while it still works."""
+    import extension_pairing
+    _app_page_only()
+    return jsonify(ok=True, connections=extension_pairing.connections(), code=extension_pairing.pending_code())
+
+
+@app.route("/api/extension/code", methods=["POST"])
+def api_extension_code():
+    import extension_pairing
+    _app_page_only()
+    if _json_object() != {}:
+        return jsonify(ok=False, error="Expected an empty JSON object."), 400
+    return jsonify(ok=True, code=extension_pairing.new_code())
+
+
+@app.route("/api/extension/<connection_id>", methods=["DELETE"])
+def api_extension_remove(connection_id):
+    import extension_pairing
+    _app_page_only()
+    if not extension_pairing.remove(connection_id):
+        return jsonify(ok=False, error="That browser isn't connected."), 404
+    return jsonify(ok=True)
+
+
+@app.route("/api/extension/pair", methods=["POST"])
+def api_extension_pair():
+    import extension_pairing
+    _extension_only()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or set(data) - {"nonce", "proof", "browser"}:
+        return _extension_answer({"ok": False, "error": "wrong"}, 400)
+    # The port this server is bound to (from its socket, not the request's Host header).
+    origin = f"http://127.0.0.1:{request.environ.get('SERVER_PORT', '')}"
+    try:
+        if "proof" not in data:
+            challenge, proof = extension_pairing.begin(data.get("nonce"), origin)
+            return _extension_answer({"ok": True, "challenge": challenge, "proof": proof})
+        connection, token, proof = extension_pairing.pair(data.get("nonce"), data.get("proof"), data.get("browser", "Browser"), origin)
+    except extension_pairing.PairingError as exc:
+        return _extension_answer({"ok": False, "error": exc.code}, 400)
+    return _extension_answer({"ok": True, "token": token, "id": connection, "proof": proof})
+
+
+def _paired():
+    import extension_pairing
+    return extension_pairing.check(request.headers.get("X-SBM-Pair"))
+
+
+@app.route("/api/extension/hello", methods=["GET"])
+def api_extension_hello():
+    """Before sending its token, the extension checks it is talking to this app and not to some other
+    program on the port: the answer is an HMAC of its random nonce, keyed by what only the two know."""
+    import extension_pairing
+    _extension_only(reading=True)
+    # The port this server is bound to (from its socket, not the request's Host header).
+    origin = f"http://127.0.0.1:{request.environ.get('SERVER_PORT', '')}"
+    proof = extension_pairing.proof(request.args.get("id", ""), request.args.get("nonce", ""), origin)
+    if proof is None:
+        return _extension_answer({"ok": False, "error": "not_paired"}, 404)
+    return _extension_answer({"ok": True, "proof": proof})
+
+
+@app.route("/api/extension/ping", methods=["GET"])
+def api_extension_ping():
+    _extension_only(reading=True)
+    if not _paired():
+        return _extension_answer({"ok": False, "error": "not_paired"}, 401)
+    return _extension_answer({"ok": True})
+
+
+@app.route("/api/extension/status", methods=["GET"])
+def api_extension_status():
+    """Is this page saved? Only for a paired extension; title and shelf, nothing else."""
+    _extension_only(reading=True)
+    if not _paired():
+        return _extension_answer({"ok": False, "error": "not_paired"}, 401)
+    url = request.args.get("url", "")
+    link = storage.saved_link(url) if len(url) <= 4096 else None
+    if link is None:
+        return _extension_answer({"ok": True, "saved": False})
+    shelf = next((c for c in link["categories"] if c not in storage.RESERVED_SHELVES), "")
+    return _extension_answer({"ok": True, "saved": True, "title": link["title"][:200], "shelf": shelf})
+
+
+@app.route("/api/extension/saved", methods=["POST"])
+def api_extension_saved():
+    """Which of these posts are saved? For the Download buttons on a site's posts (the owner's check mark is on):
+    for each address, saved or not and its shelf; nothing else. At most 50 at a time."""
+    _extension_only()
+    if not _paired():
+        return _extension_answer({"ok": False, "error": "not_paired"}, 401)
+    data = request.get_json(silent=True)
+    urls = data.get("urls") if isinstance(data, dict) else None
+    if not isinstance(urls, list) or len(urls) > 50 or not all(isinstance(u, str) for u in urls):
+        return _extension_answer({"ok": False, "error": "invalid"}, 400)
+    items = []
+    for url in urls:
+        link = storage.saved_link(url) if len(url) <= 4096 else None
+        shelf = next((c for c in link["categories"] if c not in storage.RESERVED_SHELVES), "") if link else ""
+        items.append({"saved": link is not None, "shelf": shelf})
+    return _extension_answer({"ok": True, "items": items})
+
+
+# ── Claude Desktop (claude_desktop.py) ─────────────────────────────────────────
+
+def _claude_answer(body, status=200):
+    response = jsonify(body)
+    response.status_code = status
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _claude_run(work, token=True):
+    """The extension's server is a program on this computer, not a web page: a request carrying what browsers add
+    to a website's request (Origin, Sec-Fetch-Site) is refused whatever else it holds, and the token must match."""
+    import claude_desktop
+    if request.headers.get("Origin") is not None or request.headers.get("Sec-Fetch-Site") is not None:
+        return _claude_answer({"ok": False, "error": "Only the SuperBookmarks extension in Claude Desktop may use this."}, 403)
+    if token and not claude_desktop.check(request.headers.get("X-SBM-Claude")):
+        return _claude_answer({"ok": False, "error": "SuperBookmarks doesn't accept this token."}, 401)
+    try:
+        return _claude_answer(work())
+    except claude_desktop.Refused as exc:
+        return _claude_answer({"ok": False, "error": str(exc)}, exc.status)
+
+
+def _claude_body():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        import claude_desktop
+        raise claude_desktop.Refused("Expected a JSON object.")
+    return data
+
+
+@app.route("/api/mcp/hello", methods=["GET"])
+def api_mcp_hello():
+    """Before sending its token, the extension's server checks it is talking to this app: an HMAC of its nonce and
+    the address this server is bound to (its socket, not the Host header), keyed by the token's hash."""
+    import claude_desktop
+
+    def hello():
+        proof = claude_desktop.proof(request.args.get("nonce", ""), f"http://127.0.0.1:{request.environ.get('SERVER_PORT', '')}",
+                                     request.args.get("kid", ""))
+        if proof is None:
+            raise claude_desktop.Refused("This app doesn't know that token.", 404)
+        return {"ok": True, "proof": proof}
+    return _claude_run(hello, token=False)
+
+
+@app.route("/api/mcp/search", methods=["GET"])
+def api_mcp_search():
+    import claude_desktop
+    return _claude_run(lambda: claude_desktop.search(request.args.get("q", ""), request.args.get("limit", claude_desktop.SEARCH_LIMIT)))
+
+
+@app.route("/api/mcp/shelves", methods=["GET"])
+def api_mcp_shelves():
+    import claude_desktop
+    return _claude_run(claude_desktop.shelves)
+
+
+@app.route("/api/mcp/unfiled", methods=["GET"])
+def api_mcp_unfiled():
+    import claude_desktop
+    return _claude_run(lambda: claude_desktop.unfiled(request.args.get("page", 1)))
+
+
+@app.route("/api/mcp/link", methods=["GET"])
+def api_mcp_link():
+    import claude_desktop
+    return _claude_run(lambda: claude_desktop.link(request.args.get("id", "")))
+
+
+@app.route("/api/mcp/file", methods=["POST"])
+def api_mcp_file():
+    import claude_desktop
+
+    def file():
+        data = _claude_body()
+        return claude_desktop.file_links(data.get("ids"), data.get("shelf"), data.get("tags"))
+    return _claude_run(file)
+
+
+@app.route("/api/mcp/suggest", methods=["POST"])
+def api_mcp_suggest():
+    import claude_desktop
+
+    def suggest():
+        data = _claude_body()
+        return claude_desktop.suggest(data.get("name"), data.get("description", ""), data.get("ids"))
+    return _claude_run(suggest)
+
+
+def _settings_run(work):
+    """Settings' own requests about Claude Desktop (the app's pages only)."""
+    import claude_desktop
+    _app_page_only()
+    try:
+        return jsonify({"ok": True, **work()})
+    except claude_desktop.Refused as exc:
+        return jsonify(ok=False, error=str(exc)), exc.status
+
+
+@app.route("/api/claude-desktop", methods=["GET"])
+def api_claude_desktop():
+    """Settings: connected or not, what Claude Desktop changed (each with Undo) and the shelves it suggests."""
+    import claude_desktop
+    return _settings_run(claude_desktop.status)
+
+
+@app.route("/api/claude-desktop/token", methods=["POST", "DELETE"])
+def api_claude_desktop_token():
+    """A new token, shown once (any earlier one stops working), or Disconnect."""
+    import claude_desktop
+
+    def token():
+        if request.method == "DELETE":
+            claude_desktop.forget()
+            return {}
+        if _json_object() != {}:
+            raise claude_desktop.Refused("Expected an empty JSON object.")
+        return {"token": claude_desktop.new_token()}
+    return _settings_run(token)
+
+
+@app.route("/api/claude-desktop/undo", methods=["POST"])
+def api_claude_desktop_undo():
+    """Undo one change from Claude Desktop ({"id"}) or every one the note showed that the owner hasn't kept yet
+    ({"waiting": true, "version": the version the note was drawn from})."""
+    import claude_desktop
+
+    def undo():
+        data = _json_object()
+        if data.get("waiting") is True:
+            return claude_desktop.undo_waiting(data.get("version"))
+        if not isinstance(data.get("id"), str):
+            raise claude_desktop.Refused("Name the change to undo.")
+        return claude_desktop.undo([data["id"]])
+    return _settings_run(undo)
+
+
+@app.route("/api/claude-desktop/keep", methods=["POST"])
+def api_claude_desktop_keep():
+    """Keep the changes the note showed ({"version": the version it was drawn from})."""
+    import claude_desktop
+    return _settings_run(lambda: claude_desktop.keep(_json_object().get("version")))
+
+
+@app.route("/api/claude-desktop/suggestion", methods=["POST"])
+def api_claude_desktop_suggestion():
+    """The owner makes a shelf Claude Desktop suggested ({"id", "create": true}) or dismisses it."""
+    import claude_desktop
+
+    def resolve():
+        data = _json_object()
+        if not isinstance(data.get("id"), str) or not isinstance(data.get("create"), bool):
+            raise claude_desktop.Refused("Name the suggestion and whether to make it.")
+        return claude_desktop.resolve(data["id"], data["create"])
+    return _settings_run(resolve)
+
+
+@app.route("/api/creators/profile", methods=["POST"])
+def api_creators_profile():
+    """Refresh a creator from their profile page: one public page, read now because the owner clicked, for a
+    field-by-field review in the page (nothing is saved here)."""
+    import creator_profile
+    _app_page_only()
+    data = _json_object()
+    return jsonify(creator_profile.read(data.get("url")))
+
+
+@app.route("/api/library/pending", methods=["POST"])
+def api_library_pending():
+    """An open tab says which links it has changed but not saved yet (Claude Desktop never writes over those) and
+    hears what Claude Desktop changed since."""
+    import claude_desktop
+
+    def report():
+        data = _json_object()
+        claude_desktop.report_pending(data.get("tab"), data.get("urls"))
+        return claude_desktop.watch()
+    return _settings_run(report)
 
 
 @app.route("/api/thumbs/missing", methods=["POST"])
@@ -1033,6 +1379,50 @@ def api_archive():
     return jsonify(ok=True, **state), 200 if state["status"] == "saved" else 202
 
 
+@app.route("/api/archive/large-videos", methods=["GET", "POST"])
+def api_archive_large_videos():
+    """"Keep large videos and audio" (Settings → Saved copies). Off keeps the cap of archive.VIDEO_LIMIT; on keeps X
+    videos, and Telegram videos and audio, up to archive.LARGE_VIDEO_LIMIT, streamed to disk. `telegram`: the
+    background download of Telegram's large files (telegram_refresh), which POST {"stop": true} stops; switching
+    off stops it too."""
+    import archive
+    import telegram_refresh
+    if request.method == "POST":
+        _app_page_only()
+        data = _json_object()
+        if set(data) == {"stop"} and data["stop"] is True:
+            telegram_refresh.stop_large()
+        elif set(data) == {"on"} and type(data["on"]) is bool:
+            archive.set_large_videos(data["on"])
+            if data["on"]:
+                telegram_refresh.forget_held()
+            else:
+                telegram_refresh.stop_large()
+        else:
+            return jsonify(ok=False, error="invalid"), 400
+    return jsonify(ok=True, on=archive.large_videos_on(), limit=archive.LARGE_VIDEO_LIMIT, cap=archive.VIDEO_LIMIT,
+                   telegram=telegram_refresh.large_state())
+
+
+@app.route("/api/archive/missing", methods=["POST"])
+def api_archive_missing():
+    """Which copies the links say they have (by key) are not on this computer.
+
+    A JSON backup keeps the keys, not the copies: after restoring one on a new install,
+    "Save copies" treats these links as having none."""
+    import archive
+    origin = request.headers.get("Origin")
+    if origin is not None and not _library_same_origin(origin):
+        return jsonify(ok=False, error="Cross-origin requests are not allowed."), 403
+    if request.mimetype != "application/json":
+        return jsonify(ok=False, error="Send the copy keys as JSON."), 415
+    data = request.get_json(silent=True)
+    keys = data.get("keys") if isinstance(data, dict) else None
+    if not isinstance(keys, list) or len(keys) > 200000 or not all(archive.valid_key(key) for key in keys):
+        return jsonify(ok=False, error="Expected a list of copy keys."), 400
+    return jsonify(ok=True, missing=archive.missing_copies(keys))
+
+
 @app.route("/api/archive/export", methods=["POST"])
 def api_archive_export():
     """The opt-in backup that includes saved copies: one zip, streamed.
@@ -1060,6 +1450,32 @@ def api_archive_export():
     return response
 
 
+@app.route("/api/archive/media", methods=["POST"])
+def api_archive_media():
+    """A picture or the video of an Instagram post from the owner's tab: the Save window uploads what the
+    browser extension fetched there, then asks for the copy naming it, so the app doesn't fetch it.
+    The app's own pages only; the body is the file itself."""
+    import archive
+    origin = request.headers.get("Origin")
+    if ((origin is not None and not _library_same_origin(origin))
+            or request.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site")):
+        return jsonify(ok=False, error="Cross-origin requests are not allowed."), 403
+    if request.mimetype not in ("image/jpeg", "image/png", "image/gif", "image/webp", "video/mp4", "application/octet-stream"):
+        return jsonify(ok=False, error="Send a picture or a video."), 415
+    if not archive.ENABLED:
+        return jsonify(ok=False, error="Saved copies are switched off for this run of the app."), 503
+    limit = max(archive.VIDEO_LIMIT, archive.IMAGE_LIMIT)
+    if request.content_length is not None and request.content_length > limit:
+        return jsonify(ok=False, error="too_large"), 413
+    content = request.stream.read(limit + 1)
+    if len(content) > limit:
+        return jsonify(ok=False, error="too_large"), 413
+    try:
+        return jsonify(ok=True, **archive.store_upload(content))
+    except archive.ArchiveError as exc:
+        return jsonify(ok=False, error=exc.code), {"empty": 400, "not_media": 415, "too_large": 413, "uploads_full": 507}.get(exc.code, 500)
+
+
 @app.route("/api/archive/import", methods=["POST"])
 def api_archive_import():
     """Restore saved copies from a zip made by Export backup with saved copies.
@@ -1077,11 +1493,15 @@ def api_archive_import():
         return jsonify(ok=False, error="Choose the .zip file that Export backup with saved copies made."), 415
     if not archive.ENABLED:
         return jsonify(ok=False, error="Saved copies are switched off for this run of the app."), 503
+    too_big = f"That zip is bigger than {archive.IMPORT_LIMIT // (1024 ** 3)} GB."
     if request.content_length is not None and request.content_length > archive.IMPORT_LIMIT:
-        return jsonify(ok=False, error="That zip is bigger than 1 GB."), 413
+        return jsonify(ok=False, error=too_big), 413
     temporary = None
     try:
         os.makedirs(archive.ARCHIVE_DIR, exist_ok=True)
+        # The zip is written beside the copies, then unpacked there: room for about twice its size.
+        if request.content_length and shutil.disk_usage(archive.ARCHIVE_DIR).free < 2 * request.content_length + archive.DISK_MARGIN:
+            return jsonify(ok=False, error="There isn't room on this drive to restore that zip: it needs about twice its size free."), 507
         with tempfile.NamedTemporaryFile(dir=archive.ARCHIVE_DIR, prefix="import.", suffix=".zip.tmp", delete=False) as target:
             temporary = target.name
             size = 0
@@ -1091,7 +1511,7 @@ def api_archive_import():
                     break
                 size += len(chunk)
                 if size > archive.IMPORT_LIMIT:
-                    return jsonify(ok=False, error="That zip is bigger than 1 GB."), 413
+                    return jsonify(ok=False, error=too_big), 413
                 target.write(chunk)
         result = archive.import_zip(temporary, storage.library_urls())
         return jsonify(ok=True, **result)
@@ -1187,22 +1607,29 @@ def spa(path):
     # route; if we land here with such a path it genuinely doesn't exist.
     if path.startswith(("api/", "archive/", "posts", "command")):
         abort(404)
-    if path:
+    public = app.config.get("PUBLIC_RUNTIME_META")
+    # The installed app's page is never served bare: without its keys it would write the library out in plain text.
+    if path and not (public and path == "index.html"):
         static_file = os.path.join(SPA_DIR, path)
         if os.path.isfile(static_file):
             return send_from_directory(SPA_DIR, path)
     index = os.path.join(SPA_DIR, "index.html")
     if not os.path.isfile(index):
         return command_center()  # SPA not built yet — graceful fallback
-    public = app.config.get("PUBLIC_RUNTIME_META")
     if public:
         from flask import make_response
         with open(index, encoding="utf-8") as source:
             html = source.read()
-        identity, token = public  # generated hexadecimal values, never user input
-        html = html.replace("<head>", f'<head><meta name="sbm-profile" content="{identity}"><meta name="sbm-instance" content="{token}">', 1)
+        names = ("sbm-profile", "sbm-instance", "sbm-cache-key", "sbm-proof-key", "sbm-cache-new")
+        tags = "".join(f'<meta name="{name}" content="{value}">' for name, value in zip(names, public))  # generated hexadecimal values, never user input
+        html = html.replace("<head>", f"<head>{tags}", 1)
         response = make_response(html)
         response.headers["Cache-Control"] = "no-store"
+        # No popup can reach this page, however it was opened. One exception: the Save window for an Instagram post
+        # needs its opener, the tab the bookmark button was pressed in, to hand the post over.
+        address = urlsplit(request.args.get("url", ""))
+        if not (path == "add" and re.fullmatch(r"([a-z0-9-]+\.)?instagram\.com", (address.hostname or "").lower())):
+            response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
         return response
     return send_from_directory(SPA_DIR, "index.html")
 
@@ -1304,5 +1731,7 @@ class _QuerySafeRequestHandler(WSGIRequestHandler):
 
 def run_dashboard():
     print(f"[dashboard] Starting at http://{config.DASHBOARD_HOST}:{config.DASHBOARD_PORT}")
+    import archive
+    archive.discard_partials()   # a large download cut off when the app last quit
     app.run(host=config.DASHBOARD_HOST, port=config.DASHBOARD_PORT, debug=False,
             request_handler=_QuerySafeRequestHandler)

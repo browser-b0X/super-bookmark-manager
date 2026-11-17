@@ -10,6 +10,8 @@ import { enrichSavedPost, refreshIfStale } from "../../lib/metadataEnrichment";
 import SiteLine from "./SiteLine";
 import { relatedItems } from "../../lib/relatedItems";
 import { libraryUrl, normalizeUrl } from "../../lib/platform";
+import { postKey } from "../../lib/duplicates";
+import { removedFor, whatItHad } from "../../lib/removedLinks";
 import { useCopyAvailability } from "../../lib/copyAvailability";
 import { checkCopy, saveCopy } from "../../lib/savedCopies";
 import SavedCopyPanel from "./SavedCopyPanel";
@@ -23,6 +25,7 @@ export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose
   const deletePosts = useLibrary(s => s.deletePosts);
   const categories = useLibrary(s => s.categories);
   const posts = useLibrary(s => s.posts);
+  const removed = useLibrary(s => s.removed);
   const logActivity = useLibrary(s => s.logActivity);
   const [tagInput, setTagInput] = useState("");
   const [enriching, setEnriching] = useState(false);
@@ -40,29 +43,23 @@ export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose
 
   // The same page saved under another spelling (http/https, www, tracking
   // parameters, a canonical or redirect target): offer to merge, never automatically.
+  // The same post at another address (x.com and twitter.com) too.
   const duplicate = useMemo(() => {
     const keys = new Set([post.url, post.canonicalUrl, post.finalUrl].filter((u): u is string => !!u).map(normalizeUrl));
+    const key = postKey(post.url);
     return posts.find(p => p.id !== post.id && libraryUrl(p.url) !== libraryUrl(post.url)
-      && [p.url, p.canonicalUrl, p.finalUrl].some(u => !!u && keys.has(normalizeUrl(u))));
+      && ([p.url, p.canonicalUrl, p.finalUrl].some(u => !!u && keys.has(normalizeUrl(u))) || (!!key && postKey(p.url) === key)));
   }, [posts, post]);
 
+  // Keep this link: what the other held comes over (lib/duplicates mergedPost), and the other is remembered
+  // (Removed links), with Undo in History.
   const mergeDuplicate = () => {
-    if (!duplicate) return;
-    // Keep this link; carry over everything the owner added to the other one.
-    const notes = [post.userNotes, duplicate.userNotes].filter(n => n?.trim()).join("\n\n");
-    updatePost(post.id, {
-      tags: [...new Set([...post.tags, ...duplicate.tags])],
-      favorite: post.favorite || duplicate.favorite,
-      pinned: post.pinned || duplicate.pinned,
-      ...(notes ? { userNotes: notes } : {}),
-      createdAt: post.createdAt < duplicate.createdAt ? post.createdAt : duplicate.createdAt,
-      ...(post.categories.every(c => c === "uncategorized" || c === "other") && duplicate.categories.some(c => c !== "uncategorized" && c !== "other")
-        ? { categories: duplicate.categories } : {}),
-      folderPath: post.folderPath?.length ? post.folderPath : duplicate.folderPath,
-    });
-    deletePosts([duplicate.id]);
-    logActivity("organize", "Merged a duplicate link", post.title);
+    if (duplicate) useLibrary.getState().mergeDuplicates(post.id, [duplicate.id]);
   };
+
+  // This post was removed before (here, or at another address): offer back what it held.
+  const before = useMemo(() => removedFor(post, removed ?? []), [post, removed]);
+  const beforeHad = before ? whatItHad(before.post) : [];
 
   // Opening a link is a good moment to refresh an old or missing preview.
   useEffect(() => { refreshIfStale(post); }, [post.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -143,6 +140,16 @@ export default function PostDrawer({ post, onClose }: { post: SavedPost; onClose
         </div>
         {post.linkStatus === "gone" && <p role="note" className="mt-2 text-[.74rem] text-[var(--amber)]">This page no longer exists at its address{post.httpStatus ? ` (HTTP ${post.httpStatus})` : ""}. The details you saved here are unchanged.</p>}
         {post.finalUrl && <p className="mt-1 truncate text-[.7rem] text-[var(--faint)]" title={post.finalUrl}>Now redirects to {post.finalUrl}</p>}
+        {before && beforeHad.length > 0 && (
+          <div role="note" aria-label="Removed before" className="mt-2 rounded-lg border p-2.5 text-[.74rem]" style={{ borderColor: "var(--border-hi)" }}>
+            <b>You removed this post before</b> ({before.url.replace(/^https?:\/\/(www\.)?/, "")}, on {new Date(before.removedAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })}).
+            {" "}Bring back what it had: {beforeHad.join(", ")}?
+            <div className="mt-2 flex gap-2">
+              <button className="btn btn-primary" style={{ padding: "2px 8px", fontSize: ".7rem" }} onClick={() => useLibrary.getState().reattachRemoved(before.id, post.id)}>Bring them back</button>
+              <button className="btn" style={{ padding: "2px 8px", fontSize: ".7rem" }} onClick={() => useLibrary.getState().forgetRemoved([before.id])}>No, thanks</button>
+            </div>
+          </div>
+        )}
         {duplicate && (
           <div role="note" className="mt-2 flex items-center gap-2 rounded-lg border p-2 text-[.74rem]" style={{ borderColor: "var(--border-hi)" }}>
             <span className="min-w-0 flex-1">Possible duplicate of <button className="underline" onClick={() => navigate(`/library/item/${duplicate.id}`, { replace: true })}>{duplicate.title || duplicate.url}</button></span>

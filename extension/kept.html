@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kept for later</title>
+  <link rel="stylesheet" href="options.css">
+  <style>
+    main { max-width: none; margin: 0; padding: 0; }
+    header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: .9rem; }
+    .body { padding: 14px 16px; }
+    .body p { margin: 0; font-size: .86rem; }
+    .body p + p { margin-top: 8px; }
+    .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header><img src="icons/icon-32.png" width="18" height="18" alt=""> <span id="heading">Kept for later</span></header>
+    <div class="body">
+      <p id="what" role="status"></p>
+      <p id="more" class="dim"></p>
+      <div class="actions"><button id="options" class="primary" type="button" hidden>Open the options</button><button id="close" type="button">Close</button></div>
+    </div>
+  </main>
+  <script src="kept.js"></script>
+</body>
+</html>
