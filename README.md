@@ -8,10 +8,10 @@
 https://github.com/user-attachments/assets/2b40dee2-304f-4e44-9e5c-49e4531d1da5
 
 **One library for every link you've saved, on your own PC. Pages are copied as they come in, so a link still opens after
-the site is gone.** SuperBookmarks is a free, open-source Windows app for anyone who saves links "for later" in more
-than one place and then can't find them. Bring in your browser bookmarks, Telegram Saved Messages and WhatsApp chats,
-save pages and posts with the browser extension, and sort what's new with a click or an arrow key. There's no account
-and no cloud: your library is one file in your user folder.
+the site is gone.** SuperBookmarks is a free, open-source bookmark manager for Windows, for anyone who saves links "for
+later" in more than one place and then can't find them. Bring in your browser bookmarks, Telegram Saved Messages and
+WhatsApp chats, save pages and posts with the browser extension, and sort what's new with a click or an arrow key.
+There's no account and no cloud: your library is one file in your user folder.
 
 <p align="center">
   <a href="https://github.com/browser-b0X/super-bookmark-manager/releases/latest/download/SuperBookmarkManager-Setup.exe"><img src="https://img.shields.io/badge/Download_SuperBookmarks-6F5CE0?style=for-the-badge" alt="Download SuperBookmarks for Windows" height="40"></a>
@@ -482,6 +482,19 @@ Ko-fi and Buy Me a Coffee are both on that page.
 
 > Every contribution is appreciated, but never expected.<br>
 > Using the project, reporting bugs, and sharing it with others helps too.
+
+## More from browser-b0X
+
+Free, open-source apps that run on your own computer:
+
+- [Marteloio](https://browser-b0x.github.io/marteloio/) is an eBay listing generator: type your notes and get a
+  title, item specifics and an HTML description to paste in.
+- [Startclip](https://browser-b0x.github.io/startclip/) is one offline HTML page that maps the apps on your
+  machine and copies the right start command.
+
+[All apps](https://browser-b0x.github.io/) ·
+[X](https://x.com/browserb0x) ·
+[YouTube](https://www.youtube.com/@browser-b0x)
 
 ## License
 
