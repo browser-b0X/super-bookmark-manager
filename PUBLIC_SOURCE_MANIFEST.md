@@ -1,6 +1,6 @@
 # SuperBookmarks — public source manifest
 
-Exact curated source set for the public repository: **463 files** (v0.4.0).
+Exact curated source set for the public repository: **464 files** (v0.4.0).
 Only these files may enter the public branch. Listing a file here is not by itself
 permission to commit, push or publish.
 
@@ -17,6 +17,7 @@ documented Python/Playwright overrides. See BUILDING.md.
 
 ## Exact files
 
+- `.github/FUNDING.yml`
 - `.github/ISSUE_TEMPLATE/bug_report.yml`
 - `.github/ISSUE_TEMPLATE/config.yml`
 - `.github/ISSUE_TEMPLATE/feature_request.yml`
